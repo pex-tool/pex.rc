@@ -123,7 +123,7 @@ impl<'a> Display for PosixPath<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         for (idx, component) in self.0.components().enumerate() {
             if idx > 0 {
-                f.write_str("/")?;
+                f.write_char('/')?;
             }
             match component {
                 Component::CurDir => f.write_char('.')?,

@@ -54,39 +54,60 @@ pub(crate) static PROXIES_DIR: LazyLock<&'static Dir> = LazyLock::new(|| {
         .expect("Embeds include proxies/.")
 });
 
-pub static PROXY_BY_TARGET: LazyLock<IndexMap<SimplifiedTarget, Binary<'static>>> =
-    LazyLock::new(|| {
-        PROXIES_DIR
-            .files()
-            .map(|file| {
-                let path = file.path();
-                let target = path
+fn identify_proxy_files(name: &str) -> IndexMap<SimplifiedTarget, Binary<'static>> {
+    PROXIES_DIR
+        .files()
+        .filter_map(|file| {
+            let path = file.path();
+            let mut components = path
                 .file_stem()
                 .expect("The Python proxies all have a file name.")
                 .to_str()
                 .expect("The Python proxy file names are utf-8 strings.")
-                .splitn(3, "-")
-                .nth(2)
-                .expect(
-                    "The Python proxy file names are all of the form `python-proxy-<target>(.exe)?",
-                );
-                let target = SimplifiedTarget::try_from(target)
-                    .expect("The Python proxy file names are all derived from simplified targets.");
-                (
+                .splitn(3, "-");
+            assert_eq!(Some("python"), components.next());
+            if components.next().expect(
+                "The Python proxy file names are all of the form `python-proxyw?-<target>(.exe)?",
+            ) != name
+            {
+                return None;
+            }
+            let target = components.next().expect(
+                "The Python proxy file names are all of the form `python-proxyw?-<target>(.exe)?",
+            );
+            let target = SimplifiedTarget::try_from(target)
+                .expect("The Python proxy file names are all derived from simplified targets.");
+            Some((
+                target,
+                Binary {
                     target,
-                    Binary {
-                        target,
-                        path,
-                        contents: file.contents(),
-                    },
-                )
-            })
-            .collect()
-    });
+                    path,
+                    contents: file.contents(),
+                },
+            ))
+        })
+        .collect()
+}
 
-pub fn read_proxy_content(target: SimplifiedTarget) -> anyhow::Result<impl Read> {
-    let proxy = PROXY_BY_TARGET
-        .get(&target)
-        .ok_or_else(|| anyhow!("There is no python-proxy for {target}"))?;
+pub static PROXY_BY_TARGET: LazyLock<IndexMap<SimplifiedTarget, Binary<'static>>> =
+    LazyLock::new(|| identify_proxy_files("proxy"));
+
+pub static PROXYW_BY_TARGET: LazyLock<IndexMap<SimplifiedTarget, Binary<'static>>> =
+    LazyLock::new(|| identify_proxy_files("proxyw"));
+
+pub fn read_proxy_content(target: SimplifiedTarget, is_gui: bool) -> anyhow::Result<impl Read> {
+    let proxy = if is_gui
+        && matches!(
+            target,
+            SimplifiedTarget::Arm64Windows | SimplifiedTarget::X64Windows
+        ) {
+        PROXYW_BY_TARGET
+            .get(&target)
+            .ok_or_else(|| anyhow!("There is no python-proxyw for {target}"))
+    } else {
+        PROXY_BY_TARGET
+            .get(&target)
+            .ok_or_else(|| anyhow!("There is no python-proxy for {target}"))
+    }?;
     Ok(zstd::Decoder::new(proxy.contents)?)
 }

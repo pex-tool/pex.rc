@@ -178,6 +178,8 @@ fn main() -> anyhow::Result<()> {
             &[]
         };
 
+    let python_proxyw_options = [Cow::Borrowed("--features"), Cow::Borrowed("windows")];
+
     println!("cargo::rerun-if-env-changed=PEXRC_TARGETS");
     if all_targets {
         println!("cargo::rerun-if-changed=rust-toolchain");
@@ -202,6 +204,8 @@ fn main() -> anyhow::Result<()> {
                 tgt_arg,
                 "--package",
                 "python-proxy",
+                "--bin",
+                "python-proxy",
             ],
             &[],
             embeds_configuration.profile,
@@ -209,6 +213,33 @@ fn main() -> anyhow::Result<()> {
             targets
                 .iter_zigbuild_targets()
                 .map(BuildTarget::zigbuild_target),
+            python_proxy_optimizations,
+        )?;
+        custom_cargo_build(
+            &cargo,
+            &[
+                "zigbuild",
+                "--target-dir",
+                tgt_arg,
+                "--package",
+                "python-proxy",
+                "--bin",
+                "python-proxyw",
+            ],
+            &python_proxyw_options,
+            embeds_configuration.profile,
+            &found_tools,
+            targets
+                .iter_zigbuild_targets()
+                .filter_map(|target| {
+                    if target.is_windows() {
+                        Some(target.zigbuild_target())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
             python_proxy_optimizations,
         )?;
 
@@ -237,8 +268,28 @@ fn main() -> anyhow::Result<()> {
                 tgt_arg,
                 "--package",
                 "python-proxy",
+                "--bin",
+                "python-proxy",
             ],
             &[],
+            embeds_configuration.profile,
+            &found_tools,
+            targets.iter_xwin_targets().map(BuildTarget::as_str),
+            python_proxy_optimizations,
+        )?;
+        custom_cargo_build(
+            &cargo,
+            &[
+                "xwin",
+                "build",
+                "--target-dir",
+                tgt_arg,
+                "--package",
+                "python-proxy",
+                "--bin",
+                "python-proxyw",
+            ],
+            &python_proxyw_options,
             embeds_configuration.profile,
             &found_tools,
             targets.iter_xwin_targets().map(BuildTarget::as_str),
@@ -248,13 +299,14 @@ fn main() -> anyhow::Result<()> {
     } else {
         let target = env::var("TARGET")?;
         let targets = ClassifiedTargets::parse([target.as_str()].into_iter(), &glibc);
+        let current_target = BuildTarget::current(&glibc);
         custom_cargo_build(
             &cargo,
             &["build", "--target-dir", tgt_arg, "--package", "clib"],
             optional_clib_args,
             embeds_configuration.profile,
             &found_tools,
-            [BuildTarget::current(&glibc).as_str()].into_iter(),
+            [current_target.as_str()].into_iter(),
             clib_optimizations,
         )?;
         custom_cargo_build(
@@ -265,13 +317,34 @@ fn main() -> anyhow::Result<()> {
                 tgt_arg,
                 "--package",
                 "python-proxy",
+                "--bin",
+                "python-proxy",
             ],
             &[],
             embeds_configuration.profile,
             &found_tools,
-            [BuildTarget::current(&glibc).as_str()].into_iter(),
+            [current_target.as_str()].into_iter(),
             python_proxy_optimizations,
         )?;
+        if current_target.is_windows() {
+            custom_cargo_build(
+                &cargo,
+                &[
+                    "build",
+                    "--target-dir",
+                    tgt_arg,
+                    "--package",
+                    "python-proxy",
+                    "--bin",
+                    "python-proxyw",
+                ],
+                &python_proxyw_options,
+                embeds_configuration.profile,
+                &found_tools,
+                [current_target.as_str()].into_iter(),
+                python_proxy_optimizations,
+            )?;
+        }
         collect_embeds(&targets, &tgt_path, embeds_configuration, &embeds_dir, true)
     }
 }
@@ -368,6 +441,19 @@ fn collect_embeds<'a>(
             &target_name,
             compress,
         )?;
+        if target.is_windows() {
+            let python_proxy_name = target.binary_name("python-proxyw", None);
+            let target_name = target.fully_qualified_binary_name("python-proxyw", None)?;
+            collect_embed(
+                &python_proxy_name,
+                &proxies_dir,
+                embeds_configuration,
+                target,
+                target_dir,
+                &target_name,
+                compress,
+            )?;
+        }
     }
     Ok(())
 }

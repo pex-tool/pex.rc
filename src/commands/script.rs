@@ -14,8 +14,9 @@ pub fn create(
     python: &Path,
     script: &Path,
     output_file: &Path,
+    is_gui: bool,
 ) -> anyhow::Result<()> {
-    let proxy_bytes = Box::new(read_proxy_content(target)?);
+    let proxy_bytes = Box::new(read_proxy_content(target, is_gui)?);
     let script = fs::read_to_string(script)?;
     let target_script = fs::File::create(output_file)?;
     python_proxy::create(
@@ -23,5 +24,6 @@ pub fn create(
         python,
         target_script.into_file(),
         Some(script),
+        is_gui,
     )
 }

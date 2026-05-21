@@ -26,7 +26,7 @@ struct PythonProxyLinker<'a>(&'a Pex<'a>);
 
 impl<'a> Linker for PythonProxyLinker<'a> {
     #[cfg(unix)]
-    fn link(&self, dest: &Path, interpreter: Option<&Path>) -> anyhow::Result<()> {
+    fn link(&self, dest: &Path, interpreter: Option<&Path>, is_gui: bool) -> anyhow::Result<()> {
         let file_name = dest.file_name().ok_or_else(|| {
             anyhow!(
                 "The destination for the python-proxy doesn't have a file name: {path}",
@@ -54,6 +54,7 @@ impl<'a> Linker for PythonProxyLinker<'a> {
                 venv_python_file_name.as_ref(),
                 file.into_file(),
                 None,
+                is_gui,
             )
         })?;
 
@@ -72,13 +73,14 @@ impl<'a> Linker for PythonProxyLinker<'a> {
     }
 
     #[cfg(windows)]
-    fn link(&self, dest: &Path, interpreter: Option<&Path>) -> anyhow::Result<()> {
+    fn link(&self, dest: &Path, interpreter: Option<&Path>, is_gui: bool) -> anyhow::Result<()> {
         python_proxy::create(
             ProxySource::Pex(self.0),
             interpreter
                 .ok_or_else(|| anyhow!("Windows venvs require an interpreter to link to."))?,
             fs::File::create(dest)?.into_file(),
             None,
+            is_gui,
         )
     }
 }

@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.13.0
+
+This release brings support for `gui-scripts` and `pythonw.exe` on Windows.
+
 ## 0.12.6
 
 This release fixes generation of `--sh-boot` headers on Windows.

@@ -43,6 +43,10 @@ impl<'a> BuildTarget<'a> {
         }
     }
 
+    pub fn is_windows(&self) -> bool {
+        matches!(self.target, Target::Windows(_))
+    }
+
     pub fn as_str(&self) -> &str {
         self.target.as_str()
     }

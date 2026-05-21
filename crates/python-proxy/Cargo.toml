@@ -6,6 +6,15 @@ name = "python-proxy"
 edition = { workspace = true }
 publish = false
 
+[[bin]]
+name = "python-proxy"
+path = "src/bin/main.rs"
+
+[[bin]]
+name = "python-proxyw"
+path = "src/bin/mainw.rs"
+required-features = ["windows"]
+
 [dependencies]
 anyhow = { workspace = true }
 cache = { path = "../cache" }
@@ -13,3 +22,6 @@ pex = { path = "../pex" }
 platform = { path = "../platform" }
 target = { path = "../target" }
 zip = { workspace = true }
+
+[features]
+windows = []

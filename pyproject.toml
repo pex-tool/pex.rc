@@ -13,9 +13,11 @@ dev = [
     "dev-cmd[old-pythons]; python_version >= '3.8'",
     "mypy",
     "pex",
+    "psutil",
     "pytest",
     "pytest-xdist",
     "ruff",
+    "types-psutil",
     "types-setuptools",
 ]
 

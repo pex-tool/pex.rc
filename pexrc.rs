@@ -12,7 +12,7 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use indexmap::{Equivalent, IndexSet};
 use pex::{Pex, WheelOptions};
 use pexrc::commands::{extract, info, inject, script};
-use pexrc::embeds::{CLIB_BY_TARGET, PROXY_BY_TARGET};
+use pexrc::embeds::{CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
 use pexrc::source;
 use target::Target;
 
@@ -138,11 +138,14 @@ enum Commands {
         #[arg(long)]
         target: Option<SimplifiedTarget>,
 
-        #[arg(short = 'p', long, required = true)]
+        #[arg(short = 'p', long)]
         python: PathBuf,
 
         #[arg(short = 'o', long)]
         output_file: PathBuf,
+
+        #[arg(long, default_value_t = false)]
+        gui: bool,
 
         #[arg(value_name = "SCRIPT")]
         script: PathBuf,
@@ -205,12 +208,20 @@ fn main() -> anyhow::Result<()> {
                                 "The allowed --target values are all keys in PROXY_BY_TARGET.",
                             )
                         })
+                        .chain(
+                            targets
+                                .iter()
+                                .filter_map(|target| PROXYW_BY_TARGET.get(target)),
+                        )
                         .collect::<Vec<_>>(),
                 )
             } else {
                 (
                     CLIB_BY_TARGET.values().collect::<Vec<_>>(),
-                    PROXY_BY_TARGET.values().collect::<Vec<_>>(),
+                    PROXY_BY_TARGET
+                        .values()
+                        .chain(PROXYW_BY_TARGET.values())
+                        .collect::<Vec<_>>(),
                 )
             };
             let pexes = pexes
@@ -231,9 +242,10 @@ fn main() -> anyhow::Result<()> {
             python,
             script,
             output_file,
+            gui: is_gui,
         } => {
             if let Some(target) = target {
-                script::create(target.into(), &python, &script, &output_file)
+                script::create(target.into(), &python, &script, &output_file, is_gui)
             } else {
                 let current_target = Target::current()?;
                 script::create(
@@ -241,6 +253,7 @@ fn main() -> anyhow::Result<()> {
                     &python,
                     &script,
                     &output_file,
+                    is_gui,
                 )
             }
         }

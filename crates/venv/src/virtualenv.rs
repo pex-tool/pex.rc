@@ -53,13 +53,13 @@ fn executable_rel_path(interpreter: &Interpreter) -> Cow<'static, str> {
 }
 
 pub trait Linker {
-    fn link(&self, dest: &Path, interpreter: Option<&Path>) -> anyhow::Result<()>;
+    fn link(&self, dest: &Path, interpreter: Option<&Path>, is_gui: bool) -> anyhow::Result<()>;
 }
 
 pub struct FileSystemLinker();
 
 impl Linker for FileSystemLinker {
-    fn link(&self, dest: &Path, interpreter: Option<&Path>) -> anyhow::Result<()> {
+    fn link(&self, dest: &Path, interpreter: Option<&Path>, _is_gui: bool) -> anyhow::Result<()> {
         if let Some(interpreter) = interpreter {
             symlink_or_link_or_copy(interpreter, dest, false)?;
         }
@@ -358,7 +358,13 @@ fn create_pep_405_venv<'a>(
     if let Some(parent) = venv_python.parent() {
         fs::create_dir_all(parent)?;
     }
-    linker.link(&venv_python, Some(&raw_base_interpreter.realpath))?;
+    linker.link(&venv_python, Some(&raw_base_interpreter.realpath), false)?;
+    #[cfg(windows)]
+    linker.link(
+        &venv_python.with_file_name("pythonw.exe"),
+        Some(&raw_base_interpreter.realpath.with_file_name("pythonw.exe")),
+        true,
+    )?;
     let site_packages_relpath = site_packages_relpath(&base_interpreter);
     fs::create_dir_all(path.join(site_packages_relpath.as_ref()))?;
     if pip {
@@ -431,7 +437,9 @@ fn create_virtualenv_venv<'a>(
     };
     pyvenv_cfg.write(path.as_ref())?;
 
-    linker.link(&venv_python, None)?;
+    linker.link(&venv_python, None, false)?;
+    #[cfg(windows)]
+    linker.link(&venv_python.with_file_name("pythonw.exe"), None, true)?;
     if pip {
         ensure_pip(raw_interpreter, &venv_python)?;
     }

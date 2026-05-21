@@ -13,7 +13,6 @@ use cache::{Fingerprint, default_digest, fingerprint_file};
 use fs_err as fs;
 use fs_err::File;
 use indexmap::IndexMap;
-use log::warn;
 use logging_timer::time;
 use pex::{
     BinPath,
@@ -157,7 +156,15 @@ fn install_scripts(
         return Ok(());
     }
 
-    for (name, entry_point) in entry_points.console_scripts() {
+    for (name, entry_point, is_gui) in entry_points
+        .console_scripts()
+        .map(|(name, entry_point)| (name, entry_point, false))
+        .chain(
+            entry_points
+                .gui_scripts()
+                .map(|(name, entry_point)| (name, entry_point, true)),
+        )
+    {
         let script_path = virtualenv
             .script_path(name)
             .with_extension(env::consts::EXE_EXTENSION);
@@ -181,32 +188,13 @@ fn install_scripts(
             }
             Err(err) => bail!("{err}"),
         };
-        write_script(pex, shebang_interpreter, script_file, script_contents)?;
-    }
-
-    let gui_scripts = entry_points
-        .gui_scripts()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
-    if !gui_scripts.is_empty() {
-        struct GuiScriptsList<'a>(Vec<&'a str>);
-        impl<'a> Display for GuiScriptsList<'a> {
-            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-                for name in &self.0 {
-                    writeln!(f, "{name}")?;
-                }
-                Ok(())
-            }
-        }
-        warn!(
-            "There is currently no support for gui scripts, skipping install of {count}.\n\
-            Found these installing {entry_points_txt} in venv at {venv}:\n\
-            {gui_scripts_list}",
-            count = gui_scripts.len(),
-            entry_points_txt = entry_points_txt.display(),
-            venv = virtualenv.prefix().display(),
-            gui_scripts_list = GuiScriptsList(gui_scripts)
-        );
+        write_script(
+            pex,
+            shebang_interpreter,
+            script_file,
+            script_contents,
+            is_gui,
+        )?;
     }
     Ok(())
 }
@@ -217,6 +205,7 @@ fn write_script(
     _shebang_interpreter: &Path,
     mut script_file: File,
     script_contents: String,
+    _is_gui: bool,
 ) -> anyhow::Result<()> {
     script_file.write_all(script_contents.as_bytes())?;
     mark_executable(script_file.file_mut())?;
@@ -229,12 +218,14 @@ fn write_script(
     shebang_interpreter: &Path,
     script_file: File,
     script_contents: String,
+    is_gui: bool,
 ) -> anyhow::Result<()> {
     python_proxy::create(
         python_proxy::ProxySource::Pex(pex),
         shebang_interpreter,
         script_file.into_file(),
         Some(script_contents),
+        is_gui,
     )
 }
 
