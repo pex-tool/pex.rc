@@ -148,7 +148,7 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(print_format) = cli.print_targets {
         let mut all_targets = classified_targets
-            .iter_all_targets()
+            .iter()
             .map(BuildTarget::as_str)
             .collect::<Vec<_>>();
         all_targets.sort();
@@ -202,7 +202,7 @@ fn main() -> anyhow::Result<()> {
         };
         let mut built: Vec<(PathBuf, String)> = Vec::with_capacity(targeted.len());
         let zigbuild_targets = classified_targets
-            .iter_zigbuild_targets()
+            .iter()
             .filter(|target| targeted.contains(target.as_str()))
             .collect::<Vec<_>>();
         if !zigbuild_targets.is_empty() {
@@ -225,33 +225,6 @@ fn main() -> anyhow::Result<()> {
             let result = command.spawn()?.wait()?;
             if !result.success() {
                 bail!("Cross-build via cargo-zigbuild failed!");
-            }
-        }
-
-        let xwin_targets = classified_targets
-            .iter_xwin_targets()
-            .filter(|target| targeted.contains(target.as_str()))
-            .collect::<Vec<_>>();
-        if !xwin_targets.is_empty() {
-            let mut command = Command::new(cargo);
-            command.args(["xwin", "build", "--profile", profile]);
-            for target in xwin_targets {
-                command.args(["--target", target.as_str()]);
-                built.push((
-                    target_dir
-                        .join(target.as_str())
-                        .join(profile_dir_name)
-                        .join(target.binary_name("pexrc", None).as_ref()),
-                    target.fully_qualified_binary_name("pexrc", profile_target_suffix)?,
-                ));
-            }
-            command.envs(env);
-            for found_tool in &found_tools {
-                command.env(found_tool.env_var, &found_tool.path);
-            }
-            let result = command.spawn()?.wait()?;
-            if !result.success() {
-                bail!("Cross-build via cargo-xwin failed!");
             }
         }
         built

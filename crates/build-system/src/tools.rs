@@ -172,7 +172,6 @@ impl InstallDirs {
 
 #[derive(EnumCount, EnumIter)]
 pub enum BinstallTool {
-    CargoXwin,
     CargoZigbuild,
     Uv,
 }
@@ -180,7 +179,6 @@ pub enum BinstallTool {
 impl BinstallTool {
     pub fn binary_name(&self) -> &'static str {
         match *self {
-            BinstallTool::CargoXwin => "cargo-xwin",
             BinstallTool::CargoZigbuild => "cargo-zigbuild",
             BinstallTool::Uv => "uv",
         }

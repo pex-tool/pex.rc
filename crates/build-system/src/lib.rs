@@ -18,7 +18,7 @@ use cache::atomic_dir;
 use fs_err as fs;
 use itertools::Itertools;
 pub use metadata::{Embeds, EmbedsConfiguration, Glibc};
-pub use rust_toolchain::{BuildTarget, ClassifiedTargets};
+pub use rust_toolchain::BuildTarget;
 use rust_toolchain::{Toolchain, parse_toolchain};
 
 use crate::downloads::ensure_download;
@@ -62,7 +62,7 @@ pub fn all_targets(rust_toolchain_contents: &str) -> anyhow::Result<Vec<String>>
 pub fn classify_targets<'a>(
     rust_toolchain_contents: &'a str,
     glibc: &'a Glibc,
-) -> anyhow::Result<ClassifiedTargets<'a>> {
+) -> anyhow::Result<Vec<BuildTarget<'a>>> {
     let toolchain: Toolchain = parse_toolchain(rust_toolchain_contents)?;
     Ok(toolchain.classify_targets(glibc))
 }

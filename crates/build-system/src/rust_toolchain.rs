@@ -79,35 +79,9 @@ impl<'a> BuildTarget<'a> {
     }
 }
 
-pub struct ClassifiedTargets<'a> {
-    xwin_targets: Vec<BuildTarget<'a>>,
-    zigbuild_targets: Vec<BuildTarget<'a>>,
-}
-
-impl<'a> ClassifiedTargets<'a> {
-    pub fn parse(targets: impl Iterator<Item = &'a str>, glibc: &'a Glibc<'a>) -> Self {
-        let (xwin_targets, zigbuild_targets) = targets
-            .map(|target| BuildTarget::classify(target, glibc))
-            .partition::<Vec<_>, _>(|build_target| {
-                matches!(build_target.target, Target::Windows(_))
-            });
-        Self {
-            // TODO: Resolve cargo xwin build issues or delete the cargo-xwin code paths.
-            xwin_targets: vec![],
-            zigbuild_targets: xwin_targets.into_iter().chain(zigbuild_targets).collect(),
-        }
-    }
-
-    pub fn iter_zigbuild_targets(&'a self) -> impl ExactSizeIterator<Item = &'a BuildTarget<'a>> {
-        self.zigbuild_targets.iter()
-    }
-
-    pub fn iter_xwin_targets(&'a self) -> impl ExactSizeIterator<Item = &'a BuildTarget<'a>> {
-        self.xwin_targets.iter()
-    }
-
-    pub fn iter_all_targets(&'a self) -> impl Iterator<Item = &'a BuildTarget<'a>> {
-        self.zigbuild_targets.iter().chain(self.xwin_targets.iter())
+impl<'a> AsRef<BuildTarget<'a>> for BuildTarget<'a> {
+    fn as_ref(&self) -> &BuildTarget<'a> {
+        self
     }
 }
 
@@ -122,8 +96,11 @@ impl<'a> Toolchain<'a> {
         self.targets.into_iter().map(str::to_string).collect()
     }
 
-    pub(crate) fn classify_targets(&self, glibc: &'a Glibc<'a>) -> ClassifiedTargets<'a> {
-        ClassifiedTargets::parse(self.targets.iter().copied(), glibc)
+    pub(crate) fn classify_targets(&self, glibc: &'a Glibc<'a>) -> Vec<BuildTarget<'a>> {
+        self.targets
+            .iter()
+            .map(|target| BuildTarget::classify(target, glibc))
+            .collect()
     }
 }
 

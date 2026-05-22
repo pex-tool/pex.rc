@@ -14,7 +14,6 @@ use anyhow::{anyhow, bail};
 use bstr::ByteSlice;
 use build_system::{
     BuildTarget,
-    ClassifiedTargets,
     EmbedsConfiguration,
     FoundTool,
     classify_targets,
@@ -191,9 +190,7 @@ fn main() -> anyhow::Result<()> {
             optional_clib_args,
             embeds_configuration.profile,
             &found_tools,
-            targets
-                .iter_zigbuild_targets()
-                .map(BuildTarget::zigbuild_target),
+            targets.iter().map(BuildTarget::zigbuild_target),
             clib_optimizations,
         )?;
         custom_cargo_build(
@@ -210,9 +207,7 @@ fn main() -> anyhow::Result<()> {
             &[],
             embeds_configuration.profile,
             &found_tools,
-            targets
-                .iter_zigbuild_targets()
-                .map(BuildTarget::zigbuild_target),
+            targets.iter().map(BuildTarget::zigbuild_target),
             python_proxy_optimizations,
         )?;
         custom_cargo_build(
@@ -230,7 +225,7 @@ fn main() -> anyhow::Result<()> {
             embeds_configuration.profile,
             &found_tools,
             targets
-                .iter_zigbuild_targets()
+                .iter()
                 .filter_map(|target| {
                     if target.is_windows() {
                         Some(target.zigbuild_target())
@@ -242,71 +237,24 @@ fn main() -> anyhow::Result<()> {
                 .into_iter(),
             python_proxy_optimizations,
         )?;
-
-        custom_cargo_build(
-            &cargo,
-            &[
-                "xwin",
-                "build",
-                "--target-dir",
-                tgt_arg,
-                "--package",
-                "clib",
-            ],
-            optional_clib_args,
-            embeds_configuration.profile,
-            &found_tools,
-            targets.iter_xwin_targets().map(BuildTarget::as_str),
-            clib_optimizations,
-        )?;
-        custom_cargo_build(
-            &cargo,
-            &[
-                "xwin",
-                "build",
-                "--target-dir",
-                tgt_arg,
-                "--package",
-                "python-proxy",
-                "--bin",
-                "python-proxy",
-            ],
-            &[],
-            embeds_configuration.profile,
-            &found_tools,
-            targets.iter_xwin_targets().map(BuildTarget::as_str),
-            python_proxy_optimizations,
-        )?;
-        custom_cargo_build(
-            &cargo,
-            &[
-                "xwin",
-                "build",
-                "--target-dir",
-                tgt_arg,
-                "--package",
-                "python-proxy",
-                "--bin",
-                "python-proxyw",
-            ],
-            &python_proxyw_options,
-            embeds_configuration.profile,
-            &found_tools,
-            targets.iter_xwin_targets().map(BuildTarget::as_str),
-            python_proxy_optimizations,
-        )?;
-        collect_embeds(&targets, &tgt_path, embeds_configuration, &embeds_dir, true)
+        collect_embeds(
+            targets.as_slice(),
+            &tgt_path,
+            embeds_configuration,
+            &embeds_dir,
+            true,
+        )
     } else {
-        let target = env::var("TARGET")?;
-        let targets = ClassifiedTargets::parse([target.as_str()].into_iter(), &glibc);
-        let current_target = BuildTarget::current(&glibc);
+        let selected_target = env::var("TARGET")?;
+        let target = BuildTarget::classify(&selected_target, &glibc);
+        let targets = vec![&target];
         custom_cargo_build(
             &cargo,
             &["build", "--target-dir", tgt_arg, "--package", "clib"],
             optional_clib_args,
             embeds_configuration.profile,
             &found_tools,
-            [current_target.as_str()].into_iter(),
+            targets.iter().map(|target| target.as_str()),
             clib_optimizations,
         )?;
         custom_cargo_build(
@@ -323,10 +271,10 @@ fn main() -> anyhow::Result<()> {
             &[],
             embeds_configuration.profile,
             &found_tools,
-            [current_target.as_str()].into_iter(),
+            targets.iter().map(|target| target.as_str()),
             python_proxy_optimizations,
         )?;
-        if current_target.is_windows() {
+        if target.is_windows() {
             custom_cargo_build(
                 &cargo,
                 &[
@@ -341,11 +289,17 @@ fn main() -> anyhow::Result<()> {
                 &python_proxyw_options,
                 embeds_configuration.profile,
                 &found_tools,
-                [current_target.as_str()].into_iter(),
+                targets.iter().map(|target| target.as_str()),
                 python_proxy_optimizations,
             )?;
         }
-        collect_embeds(&targets, &tgt_path, embeds_configuration, &embeds_dir, true)
+        collect_embeds(
+            targets.as_slice(),
+            &tgt_path,
+            embeds_configuration,
+            &embeds_dir,
+            true,
+        )
     }
 }
 
@@ -405,7 +359,7 @@ fn custom_cargo_build<'a>(
 }
 
 fn collect_embeds<'a>(
-    targets: &'a ClassifiedTargets<'a>,
+    targets: &'a [impl AsRef<BuildTarget<'a>>],
     target_dir: &Path,
     embeds_configuration: &'a EmbedsConfiguration<'a>,
     embeds_dir: &Path,
@@ -415,7 +369,8 @@ fn collect_embeds<'a>(
     fs::create_dir_all(&clibs_dir)?;
     let proxies_dir = embeds_dir.join("proxies");
     fs::create_dir_all(&proxies_dir)?;
-    for target in targets.iter_all_targets() {
+    for target in targets {
+        let target = target.as_ref();
         let clib_name = target.shared_library_name("pexrc");
         let target_name = format!(
             "{target}.{clib_name}",
