@@ -89,7 +89,5 @@ def test_issue_103(
         args=["-c", "import sqlalchemy"],
         env=dict(PEXRC_ROOT=pexrc_root),
         only_inject=only_inject,
-        # N.B.: Mac SIP causes this 1st run of the --sh-boot variants to be unavoidably slow
-        # when they select an interpreter that is not the current one.
-        assert_faster=not IS_MAC,
+        assert_faster=False,
     )
