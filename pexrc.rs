@@ -6,9 +6,9 @@
 use clap::{Args, Parser, Subcommand};
 use pexrc::commands::build::Build;
 use pexrc::commands::extract::Extract;
+use pexrc::commands::info;
 use pexrc::commands::inject::Inject;
 use pexrc::commands::script::Script;
-use pexrc::commands::info;
 
 /// Pex Runtime Control.
 #[derive(Parser)]
