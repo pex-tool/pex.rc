@@ -3,18 +3,18 @@
 
 use std::cmp;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cache::Fingerprint;
 use clap::Args;
 use owo_colors::OwoColorize;
-use pex::Pex;
+use pex::{Pex, WheelOptions};
 
 use crate::compression_method::CompressionArgs;
 use crate::source;
 
 #[derive(Args)]
-pub struct ExtractArgs {
+pub struct Extract {
     #[command(flatten)]
     compression_args: CompressionArgs,
 
@@ -27,12 +27,17 @@ pub struct ExtractArgs {
     pex: String,
 }
 
-pub fn to_dir(extract_args: ExtractArgs) -> anyhow::Result<()> {
-    let pex = source::to_path(extract_args.pex, Some(&extract_args.dest_dir))?;
-    let pex = Pex::load(&pex)?;
-    let options = extract_args.compression_args.into_wheel_options(None);
+impl Extract {
+    pub fn execute(self) -> anyhow::Result<()> {
+        let pex = source::to_path(self.pex, Some(&self.dest_dir))?;
+        let pex = Pex::load(&pex)?;
+        let options = self.compression_args.into_wheel_options(None);
+        to_dir(&self.dest_dir, pex, &options)
+    }
+}
 
-    let wheels = pex::repackage_wheels(&pex, &options, &extract_args.dest_dir)?;
+fn to_dir(dest_dir: &Path, pex: Pex, options: &WheelOptions) -> anyhow::Result<()> {
+    let wheels = pex::repackage_wheels(&pex, options, dest_dir)?;
     let count = wheels.len();
 
     let mut wheel_info = Vec::with_capacity(count);

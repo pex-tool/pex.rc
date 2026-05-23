@@ -1,17 +1,17 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 use fs_err as fs;
 use python_proxy::ProxySource;
-use target::Target;
+use target::{SimplifiedTarget, Target};
 
 use crate::embeds::read_proxy_content;
 
 #[derive(Args)]
-pub struct ScriptArgs {
+pub struct Script {
     #[arg(long)]
     target: Option<crate::simplified_target::SimplifiedTarget>,
 
@@ -28,21 +28,37 @@ pub struct ScriptArgs {
     script: PathBuf,
 }
 
-pub fn create(script_args: ScriptArgs) -> anyhow::Result<()> {
-    let target = if let Some(target) = script_args.target {
-        target.into()
-    } else {
-        let current_target = Target::current()?;
-        current_target.simplified_target_triple()?
-    };
+impl Script {
+    pub fn execute(self) -> anyhow::Result<()> {
+        let target = if let Some(target) = self.target {
+            target.into()
+        } else {
+            let current_target = Target::current()?;
+            current_target.simplified_target_triple()?
+        };
+        create(
+            target,
+            &self.python,
+            &self.script,
+            &self.output_file,
+            self.gui,
+        )
+    }
+}
 
-    let is_gui = script_args.gui;
+pub fn create(
+    target: SimplifiedTarget,
+    python: &Path,
+    script: &Path,
+    output_file: &Path,
+    is_gui: bool,
+) -> anyhow::Result<()> {
     let proxy_bytes = Box::new(read_proxy_content(target, is_gui)?);
-    let script = fs::read_to_string(script_args.script)?;
-    let target_script = fs::File::create(script_args.output_file)?;
+    let script = fs::read_to_string(script)?;
+    let target_script = fs::File::create(output_file)?;
     python_proxy::create(
         ProxySource::Read(proxy_bytes),
-        &script_args.python,
+        python,
         target_script.into_file(),
         Some(script),
         is_gui,

@@ -33,7 +33,7 @@ use crate::embeds::{Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
 use crate::source;
 
 #[derive(Args)]
-pub struct InjectArgs {
+pub struct Inject {
     #[command(flatten)]
     compression_args: CompressionArgs,
 
@@ -49,57 +49,66 @@ pub struct InjectArgs {
     pexes: Vec<String>,
 }
 
-pub fn inject_all(inject_args: InjectArgs) -> anyhow::Result<()> {
-    let (clibs, proxies) = if !inject_args.targets.is_empty() {
-        (
-            inject_args
-                .targets
-                .iter()
-                .map(|target| {
-                    CLIB_BY_TARGET
-                        .get(target)
-                        .expect("The allowed --target values are all keys in CLIB_BY_TARGET.")
-                })
-                .collect::<Vec<_>>(),
-            inject_args
-                .targets
-                .iter()
-                .map(|target| {
-                    PROXY_BY_TARGET
-                        .get(target)
-                        .expect("The allowed --target values are all keys in PROXY_BY_TARGET.")
-                })
-                .chain(
-                    inject_args
-                        .targets
-                        .iter()
-                        .filter_map(|target| PROXYW_BY_TARGET.get(target)),
-                )
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        (
-            CLIB_BY_TARGET.values().collect::<Vec<_>>(),
-            PROXY_BY_TARGET
-                .values()
-                .chain(PROXYW_BY_TARGET.values())
-                .collect::<Vec<_>>(),
-        )
-    };
-    let pexes = inject_args
-        .pexes
-        .into_iter()
-        .map(|source| source::to_path(source, None))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let options = inject_args.compression_args.into_wheel_options(None);
-    for pex in pexes {
-        inject(
-            &pex,
+impl Inject {
+    pub fn execute(self) -> anyhow::Result<()> {
+        let (clibs, proxies) = if !self.targets.is_empty() {
+            (
+                self.targets
+                    .iter()
+                    .map(|target| {
+                        CLIB_BY_TARGET
+                            .get(target)
+                            .expect("The allowed --target values are all keys in CLIB_BY_TARGET.")
+                    })
+                    .collect::<Vec<_>>(),
+                self.targets
+                    .iter()
+                    .map(|target| {
+                        PROXY_BY_TARGET
+                            .get(target)
+                            .expect("The allowed --target values are all keys in PROXY_BY_TARGET.")
+                    })
+                    .chain(
+                        self.targets
+                            .iter()
+                            .filter_map(|target| PROXYW_BY_TARGET.get(target)),
+                    )
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            (
+                CLIB_BY_TARGET.values().collect::<Vec<_>>(),
+                PROXY_BY_TARGET
+                    .values()
+                    .chain(PROXYW_BY_TARGET.values())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let pexes = self
+            .pexes
+            .into_iter()
+            .map(|source| source::to_path(source, None))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let options = self.compression_args.into_wheel_options(None);
+        inject_all(
+            pexes,
             &options,
             clibs.as_slice(),
             proxies.as_slice(),
-            inject_args.preferred_python.as_deref(),
-        )?
+            self.preferred_python.as_deref(),
+        )
+    }
+}
+
+fn inject_all(
+    pexes: Vec<PathBuf>,
+    options: &WheelOptions,
+    clibs: &[&Binary],
+    proxies: &[&Binary],
+    preferred_python: Option<&Path>,
+) -> anyhow::Result<()> {
+    for pex in pexes {
+        inject(&pex, options, clibs, proxies, preferred_python)?
     }
     Ok(())
 }

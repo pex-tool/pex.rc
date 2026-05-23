@@ -4,11 +4,11 @@
 #![deny(clippy::all)]
 
 use clap::{Args, Parser, Subcommand};
-use pexrc::commands::build::BuildArgs;
-use pexrc::commands::extract::ExtractArgs;
-use pexrc::commands::inject::InjectArgs;
-use pexrc::commands::script::ScriptArgs;
-use pexrc::commands::{build, extract, info, inject, script};
+use pexrc::commands::build::Build;
+use pexrc::commands::extract::Extract;
+use pexrc::commands::inject::Inject;
+use pexrc::commands::script::Script;
+use pexrc::commands::info;
 
 /// Pex Runtime Control.
 #[derive(Parser)]
@@ -32,7 +32,7 @@ enum Commands {
         jobs: Jobs,
 
         #[command(flatten)]
-        build_args: BuildArgs,
+        build: Build,
     },
     /// Extract PEX dependencies as wheels.
     Extract {
@@ -40,7 +40,7 @@ enum Commands {
         jobs: Jobs,
 
         #[command(flatten)]
-        extract_args: ExtractArgs,
+        extract: Extract,
     },
     /// Inject traditional PEXes with native runtimes.
     Inject {
@@ -48,12 +48,12 @@ enum Commands {
         jobs: Jobs,
 
         #[command(flatten)]
-        inject_args: InjectArgs,
+        inject: Inject,
     },
     /// Provide information about the supported target runtimes.
     Info,
     /// Create a Windows-style Python venv console script executable.
-    Script(ScriptArgs),
+    Script(Script),
 }
 
 #[derive(Args)]
@@ -80,19 +80,19 @@ fn main() -> anyhow::Result<()> {
     cli.color.write_global();
 
     match cli.command {
-        Commands::Build { jobs, build_args } => {
+        Commands::Build { jobs, build } => {
             jobs.configure()?;
-            build::create_pex(build_args)
+            build.execute()
         }
-        Commands::Extract { jobs, extract_args } => {
+        Commands::Extract { jobs, extract } => {
             jobs.configure()?;
-            extract::to_dir(extract_args)
+            extract.execute()
         }
-        Commands::Inject { jobs, inject_args } => {
+        Commands::Inject { jobs, inject } => {
             jobs.configure()?;
-            inject::inject_all(inject_args)
+            inject.execute()
         }
         Commands::Info => info::display(),
-        Commands::Script(script_args) => script::create(script_args),
+        Commands::Script(script) => script.execute(),
     }
 }

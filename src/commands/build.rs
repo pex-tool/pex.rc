@@ -4,12 +4,14 @@
 use clap::Args;
 
 #[derive(Args)]
-pub struct BuildArgs {
+pub struct Build {
     /// Requirements to include in the PEX.
     #[arg(value_name = "REQUIREMENT")]
     requirements: Vec<String>,
 }
 
-pub fn create_pex(_build_args: BuildArgs) -> anyhow::Result<()> {
-    todo!("Creating a PEX from sources and requirements is coming soon.")
+impl Build {
+    pub fn execute(self) -> anyhow::Result<()> {
+        todo!("Creating a PEX from sources and requirements is coming soon.")
+    }
 }
