@@ -3,6 +3,10 @@ name = "pexrc"
 requires-python = ">=2.7"
 dynamic = ["version"]
 
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12"]
+build-backend = "uv_build"
+
 [tool.uv]
 package = false
 
@@ -13,6 +17,7 @@ dev = [
     "dev-cmd[old-pythons]; python_version >= '3.8'",
     "mypy",
     "pex",
+    "platformdirs",
     "psutil",
     "pytest",
     "pytest-xdist",
@@ -22,8 +27,12 @@ dev = [
 ]
 
 [[tool.mypy.overrides]]
-module = "_pytest.*"
+module = ["_pytest.*"]
 follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+module = ["platformdirs"]
+follow_untyped_imports = true
 
 [tool.ruff]
 line-length = 100

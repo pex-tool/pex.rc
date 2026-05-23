@@ -900,6 +900,7 @@ pub fn populate<'a>(
         provenance,
     )?;
     if matches!(scope, InstallScope::All | InstallScope::Srcs) {
+        write_pex_extra_sys_path_support_files(venv)?;
         write_main(
             venv,
             shebang_interpreter,
@@ -1062,6 +1063,69 @@ impl<'a> Display for PythonListTupleStrStr<'a> {
     }
 }
 
+fn write_pex_extra_sys_path_support_files(venv: &Virtualenv) -> anyhow::Result<()> {
+    // See: https://peps.python.org/pep-0829/
+    let pex_extra_sys_path_py = venv.site_packages_path("PEX_EXTRA_SYS_PATH.py");
+    let mut pex_extra_sys_path_py_fp = File::create_new(&pex_extra_sys_path_py)?;
+    write!(
+        pex_extra_sys_path_py_fp,
+        r#"\
+import os
+import sys
+
+
+def _extend_sys_path(path_env_var):
+    path = os.environ.get(path_env_var)
+    if path:
+        entries = path.split(os.pathsep)
+        sys.path.extend(entries)
+        return entries
+    return []
+
+
+def extend_sys_path(legacy=False):
+    entries = _extend_sys_path("PEX_EXTRA_SYS_PATH")
+    entries.extend(_extend_sys_path("__PEX_EXTRA_SYS_PATH__"))
+    debug = os.environ.pop("__PEX_EXTRA_SYS_PATH_DEBUG__", "")
+    if debug:
+        import json
+        with open(debug, "w") as fp:
+            json.dump({{"entries": entries, "legacy": legacy}}, fp)
+"#
+    )?;
+
+    let python_version = {
+        let version = venv.interpreter.raw().version;
+        (version.major, version.minor)
+    };
+
+    // Starting with Python 3.15 .start files trump import lines in .path files.
+    // See: https://peps.python.org/pep-0829/#abstract
+    if python_version >= (3, 15) {
+        let pex_extra_sys_path_start = venv.site_packages_path("PEX_EXTRA_SYS_PATH.start");
+        let mut pex_extra_sys_path_start_fp = File::create_new(&pex_extra_sys_path_start)?;
+        writeln!(
+            pex_extra_sys_path_start_fp,
+            "PEX_EXTRA_SYS_PATH:extend_sys_path"
+        )?;
+    }
+
+    // After ~Python 3.20 .pth import lines will start to raise warnings; so we no longer emit a
+    // .pth compatibility bridge. See: https://peps.python.org/pep-0829/#abstract
+    if python_version < (3, 20) {
+        let pex_extra_sys_path_pth = venv.site_packages_path("PEX_EXTRA_SYS_PATH.pth");
+        let mut pex_extra_sys_path_pth_fp = File::create_new(&pex_extra_sys_path_pth)?;
+        // # N.B.: .pth import lines must be single lines:
+        // https://docs.python.org/3/library/site.html
+        writeln!(
+            pex_extra_sys_path_pth_fp,
+            "import PEX_EXTRA_SYS_PATH; PEX_EXTRA_SYS_PATH.extend_sys_path(legacy=True)",
+        )?;
+    }
+
+    Ok(())
+}
+
 fn write_main(
     venv: &Virtualenv,
     shebang_interpreter: &Path,
@@ -1070,22 +1134,6 @@ fn write_main(
     scripts: &mut Scripts,
     bin_path_override: Option<BinPath>,
 ) -> anyhow::Result<()> {
-    let pex_extra_sys_path_pth = venv.site_packages_path("PEX_EXTRA_SYS_PATH.pth");
-    let mut pex_extra_sys_path_pth_fp = File::create_new(&pex_extra_sys_path_pth)?;
-    for env_var in ["PEX_EXTRA_SYS_PATH", "__PEX_EXTRA_SYS_PATH__"].into_iter() {
-        // # N.B.: .pth import lines must be single lines:
-        // https://docs.python.org/3/library/site.html
-        writeln!(
-            pex_extra_sys_path_pth_fp,
-            "import os, sys; \
-            sys.path.extend(\
-            entry \
-            for entry in os.environ.get('{env_var}', '').split(os.pathsep) \
-            if entry\
-            )",
-        )?;
-    }
-
     let main_py = venv.prefix().join("__main__.py");
     let mut main_py_fp = File::create_new(&main_py)?;
     write_shebang_bytes(&mut main_py_fp, shebang_interpreter, shebang_arg)?;

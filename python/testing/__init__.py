@@ -7,6 +7,8 @@ import os
 import platform
 import subprocess
 
+import platformdirs
+
 IS_CI = os.environ.get("CI", "false") == "true"
 
 IS_LINUX = platform.system().lower() == "linux"
@@ -41,3 +43,8 @@ def session_dir():
 def session_pexrc_root():
     # type: () -> str
     return os.environ["_PEXRC_TEST_SESSION_PEXRC_ROOT"]
+
+
+def testing_cache_root():
+    # type: () -> str
+    return platformdirs.user_cache_dir("pexrc-dev", opinion=False)
