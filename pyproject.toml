@@ -1,7 +1,7 @@
 [project]
 name = "pexrc"
-version = "0.1.0"
 requires-python = ">=2.7"
+dynamic = ["version"]
 
 [tool.uv]
 package = false

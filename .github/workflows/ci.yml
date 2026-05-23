@@ -129,7 +129,7 @@ jobs:
             export UV_PYTHON="cpython-$(cat .python-version)-windows-aarch64"
           fi
           cargo --color always test --all
-          PEXRC_PROFILE=release uv run dev-cmd --color always test -- -vvs
+          uv run dev-cmd --color always test -- --release -vvs
 
   final-status:
     name: Gather Final Status
