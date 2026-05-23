@@ -25,6 +25,9 @@ pub enum Script {
     IdentifyInterpreter,
     VendoredVirtualenv,
     VenvPex,
+    VenvPexExtraSysPathPth,
+    VenvPexExtraSysPathPy,
+    VenvPexExtraSysPathStart,
     VenvPexRepl,
 }
 
@@ -34,6 +37,9 @@ impl Script {
             Script::IdentifyInterpreter => "interpreter.py",
             Script::VendoredVirtualenv => "virtualenv.py",
             Script::VenvPex => "venv-pex.py",
+            Script::VenvPexExtraSysPathPth => "PEX_EXTRA_SYS_PATH.pth",
+            Script::VenvPexExtraSysPathPy => "PEX_EXTRA_SYS_PATH.py",
+            Script::VenvPexExtraSysPathStart => "PEX_EXTRA_SYS_PATH.start",
             Script::VenvPexRepl => "venv-pex-repl.py",
         }
     }
@@ -68,6 +74,9 @@ impl Scripts {
                 Script::IdentifyInterpreter => include_str!("interpreter.py"),
                 Script::VendoredVirtualenv => include_str!(env!("VIRTUALENV_PY")),
                 Script::VenvPex => include_str!("venv-pex.py"),
+                Script::VenvPexExtraSysPathPth => include_str!("PEX_EXTRA_SYS_PATH.pth"),
+                Script::VenvPexExtraSysPathPy => include_str!("PEX_EXTRA_SYS_PATH.py"),
+                Script::VenvPexExtraSysPathStart => include_str!("PEX_EXTRA_SYS_PATH.start"),
                 Script::VenvPexRepl => include_str!("venv-pex-repl.py"),
             })),
             Scripts::Loose(base_dir) => {
@@ -212,4 +221,7 @@ macro_rules! generate_script_type {
 generate_script_type!(IdentifyInterpreter);
 generate_script_type!(VendoredVirtualenv);
 generate_script_type!(VenvPex);
+generate_script_type!(VenvPexExtraSysPathPth);
+generate_script_type!(VenvPexExtraSysPathPy);
+generate_script_type!(VenvPexExtraSysPathStart);
 generate_script_type!(VenvPexRepl);
