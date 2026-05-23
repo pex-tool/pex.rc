@@ -3,7 +3,6 @@
 
 #![deny(clippy::all)]
 
-use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::exit;
 use std::{env, io};
@@ -14,12 +13,7 @@ use python_proxy::read_proxy;
 fn proxy_path() -> io::Result<PathBuf> {
     env::args()
         .next()
-        .ok_or_else(|| {
-            io::Error::new(
-                ErrorKind::NotFound,
-                "No argv0 was present; python-proxy cannot run.",
-            )
-        })
+        .ok_or_else(|| io::Error::other("No argv0 was present; python-proxy cannot run."))
         .map(PathBuf::from)
 }
 

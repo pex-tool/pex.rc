@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io;
-use std::io::{ErrorKind, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail};
@@ -58,16 +58,13 @@ impl<'a, D: Digest, R: Read> Read for DigestReader<'a, D, R> {
         self.amount_read +=
             u64::try_from(amount_read).expect("The pointer size will not be greater than 64 bits.");
         if self.amount_read > self.expected_size {
-            return Err(io::Error::new(
-                ErrorKind::FileTooLarge,
-                format!(
-                    "Read {total_read} bytes from {source} but it was expected to be \
+            return Err(io::Error::other(format!(
+                "Read {total_read} bytes from {source} but it was expected to be \
                     {expected_size} bytes.",
-                    total_read = self.amount_read,
-                    source = self.source,
-                    expected_size = self.expected_size
-                ),
-            ));
+                total_read = self.amount_read,
+                source = self.source,
+                expected_size = self.expected_size
+            )));
         }
         self.digest.update(&buffer[0..amount_read]);
         Ok(amount_read)
