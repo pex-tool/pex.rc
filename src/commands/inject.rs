@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow, bail};
 use boot::{inject_boot, sh_boot_shebang, write_boot};
 use cache::{DigestingReader, Fingerprint, default_digest};
+use clap::{ArgAction, Args};
 use enumset::EnumSet;
 use fs_err as fs;
 use fs_err::File;
@@ -27,17 +28,78 @@ use tempfile::NamedTempFile;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::embeds::Binary;
+use crate::compression_method::CompressionArgs;
+use crate::embeds::{Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
+use crate::source;
 
-pub fn inject_all(
-    pexes: Vec<PathBuf>,
-    options: &WheelOptions,
-    clibs: &[&Binary],
-    proxies: &[&Binary],
-    preferred_python: Option<&Path>,
-) -> anyhow::Result<()> {
+#[derive(Args)]
+pub struct InjectArgs {
+    #[command(flatten)]
+    compression_args: CompressionArgs,
+
+    #[arg(long = "target")]
+    #[arg(action=ArgAction::Append)]
+    targets: Vec<crate::simplified_target::SimplifiedTarget>,
+
+    #[arg(short = 'p', long)]
+    preferred_python: Option<PathBuf>,
+
+    /// The PEXes to inject with a native runtime. Can be paths or URLs.
+    #[arg(value_name = "PEX", required = true)]
+    pexes: Vec<String>,
+}
+
+pub fn inject_all(inject_args: InjectArgs) -> anyhow::Result<()> {
+    let (clibs, proxies) = if !inject_args.targets.is_empty() {
+        (
+            inject_args
+                .targets
+                .iter()
+                .map(|target| {
+                    CLIB_BY_TARGET
+                        .get(target)
+                        .expect("The allowed --target values are all keys in CLIB_BY_TARGET.")
+                })
+                .collect::<Vec<_>>(),
+            inject_args
+                .targets
+                .iter()
+                .map(|target| {
+                    PROXY_BY_TARGET
+                        .get(target)
+                        .expect("The allowed --target values are all keys in PROXY_BY_TARGET.")
+                })
+                .chain(
+                    inject_args
+                        .targets
+                        .iter()
+                        .filter_map(|target| PROXYW_BY_TARGET.get(target)),
+                )
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        (
+            CLIB_BY_TARGET.values().collect::<Vec<_>>(),
+            PROXY_BY_TARGET
+                .values()
+                .chain(PROXYW_BY_TARGET.values())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let pexes = inject_args
+        .pexes
+        .into_iter()
+        .map(|source| source::to_path(source, None))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let options = inject_args.compression_args.into_wheel_options(None);
     for pex in pexes {
-        inject(&pex, options, clibs, proxies, preferred_python)?
+        inject(
+            &pex,
+            &options,
+            clibs.as_slice(),
+            proxies.as_slice(),
+            inject_args.preferred_python.as_deref(),
+        )?
     }
     Ok(())
 }

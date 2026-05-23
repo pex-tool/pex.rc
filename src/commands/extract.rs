@@ -3,14 +3,36 @@
 
 use std::cmp;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::PathBuf;
 
 use cache::Fingerprint;
+use clap::Args;
 use owo_colors::OwoColorize;
-use pex::{Pex, WheelOptions};
+use pex::Pex;
 
-pub fn to_dir(dest_dir: &Path, pex: Pex, options: &WheelOptions) -> anyhow::Result<()> {
-    let wheels = pex::repackage_wheels(&pex, options, dest_dir)?;
+use crate::compression_method::CompressionArgs;
+use crate::source;
+
+#[derive(Args)]
+pub struct ExtractArgs {
+    #[command(flatten)]
+    compression_args: CompressionArgs,
+
+    /// The directory to extract the wheels to.
+    #[arg(short = 'd', long)]
+    dest_dir: PathBuf,
+
+    /// The PEX to extract dependency wheels from. Can be a path or URL.
+    #[arg(value_name = "PEX")]
+    pex: String,
+}
+
+pub fn to_dir(extract_args: ExtractArgs) -> anyhow::Result<()> {
+    let pex = source::to_path(extract_args.pex, Some(&extract_args.dest_dir))?;
+    let pex = Pex::load(&pex)?;
+    let options = extract_args.compression_args.into_wheel_options(None);
+
+    let wheels = pex::repackage_wheels(&pex, &options, &extract_args.dest_dir)?;
     let count = wheels.len();
 
     let mut wheel_info = Vec::with_capacity(count);

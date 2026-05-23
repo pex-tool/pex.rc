@@ -4,5 +4,7 @@
 #![deny(clippy::all)]
 
 pub mod commands;
+pub mod compression_method;
 pub mod embeds;
+pub mod simplified_target;
 pub mod source;

@@ -225,6 +225,7 @@ anstream = { workspace = true }
 anyhow = { workspace = true }
 boot = { path = "crates/boot" }
 cache = { path = "crates/cache" }
+chrono = { workspace = true }
 clap = { workspace = true }
 clap-verbosity-flag = { workspace = true }
 cli = { path = "crates/cli" }

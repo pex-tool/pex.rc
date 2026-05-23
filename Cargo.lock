@@ -2048,6 +2048,7 @@ dependencies = [
  "bstr",
  "build-system",
  "cache",
+ "chrono",
  "clap",
  "clap-verbosity-flag",
  "cli",
