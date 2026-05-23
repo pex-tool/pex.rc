@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.13.1
+
+This release eliminates an erroneous application starting cursor that would persist for several
+seconds when a gui was launched via python-proxyw on Windows.
+
 ## 0.13.0
 
 This release brings support for `gui-scripts` and `pythonw.exe` on Windows.

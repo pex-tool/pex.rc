@@ -7,7 +7,7 @@ import os.path
 import subprocess
 
 import pytest
-from testing import IS_MAC, IS_WINDOWS
+from testing import IS_WINDOWS
 from testing.compare import compare
 
 TYPE_CHECKING = False

@@ -23,5 +23,8 @@ platform = { path = "../platform" }
 target = { path = "../target" }
 zip = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging"] }
+
 [features]
 windows = []
