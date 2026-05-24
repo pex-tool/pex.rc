@@ -4,14 +4,42 @@
 from __future__ import absolute_import
 
 import os
+import platform
 import subprocess
 
-from testing import testing_cache_root
+from testing import IS_MAC, IS_WINDOWS, testing_cache_root
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     # Ruff doesn't understand Python 2 and thus the type comment usages.
     from typing import Text, Tuple  # noqa: F401
+
+
+def get_os():
+    # type: () -> str
+
+    if IS_WINDOWS:
+        return "windows"
+    elif IS_MAC:
+        return "macos"
+    else:
+        return "linux"
+
+
+def get_arch():
+    # type: () -> str
+
+    if IS_WINDOWS:
+        arch = os.environ.get("PROCESSOR_ARCHITECTURE", platform.machine()).lower()
+    else:
+        arch = platform.machine().lower()
+
+    if arch in ("aarch64", "arm64"):
+        return "aarch64"
+    elif arch in ("x86_64", "amd64"):
+        return "x86_64"
+    else:
+        return arch
 
 
 def ensure_python(
@@ -20,7 +48,11 @@ def ensure_python(
 ):
     # type: (...) -> Text
 
-    version_spec = ".".join(map(str, version))
+    # N.B.: We force arch to get arm64 PBS builds for Windows arm64 machines.
+    # See: https://github.com/astral-sh/uv/issues/12906
+    version_spec = "cpython-{major}.{minor}-{os}-{arch}".format(
+        major=version[0], minor=version[1], os=get_os(), arch=get_arch()
+    )
     env = dict(os.environ, UV_PYTHON_INSTALL_DIR=os.path.join(testing_cache_root(), "interpreters"))
     try:
         return (
