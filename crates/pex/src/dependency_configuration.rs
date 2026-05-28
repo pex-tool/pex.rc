@@ -8,9 +8,9 @@ use std::sync::LazyLock;
 
 use anyhow::{anyhow, bail};
 use indexmap::IndexSet;
-use interpreter::Interpreter;
 use pep440_rs::Version;
 use pep508_rs::{ExtraName, PackageName, Requirement, VersionOrUrl};
+use python_platform::PythonPlatform;
 use regex::{Regex, RegexBuilder};
 use url::Url;
 use version_ranges::Ranges;
@@ -104,11 +104,11 @@ impl DependencyConfiguration {
     pub(crate) fn overridden(
         &self,
         requirement: &Requirement<Url>,
-        interpreter: &Interpreter,
+        target: &impl PythonPlatform,
         extras: &[ExtraName],
     ) -> anyhow::Result<Option<Requirement<Url>>> {
         if let Some(overrides) = self.overridden.get(&requirement.name) {
-            let marker_env = &interpreter.raw().marker_env;
+            let marker_env = target.marker_env();
             let mut applicable_overrides = Vec::with_capacity(overrides.len());
             for requirement in overrides {
                 if requirement.marker.evaluate(marker_env, extras) {
@@ -126,10 +126,10 @@ impl DependencyConfiguration {
                     }
                 }
                 bail!(
-                    "Invalid override configuration for {interpreter}.\n\
+                    "Invalid override configuration for {target}.\n\
                     More than one applicable override was found for {requirement}:\n\
                     {overrides}",
-                    interpreter = interpreter.raw().path.display(),
+                    target = target.description(),
                     overrides = ApplicableOverrides(applicable_overrides)
                 )
             }

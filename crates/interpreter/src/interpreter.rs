@@ -14,7 +14,9 @@ use cache::{CacheDir, HashOptions, atomic_file, hash_file};
 use fs_err as fs;
 use logging_timer::time;
 use ouroboros::self_referencing;
+use pep440_rs::Version;
 use pep508_rs::MarkerEnvironment;
+use python_platform::{NonEmptyVec, PlatformDetails, PythonPlatform};
 use scripts::{IdentifyInterpreter, Scripts};
 use serde::{Deserialize, Serialize};
 
@@ -64,23 +66,29 @@ impl Display for PyPyVersion {
         ))
     }
 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+pub struct CPythonAbiInfo {
+    pub free_threaded: Option<bool>,
+    pub debug: bool,
+    pub pymalloc: Option<bool>,
+    pub ucs4: Option<bool>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct RawInterpreter<'a> {
     #[serde(borrow)]
     pub path: Cow<'a, Path>,
     #[serde(borrow)]
-    pub realpath: Cow<'a, Path>,
-    #[serde(borrow)]
     pub prefix: Cow<'a, Path>,
+    #[serde(borrow)]
     pub base_prefix: Option<Cow<'a, Path>>,
     #[serde(borrow)]
     pub version: PythonVersion<'a>,
     pub pypy_version: Option<PyPyVersion>,
-    pub marker_env: MarkerEnvironment,
-    pub supported_tags: Vec<&'a str>,
-    pub has_ensurepip: bool,
-    pub free_threaded: Option<bool>,
+    pub cpython_abi_info: Option<CPythonAbiInfo>,
     pub paths: BTreeMap<String, PathBuf>,
+    pub has_ensurepip: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -89,6 +97,8 @@ static LINUX_INFO: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None
 #[self_referencing]
 pub struct Interpreter {
     data: Vec<u8>,
+    realpath: PathBuf,
+    platform_details: PlatformDetails,
     #[borrows(data)]
     #[covariant]
     interpreter: RawInterpreter<'this>,
@@ -113,9 +123,15 @@ impl Hash for Interpreter {
 
 impl Clone for Interpreter {
     fn clone(&self) -> Self {
-        Self::new(self.borrow_data().clone(), |data| {
-            serde_json::from_slice(data).expect("We've already parsed out data successfully once.")
-        })
+        Self::new(
+            self.borrow_data().clone(),
+            self.borrow_realpath().clone(),
+            self.borrow_platform_details().clone(),
+            |data| {
+                serde_json::from_slice(data)
+                    .expect("We've already parsed out data successfully once.")
+            },
+        )
     }
 }
 
@@ -142,7 +158,7 @@ impl Interpreter {
                 debug!("Using cached Linux info.");
                 json
             } else {
-                let info = crate::linux::LinuxInfo::parse(python_exe.as_ref())?;
+                let info = python_platform::LinuxInfo::parse(python_exe.as_ref())?;
                 let json = serde_json::to_string(&info)?;
                 debug!(
                     "Caching Linux info derived from {path}.",
@@ -172,16 +188,22 @@ impl Interpreter {
     pub fn load_uncached(
         python_exe: impl AsRef<Path>,
         identification_script: &IdentifyInterpreter,
+        platform_details: PlatformDetails,
     ) -> anyhow::Result<Self> {
         let json_bytes = Self::identify(python_exe.as_ref(), identification_script)?;
-        Self::try_new(json_bytes, |data| {
-            serde_json::from_slice(data).map_err(|err| {
-                anyhow!(
-                    "Failed to identify Python interpreter {exe}: {err}",
-                    exe = python_exe.as_ref().display()
-                )
-            })
-        })
+        Self::try_new(
+            json_bytes,
+            python_exe.as_ref().canonicalize()?,
+            platform_details,
+            |data| {
+                serde_json::from_slice(data).map_err(|err| {
+                    anyhow!(
+                        "Failed to identify Python interpreter {exe}: {err}",
+                        exe = python_exe.as_ref().display()
+                    )
+                })
+            },
+        )
     }
 
     #[cfg(unix)]
@@ -201,17 +223,13 @@ impl Interpreter {
 
     pub fn prefix_rel_paths(&self) -> Vec<Cow<'_, Path>> {
         let interpreter = self.raw();
-        Self::candidate_rel_paths(&interpreter.version, interpreter.pypy_version.as_ref())
+        Self::candidate_rel_paths(&interpreter.version, interpreter.pypy_version.is_some())
     }
 
     #[cfg(unix)]
-    fn candidate_rel_paths<'a>(
-        version: &PythonVersion,
-        pypy_version: Option<&PyPyVersion>,
-    ) -> Vec<Cow<'a, Path>> {
-        let mut candidates: Vec<Cow<'_, Path>> =
-            Vec::with_capacity(if pypy_version.is_some() { 6 } else { 3 });
-        if pypy_version.is_some() {
+    fn candidate_rel_paths<'a>(version: &PythonVersion, is_pypy: bool) -> Vec<Cow<'a, Path>> {
+        let mut candidates: Vec<Cow<'_, Path>> = Vec::with_capacity(if is_pypy { 6 } else { 3 });
+        if is_pypy {
             candidates.push(Cow::Owned(PathBuf::from(format!(
                 "bin/pypy{major}.{minor}",
                 major = version.major,
@@ -237,22 +255,19 @@ impl Interpreter {
     }
 
     #[cfg(windows)]
-    fn candidate_rel_paths<'a>(
-        version: &PythonVersion,
-        pypy_version: Option<&PyPyVersion>,
-    ) -> Vec<Cow<'a, Path>> {
-        if let Some(pypy_version) = pypy_version {
+    fn candidate_rel_paths<'a>(version: &PythonVersion, is_pypy: bool) -> Vec<Cow<'a, Path>> {
+        if is_pypy {
             vec![
                 Cow::Borrowed(Path::new("pypy.exe")),
                 Cow::Borrowed(Path::new("python.exe")),
                 Cow::Owned(PathBuf::from(format!(
                     "Scripts\\pypy{major}.{minor}.exe",
-                    major = pypy_version.0,
-                    minor = pypy_version.1
+                    major = version.major,
+                    minor = version.minor
                 ))),
                 Cow::Owned(PathBuf::from(format!(
                     "Scripts\\pypy{major}.exe",
-                    major = pypy_version.0
+                    major = version.major
                 ))),
                 Cow::Borrowed(Path::new("Scripts\\pypy.exe")),
                 Cow::Owned(PathBuf::from(format!(
@@ -294,11 +309,11 @@ impl Interpreter {
             _ => false,
         };
         let identification_script = IdentifyInterpreter::read(scripts)?;
-        let candidate_rel_paths = Self::candidate_rel_paths(&version, pypy_version.as_ref());
+        let candidate_rel_paths = Self::candidate_rel_paths(&version, pypy_version.is_some());
         let mut re_cache_candidates: Vec<Self> = Vec::with_capacity(candidate_rel_paths.len());
         for rel_path in candidate_rel_paths {
             let candidate_path = prefix.as_ref().join(rel_path);
-            if let Ok(interpreter) = Self::load(candidate_path, &identification_script) {
+            if let Ok(interpreter) = Self::load(&candidate_path, &identification_script) {
                 if interpreter.raw().version != version {
                     if re_cache_version_mismatch
                         && (
@@ -341,49 +356,64 @@ impl Interpreter {
 
     #[time("debug", "Interpreter.{}")]
     pub fn load(
-        python_exe: impl AsRef<Path>,
+        python_exe: &Path,
         identification_script: &IdentifyInterpreter,
     ) -> anyhow::Result<Self> {
-        let interpreter_info = Self::interpreter_info(python_exe.as_ref())?;
-        Self::load_internal(interpreter_info, python_exe, identification_script)
+        let interpreter_info = Self::interpreter_info(python_exe)?;
+        let platform_details = PlatformDetails::spawn(python_exe)?;
+        Self::load_internal(
+            &interpreter_info,
+            python_exe,
+            identification_script,
+            platform_details,
+        )
     }
 
     fn load_internal(
-        interpreter_info: impl AsRef<Path>,
-        python_exe: impl AsRef<Path>,
+        interpreter_info: &Path,
+        python_exe: &Path,
         identification_script: &IdentifyInterpreter,
+        platform_details: impl FnOnce() -> anyhow::Result<PlatformDetails>,
     ) -> anyhow::Result<Self> {
-        let file = atomic_file(interpreter_info.as_ref(), |file| {
-            let json_bytes = Self::identify(python_exe.as_ref(), identification_script)?;
+        let file = atomic_file(interpreter_info, |file| {
+            let json_bytes = Self::identify(python_exe, identification_script)?;
             BufWriter::new(file).write_all(&json_bytes)?;
             Ok(())
         })?;
         let size = file.metadata()?.len();
         let mut data = Vec::with_capacity(usize::try_from(size)?);
         BufReader::new(file).read_to_end(&mut data)?;
-        Self::try_new(data, |data| {
-            serde_json::from_slice(data).map_err(|err| {
-                anyhow!(
-                    "Failed to identify Python interpreter {exe}: {err}",
-                    exe = python_exe.as_ref().display()
-                )
-            })
-        })
+        Self::try_new(
+            data,
+            python_exe.canonicalize()?,
+            platform_details()?,
+            |data| {
+                serde_json::from_slice(data).map_err(|err| {
+                    anyhow!(
+                        "Failed to identify Python interpreter {exe}: {err}",
+                        exe = python_exe.display()
+                    )
+                })
+            },
+        )
     }
 
     fn reload(self, identification_script: &IdentifyInterpreter) -> anyhow::Result<Self> {
-        let interpreter_info = Self::interpreter_info(self.raw().path.as_ref())?;
+        let python_exe = self.raw().path.as_ref();
+        let interpreter_info = Self::interpreter_info(python_exe)?;
         fs::remove_file(&interpreter_info)?;
+        let platform_details = PlatformDetails::spawn(python_exe)?;
         Self::load_internal(
             &interpreter_info,
-            self.raw().path.as_ref(),
+            python_exe,
             identification_script,
+            platform_details,
         )
     }
 
     #[time("debug", "Interpreter.{}")]
     pub fn store(&self) -> anyhow::Result<()> {
-        let hash = hash_file(&self.raw().path, &Self::INTERPRETER_HASH_CONFIG)?;
+        let hash = hash_file(self.raw().path.as_ref(), &Self::INTERPRETER_HASH_CONFIG)?;
         let interpreter_info = CacheDir::Interpreter.path()?.join(hash.base64_digest());
         atomic_file(&interpreter_info, |file| {
             serde_json::to_writer(BufWriter::new(file), self.raw())?;
@@ -436,15 +466,57 @@ impl Interpreter {
     pub fn with_raw_mut<R>(&mut self, func: impl FnOnce(&mut RawInterpreter) -> R) -> R {
         self.with_interpreter_mut(func)
     }
+
+    pub fn realpath(&self) -> &Path {
+        self.borrow_realpath()
+    }
+
+    pub fn set_realpath(&mut self, value: &Path) {
+        self.with_realpath_mut(|realpath| {
+            realpath.clear();
+            realpath.push(value)
+        })
+    }
+
+    pub fn platform_details(&self) -> &PlatformDetails {
+        self.borrow_platform_details()
+    }
+}
+
+impl PythonPlatform for Interpreter {
+    fn description(&self) -> impl Display {
+        format!(
+            "interpreter at {python_exe}",
+            python_exe = self.raw().path.as_ref().display()
+        )
+    }
+
+    fn marker_env(&self) -> &MarkerEnvironment {
+        self.borrow_platform_details().marker_env()
+    }
+
+    fn supported_tags(&self) -> &NonEmptyVec<String> {
+        self.borrow_platform_details().supported_tags()
+    }
+
+    fn version(&self) -> Cow<'_, Version> {
+        let version = self.raw().version;
+        Cow::Owned(Version::new([
+            u64::from(version.major),
+            u64::from(version.minor),
+            u64::from(version.micro),
+        ]))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
     use anyhow::Context;
+    use pretty_assertions::assert_eq;
+    use python_platform::{PlatformDetails, PythonPlatform};
     use rstest::rstest;
     use scripts::{IdentifyInterpreter, Scripts};
     use testing::{
@@ -464,7 +536,14 @@ mod tests {
     ) {
         assert!(
             Command::new(&venv_python_exe)
-                .args(["-m", "pip", "install", "packaging"])
+                .args([
+                    "-m",
+                    "pip",
+                    "install",
+                    // N.B.: This is an un-released fix for linux / manylinux tag ordering.
+                    // TODO: Revert to just "packaging" (latest) once the ordering fix is released.
+                    "packaging @ git+https://github.com/pypa/packaging@68cdb4d400823b401c1a40969964"
+                ])
                 .spawn()
                 .unwrap()
                 .wait()
@@ -492,16 +571,27 @@ mod tests {
         let expected_tags: Vec<String> =
             serde_json::from_str(String::from_utf8(output.stdout).unwrap().as_str()).unwrap();
 
-        let interpreter =
-            Interpreter::load_uncached(&venv_python_exe, &interpreter_identification_script)
-                .with_context(|| {
-                    format!(
-                        "Failed to load interpreter info for {python}",
-                        python = venv_python_exe.display()
-                    )
-                })
-                .unwrap();
-        assert_eq!(expected_tags, interpreter.raw().supported_tags);
+        let platform_details = PlatformDetails::python(&venv_python_exe).unwrap();
+        let interpreter = Interpreter::load_uncached(
+            &venv_python_exe,
+            &interpreter_identification_script,
+            platform_details,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to load interpreter info for {python}",
+                python = venv_python_exe.display()
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            expected_tags,
+            interpreter
+                .supported_tags()
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        );
     }
 
     #[rstest]
@@ -526,6 +616,7 @@ mod tests {
                 .unwrap()
                 .raw()
                 .path
+                .as_ref()
         )
     }
 }

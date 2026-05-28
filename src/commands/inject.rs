@@ -33,12 +33,12 @@ use crate::embeds::{Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
 use crate::source;
 
 #[derive(Args)]
+#[group(skip)]
 pub struct Inject {
     #[command(flatten)]
     compression_args: CompressionArgs,
 
-    #[arg(long = "target")]
-    #[arg(action=ArgAction::Append)]
+    #[arg(long = "target", action = ArgAction::Append)]
     targets: Vec<crate::simplified_target::SimplifiedTarget>,
 
     #[arg(short = 'p', long)]

@@ -1085,7 +1085,7 @@ fn write_pex_extra_sys_path_support_files(
         (version.major, version.minor)
     };
 
-    // Starting with Python 3.15 .start files trump import lines in .path files.
+    // Starting with Python 3.15 .start files trump import lines in .pth files.
     // See: https://peps.python.org/pep-0829/#abstract
     if python_version >= (3, 15) {
         let mut pex_extra_sys_path_start_fp =

@@ -21,6 +21,7 @@ use log::{Level, debug, warn};
 use logging_timer::{time, timer};
 use pep440_rs::{Version, VersionSpecifiers};
 use pep508_rs::{ExtraName, PackageName, Requirement, VersionOrUrl};
+use python_platform::PythonPlatform;
 use rayon::prelude::*;
 use scripts::{IdentifyInterpreter, Scripts};
 use strum_macros::{AsRefStr, EnumString};
@@ -252,13 +253,12 @@ impl<'a> Pex<'a> {
     #[time("debug", "Pex.{}")]
     fn resolve_wheels(
         &'a self,
-        interpreter: &Interpreter,
+        target: &impl PythonPlatform,
         dependency_configuration: &DependencyConfiguration,
         collect_extra_metadata: Option<CollectWheelMetadata<'a>>,
     ) -> anyhow::Result<IndexMap<&'a str, ResolvedWheel<'a>>> {
-        let supported_tags: HashMap<Tag, usize> = interpreter
-            .raw()
-            .supported_tags
+        let supported_tags: HashMap<Tag, usize> = target
+            .supported_tags()
             .iter()
             .enumerate()
             .map(|(idx, tag)| Tag::parse(tag).map(|tag| (tag, idx)))
@@ -284,7 +284,7 @@ impl<'a> Pex<'a> {
             })
             .collect::<Vec<_>>();
 
-        let ranked_wheels = self.load_wheel_metadata(interpreter, ranked_wheel_files)?;
+        let ranked_wheels = self.load_wheel_metadata(target, ranked_wheel_files)?;
 
         struct WheelInfo<'b> {
             file_name: &'b str,
@@ -342,7 +342,7 @@ impl<'a> Pex<'a> {
                 Err(err) => Some(Err(err)),
             })
             .collect::<Result<_, _>>()?;
-        let marker_env = &interpreter.raw().marker_env;
+        let marker_env = target.marker_env();
         let no_wheels: Vec<WheelInfo> = vec![];
         while let Some((requirement, extras_index)) = to_resolve.pop_front() {
             let requirement_key = RequirementKey::of(&requirement);
@@ -404,10 +404,10 @@ impl<'a> Pex<'a> {
                     };
                     anyhow!(
                         "The PEX at {path} has requirement {requirement} that cannot be satisfied \
-                        for the interpreter at {python_exe}.\n\
+                        for {target}.\n\
                         {reason}",
                         path = self.path.display(),
-                        python_exe = interpreter.raw().path.display(),
+                        target = target.description(),
                         reason = reason,
                     )
                 })?;
@@ -473,7 +473,7 @@ impl<'a> Pex<'a> {
                     }
                     to_resolve.push_back((
                         dependency_configuration
-                            .overridden(req, interpreter, &indexed_extras[extras_index])?
+                            .overridden(req, target, &indexed_extras[extras_index])?
                             .unwrap_or_else(|| req.clone()),
                         extras_index,
                     ))
@@ -533,7 +533,7 @@ impl<'a> Pex<'a> {
                         wheels: selected_wheels,
                     }),
                     Err(err) => Err(ResolveError {
-                        python_exe: interpreter.raw().path.as_ref().to_owned(),
+                        python_exe: interpreter.raw().path.to_path_buf(),
                         err,
                     }),
                 }
@@ -583,7 +583,7 @@ impl<'a> Pex<'a> {
                         additional_wheels,
                     });
                 }
-                Err(err) => errors.push((interpreter.raw().path.as_ref().to_owned(), err)),
+                Err(err) => errors.push((interpreter.raw().path.to_path_buf(), err)),
             }
         }
 
@@ -679,19 +679,15 @@ impl<'a> Pex<'a> {
 
     fn load_wheel_metadata(
         &'a self,
-        interpreter: &Interpreter,
+        target: &impl PythonPlatform,
         wheel_files: Vec<RankedWheelFile<'a>>,
     ) -> anyhow::Result<Vec<RankedWheel<'a>>> {
-        let python_version = Version::new([
-            u64::from(interpreter.raw().version.major),
-            u64::from(interpreter.raw().version.minor),
-            u64::from(interpreter.raw().version.micro),
-        ]);
+        let python_version = target.version();
         match self.layout {
             // N.B.: When deps_are_wheel_files for a `--layout loose` PEX, our layout detection
             // detects as `--layout packed`, which properly handles the .whl zips.
             Layout::Loose => read_wheel_metadata(
-                python_version,
+                python_version.as_ref(),
                 wheel_files,
                 &mut LoosePexMetadataReader(self.path),
             ),
@@ -699,12 +695,12 @@ impl<'a> Pex<'a> {
             // zips and normal .whl zips have the same for code and metadata; so no differentiation
             // in behavior is needed.
             Layout::Packed => read_wheel_metadata(
-                python_version,
+                python_version.as_ref(),
                 wheel_files,
                 &mut PackedPexMetadataReader(self.path),
             ),
             Layout::ZipApp => read_wheel_metadata(
-                python_version,
+                python_version.as_ref(),
                 wheel_files,
                 &mut ZipAppPexMetadataReader::new(self.path, self.info.raw().deps_are_wheel_files)?,
             ),
@@ -828,7 +824,7 @@ impl<'a> MetadataReader for PackedPexMetadataReader<'a> {
 }
 
 fn read_wheel_metadata<'a>(
-    python_version: Version,
+    python_version: &Version,
     ranked_wheel_files: Vec<RankedWheelFile<'a>>,
     metadata_reader: &mut impl MetadataReader,
 ) -> anyhow::Result<Vec<RankedWheel<'a>>> {
@@ -838,7 +834,7 @@ fn read_wheel_metadata<'a>(
         let metadata =
             WheelMetadata::parse(ranked_wheel_file.wheel_file, metadata_dirs, metadata_reader)?;
         if let Some(requires_python) = &metadata.requires_python
-            && !requires_python.contains(&python_version)
+            && !requires_python.contains(python_version)
         {
             continue;
         }

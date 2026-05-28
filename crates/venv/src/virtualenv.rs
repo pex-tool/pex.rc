@@ -12,6 +12,7 @@ use fs_err::File;
 use interpreter::Interpreter;
 use logging_timer::time;
 use platform::symlink_or_link_or_copy;
+use python_platform::PythonPlatform;
 use scripts::{IdentifyInterpreter, Scripts, VendoredVirtualenv};
 use target_lexicon::{HOST, OperatingSystem};
 
@@ -89,7 +90,7 @@ impl<'a> Virtualenv<'a> {
         let pyvenv_cfg = PyVenvCfg::read(path.as_ref())?;
         let identification_script = IdentifyInterpreter::read(scripts)?;
         let interpreter = Interpreter::load(
-            path.as_ref().join(pyvenv_cfg.executable_rel_path),
+            &path.as_ref().join(pyvenv_cfg.executable_rel_path),
             &identification_script,
         )?;
         Self::enclosing(interpreter)
@@ -100,23 +101,24 @@ impl<'a> Virtualenv<'a> {
         interpreter: &Interpreter,
     ) -> anyhow::Result<Interpreter> {
         let executable_relpath = executable_rel_path(interpreter);
+        let path = venv_dir.join(executable_relpath.as_ref());
+
         let mut venv_interpreter = interpreter.clone();
+        if HOST.operating_system == OperatingSystem::Windows {
+            venv_interpreter.set_realpath(&path);
+        }
         venv_interpreter.with_raw_mut(|venv_interpreter| {
             if venv_interpreter.base_prefix.is_none() {
                 venv_interpreter.base_prefix = Some(venv_interpreter.prefix.clone());
             }
             venv_interpreter.prefix = Cow::Owned(venv_dir.to_path_buf());
-            venv_interpreter.path = Cow::Owned(venv_dir.join(executable_relpath.as_ref()));
-            if HOST.operating_system == OperatingSystem::Windows {
-                venv_interpreter.realpath = venv_interpreter.path.clone();
-            }
+            venv_interpreter.path = Cow::Owned(path);
             for path in venv_interpreter.paths.values_mut() {
                 if let Ok(prefix_rel_path) = path.strip_prefix(&interpreter.raw().prefix) {
                     *path = venv_interpreter.prefix.join(prefix_rel_path);
                 }
             }
         });
-
         Ok(venv_interpreter)
     }
 
@@ -187,7 +189,7 @@ impl<'a> Virtualenv<'a> {
         for rel_path in self.interpreter.prefix_rel_paths() {
             let dest = self.interpreter.raw().prefix.join(rel_path.as_ref());
             if !dest.exists() {
-                symlink_or_link_or_copy(&self.interpreter.raw().path, dest, true)?;
+                symlink_or_link_or_copy(self.interpreter.raw().path.as_ref(), dest, true)?;
             }
         }
         Ok(())
@@ -336,10 +338,10 @@ fn create_pep_405_venv<'a>(
     // See: https://peps.python.org/pep-0405/
     let base_interpreter = interpreter.resolve_base_interpreter(scripts)?;
     let raw_base_interpreter = base_interpreter.raw();
-    let home = raw_base_interpreter.realpath.parent().ok_or_else(|| {
+    let home = base_interpreter.realpath().parent().ok_or_else(|| {
         anyhow!(
             "Failed to calculate the home dir of venv base python {path}",
-            path = raw_base_interpreter.realpath.display()
+            path = base_interpreter.realpath().display()
         )
     })?;
     let executable_rel_path = executable_rel_path(&base_interpreter);
@@ -349,7 +351,7 @@ fn create_pep_405_venv<'a>(
         include_system_site_packages,
         version: Some(Cow::Owned(raw_base_interpreter.version.to_string())),
         prompt: prompt.map(Cow::Borrowed),
-        executable: Some(Cow::Borrowed(&raw_base_interpreter.realpath)),
+        executable: Some(Cow::Borrowed(base_interpreter.realpath())),
         executable_rel_path: Cow::Borrowed(executable_rel_path),
     };
     pyvenv_cfg.write(path)?;
@@ -358,11 +360,11 @@ fn create_pep_405_venv<'a>(
     if let Some(parent) = venv_python.parent() {
         fs::create_dir_all(parent)?;
     }
-    linker.link(&venv_python, Some(&raw_base_interpreter.realpath), false)?;
+    linker.link(&venv_python, Some(base_interpreter.realpath()), false)?;
     #[cfg(windows)]
     linker.link(
         &venv_python.with_file_name("pythonw.exe"),
-        Some(&raw_base_interpreter.realpath.with_file_name("pythonw.exe")),
+        Some(&base_interpreter.realpath().with_file_name("pythonw.exe")),
         true,
     )?;
     let site_packages_relpath = site_packages_relpath(&base_interpreter);
@@ -410,17 +412,17 @@ fn create_virtualenv_venv<'a>(
             "Failed to create a venv at {workdir} using {python_implementation} {python_version} \
             interpreter {python_exe}:\n{stderr}",
             workdir = path.display(),
-            python_implementation = raw_interpreter.marker_env.platform_python_implementation(),
-            python_version = raw_interpreter.marker_env.python_full_version(),
-            python_exe = raw_interpreter.path.display(),
+            python_implementation = interpreter.marker_env().platform_python_implementation(),
+            python_version = interpreter.marker_env().python_full_version(),
+            python_exe = raw_interpreter.path.as_ref().display(),
             stderr = String::from_utf8_lossy(&output.stderr)
         )
     }
 
-    let home = raw_interpreter.realpath.parent().ok_or_else(|| {
+    let home = interpreter.realpath().parent().ok_or_else(|| {
         anyhow!(
             "Failed to calculate the home dir of venv base python {path}",
-            path = raw_interpreter.realpath.display()
+            path = interpreter.realpath().display()
         )
     })?;
     let executable_rel_path = executable_rel_path(interpreter);
@@ -432,7 +434,7 @@ fn create_virtualenv_venv<'a>(
         include_system_site_packages,
         version: Some(Cow::Owned(raw_interpreter.version.to_string())),
         prompt: prompt.map(Cow::Borrowed),
-        executable: Some(Cow::Borrowed(&raw_interpreter.realpath)),
+        executable: Some(Cow::Borrowed(interpreter.realpath())),
         executable_rel_path: Cow::Borrowed(executable_rel_path),
     };
     pyvenv_cfg.write(path.as_ref())?;
@@ -452,7 +454,7 @@ fn ensure_pip(base_interpreter: &interpreter::RawInterpreter, python: &Path) -> 
         bail!(
             "Cannot install Pip since the selected interpreter does not have the `ensurepip` \
             module: {interpreter}",
-            interpreter = base_interpreter.path.display()
+            interpreter = base_interpreter.path.as_ref().display()
         )
     }
 
@@ -471,9 +473,9 @@ fn site_packages_relpath<'a>(interpreter: &Interpreter) -> Cow<'a, Path> {
         // TODO: XXX: Confirm venv layouts for PyPy under Windows.
         return Cow::Borrowed(Path::new("Lib\\site-packages"));
     }
-    let interpreter = interpreter.raw();
-    if interpreter.marker_env.platform_python_implementation() == "PyPy"
-        && (interpreter.version.major, interpreter.version.minor) < (3, 8)
+    let raw_interpreter = interpreter.raw();
+    if interpreter.marker_env().platform_python_implementation() == "PyPy"
+        && (raw_interpreter.version.major, raw_interpreter.version.minor) < (3, 8)
     {
         Cow::Borrowed(Path::new("site-packages"))
     } else {
@@ -482,13 +484,13 @@ fn site_packages_relpath<'a>(interpreter: &Interpreter) -> Cow<'a, Path> {
                 .join(format!(
                     "{implementation}{major}.{minor}",
                     implementation =
-                        if interpreter.marker_env.platform_python_implementation() == "PyPy" {
+                        if interpreter.marker_env().platform_python_implementation() == "PyPy" {
                             "pypy"
                         } else {
                             "python"
                         },
-                    major = interpreter.version.major,
-                    minor = interpreter.version.minor
+                    major = raw_interpreter.version.major,
+                    minor = raw_interpreter.version.minor
                 ))
                 .join("site-packages"),
         )

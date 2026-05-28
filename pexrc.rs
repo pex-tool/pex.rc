@@ -4,11 +4,7 @@
 #![deny(clippy::all)]
 
 use clap::{Args, Parser, Subcommand};
-use pexrc::commands::build::Build;
-use pexrc::commands::extract::Extract;
-use pexrc::commands::info;
-use pexrc::commands::inject::Inject;
-use pexrc::commands::script::Script;
+use pexrc::commands::{Build, Extract, Inject, Platform, Script, info};
 
 /// Pex Runtime Control.
 #[derive(Parser)]
@@ -52,6 +48,9 @@ enum Commands {
     },
     /// Provide information about the supported target runtimes.
     Info,
+    /// Work with supported platforms.
+    #[command(subcommand)]
+    Platform(Platform),
     /// Create a Windows-style Python venv console script executable.
     Script(Script),
 }
@@ -59,7 +58,7 @@ enum Commands {
 #[derive(Args)]
 struct Jobs {
     /// The maximum number of parallel jobs to use.
-    #[arg(short = 'j', long)]
+    #[arg(short = 'j', long, help_heading = "Parallelism")]
     jobs: Option<usize>,
 }
 
@@ -93,6 +92,10 @@ fn main() -> anyhow::Result<()> {
             inject.execute()
         }
         Commands::Info => info::display(),
+        Commands::Platform(platform) => match platform {
+            Platform::List(list) => list.execute(),
+            Platform::Python(python) => python.execute(),
+        },
         Commands::Script(script) => script.execute(),
     }
 }

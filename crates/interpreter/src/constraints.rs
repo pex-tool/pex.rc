@@ -30,24 +30,18 @@ enum InterpreterImplementation {
 
 impl InterpreterImplementation {
     fn of(interpreter: &Interpreter) -> Option<Self> {
-        match interpreter
-            .raw()
-            .marker_env
-            .platform_python_implementation()
-        {
-            "PyPy" => Some(Self::PyPy),
-            "CPython" => {
-                if let Some(freethreaded) = interpreter.raw().free_threaded {
-                    if freethreaded {
-                        Some(Self::CPythonFreeThreaded)
-                    } else {
-                        Some(Self::CPythonGil)
-                    }
+        if let Some(abi_info) = interpreter.raw().cpython_abi_info {
+            if let Some(free_threaded) = abi_info.free_threaded {
+                if free_threaded {
+                    Some(Self::CPythonFreeThreaded)
                 } else {
-                    Some(Self::CPython)
+                    Some(Self::CPythonGil)
                 }
+            } else {
+                Some(Self::CPython)
             }
-            _ => None,
+        } else {
+            Some(Self::PyPy)
         }
     }
 

@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 
 use anyhow::bail;
 use enumset::{EnumSet, EnumSetType, enum_set};
+use strum_macros::EnumIter;
 use target_lexicon::HOST;
 
 pub enum Target<'a> {
@@ -112,7 +113,7 @@ impl<'a> Target<'a> {
     }
 }
 
-#[derive(Debug, EnumSetType, Ord, PartialOrd, Hash)]
+#[derive(Debug, EnumIter, EnumSetType, Ord, PartialOrd, Hash)]
 pub enum SimplifiedTarget {
     Arm64LinuxGnu,
     Arm64LinuxMusl,

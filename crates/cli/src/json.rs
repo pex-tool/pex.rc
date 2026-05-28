@@ -3,14 +3,28 @@
 
 use std::io::Write;
 
+use clap::Args;
 use serde::Serialize;
 use serde_json::ser::PrettyFormatter;
+
+#[derive(Args)]
+pub struct Json {
+    /// Pretty-print json output with the given indent.
+    #[arg(short = 'i', long)]
+    indent: Option<u8>,
+}
+
+impl Json {
+    pub fn serialize(&self, out: impl Write, value: &impl Serialize) -> anyhow::Result<()> {
+        serialize(out, value, self.indent)
+    }
+}
 
 // N.B.: This supports a crazy API without allocating. Perhaps just write our own PrettyFormatter
 // that accepts a number for indent space count instead of a byte slice.
 const INDENT_BUFFER: &[u8] = &[b' '; usize::from(u8::MAX)];
 
-pub(crate) fn serialize(
+fn serialize(
     mut out: impl Write,
     value: &impl Serialize,
     indent: Option<u8>,

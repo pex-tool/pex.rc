@@ -138,7 +138,7 @@ impl PexInfo {
     }
 
     #[inline]
-    pub fn raw<'a>(&'a self) -> &'a RawPexInfo<'a> {
+    pub fn raw(&self) -> &RawPexInfo<'_> {
         self.borrow_info()
     }
 

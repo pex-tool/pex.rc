@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.14.0
+
+This release adds `pexrc platform {info,python}` for displaying both local and foreign platform
+information. The machinery powering `pexrc python platform` was ported from Python to Rust, yielding
+a little more than 10% cold cache startup time improvement for injected PEXes.
+
 ## 0.13.2
 
 This release has injected PEXes using PEP-829 `.start` files to affect `PEX_EXTRA_SYS_PATH`

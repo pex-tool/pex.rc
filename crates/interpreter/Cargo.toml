@@ -18,6 +18,7 @@ log = { workspace = true }
 logging_timer = { workspace = true }
 ouroboros = { workspace = true }
 platform = { path = "../platform" }
+python-platform = { path = "../python-platform" }
 same-file = { workspace = true }
 scripts = { path = "../scripts" }
 serde = { workspace = true }
@@ -30,6 +31,7 @@ which = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 pep440_rs = { workspace = true }
+pretty_assertions = { workspace = true }
 rstest = { workspace = true }
 scripts = { path = "../scripts" }
 target-lexicon = { workspace = true }

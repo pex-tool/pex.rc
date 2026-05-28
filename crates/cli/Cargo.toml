@@ -7,4 +7,9 @@ edition = { workspace = true }
 publish = false
 
 [dependencies]
+anyhow = { workspace = true }
 clap = { workspace = true }
+fs-err = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clap::Args;
+use cli::{Json, Output};
 use pex::{Pex, PexPath};
 use serde_json::json;
 
-use crate::json;
-use crate::output::Output;
 use crate::resolve::resolve;
 
 #[derive(Args)]
@@ -18,13 +17,11 @@ pub(crate) struct InfoArgs {
     #[arg(short = 'v', long, default_value_t = false)]
     verbose: bool,
 
-    /// Pretty-print verbose output json with the given indent.
-    #[arg(short = 'i', long)]
-    indent: Option<u8>,
+    #[command(flatten)]
+    json: Json,
 
-    /// A file to output the distribution information to; STDOUT by default.
-    #[arg(short = 'o', long)]
-    output: Option<PathBuf>,
+    #[command(flatten)]
+    output: Output,
 }
 
 pub(crate) fn display(python: &Path, pex: Pex, args: InfoArgs) -> anyhow::Result<()> {
@@ -32,11 +29,11 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InfoArgs) -> anyhow::Result
     let additional_pexes = pex_path.load_pexes()?;
     let (_, wheels) = resolve(python, &pex, &additional_pexes)?;
 
-    let mut output = Output::new(args.output.as_deref())?;
+    let mut output = args.output.writer()?;
     for (project_name, wheel_info) in wheels {
         let location = pex.path.join(".deps").join(wheel_info.file_name);
         if args.verbose {
-            json::serialize(
+            args.json.serialize(
                 &mut output,
                 &json!({
                     "project_name": project_name,
@@ -45,7 +42,6 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InfoArgs) -> anyhow::Result
                     "requires_dists": wheel_info.requires_dists,
                     "location": location
                 }),
-                args.indent,
             )?;
         } else {
             writeln!(

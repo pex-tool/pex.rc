@@ -357,7 +357,7 @@ pub(crate) fn create(python: &Path, pex: Pex, args: VenvArgs) -> anyhow::Result<
     )));
     venv_pex::populate(
         &venv,
-        &venv.interpreter.raw().path,
+        venv.interpreter.raw().path.as_ref(),
         shebang_arg,
         &pex,
         resolve.wheels,
@@ -369,7 +369,7 @@ pub(crate) fn create(python: &Path, pex: Pex, args: VenvArgs) -> anyhow::Result<
     for (pex, wheels) in resolve.additional_wheels {
         venv_pex::populate_user_code_and_wheels(
             &venv,
-            &venv.interpreter.raw().path,
+            venv.interpreter.raw().path.as_ref(),
             shebang_arg,
             pex,
             wheels,
@@ -392,7 +392,7 @@ pub(crate) fn create(python: &Path, pex: Pex, args: VenvArgs) -> anyhow::Result<
     if args.compile {
         let exit_status = Command::new(venv.interpreter.raw().path.as_ref())
             .args(["-m", "compileall"])
-            .arg(args.venv_dir)
+            .arg(&args.venv_dir)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?

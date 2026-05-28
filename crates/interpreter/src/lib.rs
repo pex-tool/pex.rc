@@ -6,9 +6,6 @@
 mod constraints;
 mod interpreter;
 
-#[cfg(target_os = "linux")]
-mod linux;
-
 mod platform;
 mod search_path;
 mod tag;

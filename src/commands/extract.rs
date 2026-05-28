@@ -14,6 +14,7 @@ use crate::compression_method::CompressionArgs;
 use crate::source;
 
 #[derive(Args)]
+#[group(skip)]
 pub struct Extract {
     #[command(flatten)]
     compression_args: CompressionArgs,

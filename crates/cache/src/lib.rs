@@ -168,7 +168,7 @@ impl CacheDir {
 
     fn version(&self) -> &'static str {
         match self {
-            CacheDir::Interpreter => "0",
+            CacheDir::Interpreter => "1",
             CacheDir::PythonProxy => "0",
             CacheDir::Venv => "0",
         }

@@ -44,16 +44,12 @@ pub(crate) struct ExtractArgs {
     sources: bool,
 
     /// Use the current system time to generate timestamps for the extracted distributions.
-    #[arg(
-        long,
-        default_value_t = false,
-        long_help = "\
-Use the current system time to generate timestamps for the extracted distributions. Otherwise, Pex
-will use midnight on January 1, 1980. By using system time, the extracted distributions will not be
-reproducible, meaning that if you were to re-run extraction against the same PEX file then the
-newly extracted distributions would not be byte-for-byte identical distributions extracted in prior
-runs."
-    )]
+    ///
+    /// Otherwise, Pex will use midnight on January 1, 1980. By using system time, the extracted
+    /// distributions will not be reproducible, meaning that if you were to re-run extraction
+    /// against the same PEX file then the newly extracted distributions would not be byte-for-byte
+    /// identical distributions extracted in prior runs.
+    #[arg(long, default_value_t = false, verbatim_doc_comment)]
     use_system_time: bool,
 
     /// Serve the `--find-links` repo.
@@ -68,10 +64,11 @@ runs."
     #[arg(long)]
     pid_file: Option<PathBuf>,
 
-    /// The maximum time to wait in (fractional) seconds for the server to start accepting
-    /// connections. If this timeout is reached, the command will exit with an error instead of
+    /// The maximum time to wait in (fractional) seconds for the server to start up.
+    ///
+    /// If this timeout is reached, the command will exit with an error instead of
     /// waiting indefinitely. The wait is indefinite by default.
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long, default_value_t = 0.0, verbatim_doc_comment)]
     timeout: f32,
 }
 

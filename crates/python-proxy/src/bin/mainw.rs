@@ -29,8 +29,8 @@ use windows::core::{PCSTR, s};
 
 #[macro_export]
 macro_rules! error {
-    ($($tt:tt)*) => {{
-        $crate::error_and_exit(format_args!($($tt)*));
+    ($($fmt_args:tt)*) => {{
+        $crate::error_and_exit(format_args!($($fmt_args)*));
     }}
 }
 

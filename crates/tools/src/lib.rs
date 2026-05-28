@@ -2,12 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![deny(clippy::all)]
-#![feature(const_convert)]
-#![feature(const_trait_impl)]
 
 mod commands;
-mod json;
-mod output;
 mod resolve;
 
 use std::path::{Path, PathBuf};

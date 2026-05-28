@@ -3,11 +3,12 @@
 
 use std::fmt::Display;
 use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::bail;
 use clap::builder::PossibleValue;
 use clap::{Args, ValueEnum};
+use cli::Output;
 use dot_generator::{attr, edge, id, node, node_id};
 use dot_structures::{
     Attribute,
@@ -21,13 +22,12 @@ use dot_structures::{
     Stmt,
     Vertex,
 };
-use fs_err::File;
 use graphviz_rust::printer::{DotPrinter, PrinterContext};
 use graphviz_rust::{cmd, exec};
 use interpreter::InterpreterConstraint;
 use pex::{Pex, PexPath};
+use python_platform::PythonPlatform;
 
-use crate::output::Output;
 use crate::resolve::resolve;
 
 #[derive(Clone)]
@@ -173,9 +173,8 @@ impl ValueEnum for Format {
 
 #[derive(Args)]
 pub(crate) struct GraphArgs {
-    /// A file to output the dot graph to; STDOUT by default.
-    #[arg(short = 'o', long)]
-    output: Option<PathBuf>,
+    #[command(flatten)]
+    output: Output,
 
     /// Attempt to render the graph.
     #[arg(short = 'r', long, default_value_t = false)]
@@ -231,9 +230,7 @@ pub(crate) fn create(python: &Path, pex: Pex, args: GraphArgs) -> anyhow::Result
         )));
         for requirement in &wheel_info.requires_dists {
             if !wheels.contains_key(&requirement.name)
-                && !requirement
-                    .marker
-                    .evaluate(&interpreter.raw().marker_env, &[])
+                && !requirement.marker.evaluate(interpreter.marker_env(), &[])
             {
                 let url = format!("https://pypi.org/project/{name}", name = requirement.name);
                 graph.add_stmt(Stmt::Node(node!(
@@ -281,24 +278,17 @@ pub(crate) fn create(python: &Path, pex: Pex, args: GraphArgs) -> anyhow::Result
             ),
         };
         if args.open {
-            let mut file = if let Some(path) = args.output {
-                File::create(path)?
-            } else {
-                let temp = tempfile::Builder::new()
-                    .prefix("pexrc-tools-graph.")
-                    .suffix(&format!(".deps.{fmt}"))
-                    .tempfile()?;
-                let (file, path) = temp.keep()?;
-                File::from_parts(file, path)
-            };
+            let mut file = args
+                .output
+                .file(Some("pexrc-tools-graph."), Some(&format!(".deps.{fmt}")))?;
             file.write_all(rendered.as_slice())?;
             open::that_detached(file.path())?;
         } else {
-            let mut output = Output::new(args.output.as_deref())?;
+            let mut output = args.output.writer()?;
             output.write_all(rendered.as_slice())?;
         }
     } else {
-        let mut output = Output::new(args.output.as_deref())?;
+        let mut output = args.output.writer()?;
         writeln!(&mut output, "{graph}", graph = graph.print(&mut ctx))?;
     }
     Ok(())

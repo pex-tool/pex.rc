@@ -1,34 +1,30 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ffi::OsStr;
-use std::io::BufRead;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
-
-use anyhow::{anyhow, bail};
-use elf::ElfStream;
-use elf::endian::{AnyEndian, EndianParse};
-use elf::file::{Class, FileHeader};
-use fs_err::File;
+use anyhow::anyhow;
 use serde::Serialize;
 
-#[derive(Debug, Serialize)]
-pub(crate) struct LibcVersion {
-    major: u8,
-    minor: u8,
-    patch: Option<u8>,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+pub struct LibcVersion {
+    pub major: u8,
+    pub minor: u8,
+    pub patch: Option<u8>,
 }
 
 impl LibcVersion {
-    fn parse(version: &str) -> anyhow::Result<Self> {
-        let mut components_iter = version.split('.');
+    pub fn new(major: u8, minor: u8) -> Self {
+        Self {
+            major,
+            minor,
+            patch: None,
+        }
+    }
+
+    pub fn parse(version: &str, sep: char) -> anyhow::Result<Self> {
+        let mut components_iter = version.split(sep);
         let mut parse_component = |subject| -> anyhow::Result<u8> {
             let component = components_iter.next().ok_or_else(|| {
-                anyhow!(
-                    "Invalid musl libc version {version}: failed to parse {subject} version number"
-                )
+                anyhow!("Invalid libc version {version}: failed to parse {subject} version number")
             })?;
             component.parse::<u8>().map_err(|err| {
                 anyhow!("Failed to parse {subject} version component of {version}: {err}")
@@ -46,46 +42,20 @@ impl LibcVersion {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Manylinux {
+pub struct Manylinux {
     glibc: Option<LibcVersion>,
     armhf: bool,
     i686: bool,
 }
 
 impl Manylinux {
-    fn from_header(
-        header: FileHeader<AnyEndian>,
-        glibc_version: Option<LibcVersion>,
-    ) -> anyhow::Result<Self> {
-        let _32_bit_little_endian =
-            matches!(header.class, Class::ELF32) && header.endianness.is_little();
-        let armhf = {
-            if !_32_bit_little_endian || header.e_machine != elf::abi::EM_ARM {
-                false
-            } else {
-                // The e_flags for 32-bit arm are documented here:
-                // https://github.com/ARM-software/abi-aa/blob/main/aaelf32/aaelf32.rst#52elf-header
-                const EF_ARM_ABIMASK: u32 = 0xFF000000;
-                const EF_ARM_ABI_VER5: u32 = 0x05000000;
-                const EF_ARM_ABI_FLOAT_HARD: u32 = 0x00000400;
-                if header.e_flags & EF_ARM_ABIMASK != EF_ARM_ABI_VER5 {
-                    false
-                } else {
-                    header.e_flags & EF_ARM_ABI_FLOAT_HARD == EF_ARM_ABI_FLOAT_HARD
-                }
-            }
-        };
-        let i686 = _32_bit_little_endian && header.e_machine == elf::abi::EM_386;
-        Ok(Manylinux {
-            glibc: glibc_version,
-            armhf,
-            i686,
-        })
+    pub fn into_libc_version(self) -> Option<LibcVersion> {
+        self.glibc
     }
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) enum LinuxInfo {
+pub enum LinuxInfo {
     #[serde(rename = "manylinux")]
     ManyLinux(Manylinux),
     #[serde(rename = "musllinux")]
@@ -93,7 +63,30 @@ pub(crate) enum LinuxInfo {
 }
 
 impl LinuxInfo {
-    pub(crate) fn parse(exe: impl AsRef<Path>) -> anyhow::Result<Self> {
+    #[cfg(target_os = "linux")]
+    pub fn parse(exe: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        linux_info::parse(exe)
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux_info {
+    use std::ffi::OsStr;
+    use std::io::BufRead;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::process::{Child, Command, Stdio};
+
+    use anyhow::bail;
+    use elf::ElfStream;
+    use elf::endian::{AnyEndian, EndianParse};
+    use elf::file::{Class, FileHeader};
+    use fs_err::File;
+
+    use crate::LinuxInfo;
+    use crate::linux::{LibcVersion, Manylinux};
+
+    pub(super) fn parse(exe: impl AsRef<Path>) -> anyhow::Result<LinuxInfo> {
         let exe_fp = File::open(exe.as_ref())?;
         let mut elf: ElfStream<AnyEndian, _> = ElfStream::open_stream(exe_fp)?;
         let segments = elf.segments().clone();
@@ -130,6 +123,7 @@ impl LinuxInfo {
                     {
                         return Ok(LinuxInfo::MuslLinux(LibcVersion::parse(
                             line["Version ".len()..].trim(),
+                            '.',
                         )?));
                     }
                 }
@@ -162,6 +156,7 @@ impl LinuxInfo {
                             {
                                 if let Ok(libc_version) = LibcVersion::parse(
                                     line[index + "release version ".len()..].trim(),
+                                    '.',
                                 ) {
                                     glibc_version = Some(libc_version);
                                 }
@@ -170,7 +165,7 @@ impl LinuxInfo {
                         }
                     }
                 }
-                return Ok(LinuxInfo::ManyLinux(Manylinux::from_header(
+                return Ok(LinuxInfo::ManyLinux(calculate_manylinux_info(
                     elf.ehdr,
                     glibc_version,
                 )?));
@@ -180,6 +175,36 @@ impl LinuxInfo {
             "Failed to gather information about the libc linked by {exe}",
             exe = exe.as_ref().display()
         );
+    }
+
+    fn calculate_manylinux_info(
+        header: FileHeader<AnyEndian>,
+        glibc_version: Option<LibcVersion>,
+    ) -> anyhow::Result<Manylinux> {
+        let _32_bit_little_endian =
+            matches!(header.class, Class::ELF32) && header.endianness.is_little();
+        let armhf = {
+            if !_32_bit_little_endian || header.e_machine != elf::abi::EM_ARM {
+                false
+            } else {
+                // The e_flags for 32-bit arm are documented here:
+                // https://github.com/ARM-software/abi-aa/blob/main/aaelf32/aaelf32.rst#52elf-header
+                const EF_ARM_ABIMASK: u32 = 0xFF000000;
+                const EF_ARM_ABI_VER5: u32 = 0x05000000;
+                const EF_ARM_ABI_FLOAT_HARD: u32 = 0x00000400;
+                if header.e_flags & EF_ARM_ABIMASK != EF_ARM_ABI_VER5 {
+                    false
+                } else {
+                    header.e_flags & EF_ARM_ABI_FLOAT_HARD == EF_ARM_ABI_FLOAT_HARD
+                }
+            }
+        };
+        let i686 = _32_bit_little_endian && header.e_machine == elf::abi::EM_386;
+        Ok(Manylinux {
+            glibc: glibc_version,
+            armhf,
+            i686,
+        })
     }
 }
 

@@ -23,6 +23,7 @@ pep440_rs = { workspace = true }
 pep508_rs = { workspace = true }
 platform = { path = "../platform" }
 python-pkginfo = { workspace = true }
+python-platform = { path = "../python-platform" }
 rayon = { workspace = true }
 regex = { workspace = true }
 rfc2047-decoder = { workspace = true }

@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.13.2"
+version = "0.14.0"
 edition = { workspace = true }
 publish = false
 
@@ -23,6 +23,7 @@ members = [
     "crates/pex",
     "crates/pexrs",
     "crates/platform",
+    "crates/python-platform",
     "crates/python-proxy",
     "crates/request",
     "crates/scripts",
@@ -127,7 +128,7 @@ panic = "abort"
 
 [profile.release-embed]
 inherits = "release"
-opt-level = "z"
+opt-level = "s"
 
 [lib]
 name = "pexrc"
@@ -151,7 +152,7 @@ clap-verbosity-flag = "3.0"
 colorchoice-clap = "1.0"
 const_format = { version = "0.2", features = ["rust_1_64"] }
 csv = "1.4"
-dtor = "0.12"
+dtor = "1.0"
 dashmap = "6.1"
 digest = "0.11"
 dirs = "6.0"
@@ -173,7 +174,6 @@ itertools = "0.14"
 log = "0.4"
 logging_timer = "1.1"
 mailparse = "0.16"
-nix = {  version = "0.31", features = ["fs"] }
 oneshot = {  version = "0.2", features = ["std"] }
 open = "5.3"
 ouroboros = "0.18"
@@ -181,12 +181,15 @@ owo-colors = "4.3"
 pathdiff = "0.2"
 pep440_rs = "0.7"
 pep508_rs = "0.9"
+plist = "1.9"
+pretty_assertions = "1.4"
 python-pkginfo = "0.6"
 rayon = "1.12"
 regex = "1.12"
 rfc2047-decoder = "1.1"
 rstest = "0.26"
 rust-ini = "0.21"
+rustix = { version = "1.1", features = ["fs", "system"]}
 same-file = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -244,6 +247,7 @@ owo-colors = { workspace = true }
 pex = { path = "crates/pex" }
 pexrs = { path = "crates/pexrs" }
 platform = { path = "crates/platform" }
+python-platform = { path = "crates/python-platform" }
 python-proxy = { path = "crates/python-proxy" }
 rayon = { workspace = true }
 request = { path = "crates/request" }

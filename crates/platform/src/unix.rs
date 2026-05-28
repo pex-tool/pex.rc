@@ -4,7 +4,6 @@
 use std::borrow::Cow;
 use std::fs::File;
 use std::io;
-use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -12,10 +11,8 @@ use std::os::unix::{self};
 use std::path::Path;
 use std::process::Command;
 
-use nix::errno::Errno;
-use nix::fcntl::{FcntlArg, FdFlag, fcntl};
-use nix::unistd;
-use nix::unistd::AccessFlags;
+use rustix::fs::{Access, OFlags, access, fcntl_getfl, fcntl_setfl};
+use rustix::io::Errno;
 
 use crate::Perms;
 
@@ -56,10 +53,10 @@ pub fn is_executable(path: impl AsRef<Path>) -> io::Result<bool> {
     {
         return Ok(false);
     }
-    match unistd::access(path.as_ref(), AccessFlags::X_OK) {
+    match access(path.as_ref(), Access::EXEC_OK) {
         Ok(()) => Ok(true),
         Err(err) => {
-            if err == Errno::EACCES {
+            if err == Errno::ACCESS {
                 Ok(false)
             } else {
                 // N.B.: There is not currently a canned conversion from nix errno's to ErrorKinds.
@@ -95,14 +92,9 @@ pub fn path_as_bytes(path: &Path) -> io::Result<&[u8]> {
 
 pub fn exec(command: &mut Command, files_to_keep_open: &[File]) -> io::Result<i32> {
     for file in files_to_keep_open {
-        let mut flags = FdFlag::from_bits_retain(fcntl(file, FcntlArg::F_GETFD)?);
-        flags.set(FdFlag::FD_CLOEXEC, false);
-        if fcntl(file, FcntlArg::F_SETFD(flags))? == -1 {
-            return Err(io::Error::other(format!(
-                "Failed to clear FD_CLOEXEC for {fd:?}",
-                fd = file.as_fd()
-            )));
-        }
+        let mut flags = fcntl_getfl(file)?;
+        flags |= OFlags::CLOEXEC;
+        fcntl_setfl(file, flags)?;
     }
     Err(command.exec())
 }

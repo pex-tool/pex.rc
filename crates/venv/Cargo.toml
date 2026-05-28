@@ -18,6 +18,7 @@ log = { workspace = true }
 logging_timer = { workspace = true }
 pex = { path = "../pex" }
 platform = { path = "../platform" }
+python-platform = { path = "../python-platform" }
 rayon = { workspace = true }
 rust-ini = { workspace = true }
 scripts = { path = "../scripts" }

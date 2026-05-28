@@ -16,5 +16,5 @@ publish = false
 is_executable = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true }
+rustix = { workspace = true }
 pathdiff = { workspace = true }
