@@ -540,9 +540,11 @@ mod tests {
                     "-m",
                     "pip",
                     "install",
-                    // N.B.: This is an un-released fix for linux / manylinux tag ordering.
-                    // TODO: Revert to just "packaging" (latest) once the ordering fix is released.
-                    "packaging @ git+https://github.com/pypa/packaging@68cdb4d400823b401c1a40969964"
+                    // N.B.: This commit includes two unreleased fixes:
+                    // + Fixed linux / manylinux tag ordering.
+                    // + Fixed fat32 -> fat3 for macOS abi tags.
+                    // TODO: Revert to just "packaging" (latest) once these fixes are released.
+                    "packaging @ git+https://github.com/pypa/packaging@45d15309ac4a2411196e800378f2"
                 ])
                 .spawn()
                 .unwrap()
