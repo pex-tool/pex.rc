@@ -20,11 +20,13 @@ pub struct Mac {
     pub(crate) release: MacRelease,
 }
 
+#[derive(Copy, Clone)]
 pub struct Windows {
     pub(crate) arm64: bool,
     pub(crate) release: Option<WindowsRelease>,
 }
 
+#[derive(Copy, Clone)]
 pub(crate) enum Platform {
     Linux(Linux),
     Mac(Mac),
@@ -56,5 +58,9 @@ impl Platform {
                 bail!("Not a supported chip architecture for Windows: {arch}")
             }
         })
+    }
+
+    pub(crate) fn current() -> anyhow::Result<Self> {
+        Self::from_parts(Os::current()?, Arch::current()?)
     }
 }

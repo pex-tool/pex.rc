@@ -253,7 +253,7 @@ impl<'a> Pex<'a> {
     #[time("debug", "Pex.{}")]
     fn resolve_wheels(
         &'a self,
-        target: &impl PythonPlatform,
+        target: &impl PythonPlatform<'a>,
         dependency_configuration: &DependencyConfiguration,
         collect_extra_metadata: Option<CollectWheelMetadata<'a>>,
     ) -> anyhow::Result<IndexMap<&'a str, ResolvedWheel<'a>>> {
@@ -533,7 +533,7 @@ impl<'a> Pex<'a> {
                         wheels: selected_wheels,
                     }),
                     Err(err) => Err(ResolveError {
-                        python_exe: interpreter.raw().path.to_path_buf(),
+                        python_exe: interpreter.details.path.to_path_buf(),
                         err,
                     }),
                 }
@@ -583,7 +583,7 @@ impl<'a> Pex<'a> {
                         additional_wheels,
                     });
                 }
-                Err(err) => errors.push((interpreter.raw().path.to_path_buf(), err)),
+                Err(err) => errors.push((interpreter.details.path.to_path_buf(), err)),
             }
         }
 
@@ -679,7 +679,7 @@ impl<'a> Pex<'a> {
 
     fn load_wheel_metadata(
         &'a self,
-        target: &impl PythonPlatform,
+        target: &impl PythonPlatform<'a>,
         wheel_files: Vec<RankedWheelFile<'a>>,
     ) -> anyhow::Result<Vec<RankedWheel<'a>>> {
         let python_version = target.version();

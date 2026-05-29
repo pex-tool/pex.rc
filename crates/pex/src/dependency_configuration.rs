@@ -101,10 +101,10 @@ impl DependencyConfiguration {
         }
     }
 
-    pub(crate) fn overridden(
+    pub(crate) fn overridden<'a>(
         &self,
         requirement: &Requirement<Url>,
-        target: &impl PythonPlatform,
+        target: &impl PythonPlatform<'a>,
         extras: &[ExtraName],
     ) -> anyhow::Result<Option<Requirement<Url>>> {
         if let Some(overrides) = self.overridden.get(&requirement.name) {

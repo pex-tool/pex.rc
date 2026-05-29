@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 use anyhow::bail;
 use target_lexicon::{
@@ -44,18 +45,6 @@ impl Arch {
         }
     }
 
-    pub(crate) fn parse(value: &str) -> anyhow::Result<Self> {
-        match value {
-            "aarch64" | "arm64" => Ok(Self::Arm64),
-            "armv7" => Ok(Self::Arm64),
-            "ppc64le" => Ok(Self::Arm64),
-            "riscv64" => Ok(Self::Arm64),
-            "s390x" => Ok(Self::Arm64),
-            "amd64" | "x86_64" | "x64" => Ok(Self::X64),
-            _ => bail!("Un-supported chip architecture: {value}"),
-        }
-    }
-
     pub(crate) fn as_str(&self) -> &'static str {
         self.as_linux_arch()
     }
@@ -68,6 +57,22 @@ impl Arch {
             Arch::Riscv64 => "riscv64",
             Arch::S390x => "s390x",
             Arch::X64 => "x86_64",
+        }
+    }
+}
+
+impl FromStr for Arch {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "aarch64" | "arm64" => Ok(Self::Arm64),
+            "armv7" => Ok(Self::Arm64),
+            "ppc64le" => Ok(Self::Arm64),
+            "riscv64" => Ok(Self::Arm64),
+            "s390x" => Ok(Self::Arm64),
+            "amd64" | "x86_64" | "x64" => Ok(Self::X64),
+            _ => bail!("Un-supported chip architecture: {s}"),
         }
     }
 }

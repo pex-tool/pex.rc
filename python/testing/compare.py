@@ -97,6 +97,9 @@ def _compare_results(
         assert traditional_result.stdout == injected_result.stdout
 
 
+ASSERT_FASTER = not IS_WINDOWS and os.environ.get("_PEXRC_TEST_DISABLE_ASSERT_FASTER", "0") != "1"
+
+
 def compare(
     pex,  # type: str
     python_args=(),  # type: Iterable[str]
@@ -136,7 +139,7 @@ def compare(
         # complication of virus scans that do slow things down much like the Mac case, leading to some
         # CI instability for no obvious gain.
         assert (
-            IS_WINDOWS
+            not ASSERT_FASTER
             or not assert_faster
             or (injected_result.elapsed < traditional_result.elapsed)
         ), (

@@ -17,7 +17,7 @@ pub use constraints::{
     SelectionStrategy,
     VersionSpec,
 };
-pub use interpreter::{Interpreter, RawInterpreter};
+pub use interpreter::{Interpreter, InterpreterDetails};
 pub use platform::Platform;
 pub use search_path::SearchPath;
 pub use tag::Tag;

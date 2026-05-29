@@ -3,24 +3,23 @@
 
 use std::fmt::{Display, Formatter};
 
-use python_platform::PythonPlatform;
+use python_platform::{PythonPlatform, PythonVersion};
 
-use crate::interpreter::PythonVersion;
 use crate::{Interpreter, Tag};
 
 pub struct Platform<'a> {
     implementation: &'a str,
-    version: &'a PythonVersion<'a>,
+    version: PythonVersion,
     abi: &'a str,
     platform: &'a str,
 }
 
 impl<'a> Platform<'a> {
     pub fn of(interpreter: &'a Interpreter) -> anyhow::Result<Self> {
-        let tag = Tag::parse(interpreter.primary_tag())?;
+        let tag = Tag::parse(interpreter.supported_tags().first())?;
         Ok(Self {
             implementation: &tag.python[0..2],
-            version: &interpreter.raw().version,
+            version: interpreter.details.version,
             abi: tag.abi,
             platform: tag.platform,
         })

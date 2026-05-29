@@ -485,12 +485,12 @@ fn serve(
     pid_file: Option<&Path>,
     timeout: f32,
 ) -> anyhow::Result<()> {
-    let module = if interpreter.raw().version.major == 3 {
+    let module = if interpreter.details.version.major == 3 {
         "http.server"
     } else {
         "SimpleHTTPServer"
     };
-    let mut child = Command::new(interpreter.raw().path.as_ref())
+    let mut child = Command::new(&interpreter.details.path)
         // N.B.: Running Python in unbuffered mode here is critical to being able to read stdout.
         .arg("-u")
         .args(["-m", module])

@@ -1,6 +1,8 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::str::FromStr;
+
 use anyhow::bail;
 
 #[derive(Copy, Clone)]
@@ -9,14 +11,16 @@ pub(crate) enum Implementation {
     PyPy,
 }
 
-impl Implementation {
-    pub(crate) fn parse(value: &str) -> anyhow::Result<Self> {
-        if value.eq_ignore_ascii_case("cpython") {
+impl FromStr for Implementation {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("cpython") {
             Ok(Self::CPython)
-        } else if value.eq_ignore_ascii_case("pypy") {
+        } else if s.eq_ignore_ascii_case("pypy") {
             Ok(Self::PyPy)
         } else {
-            bail!("Un-supported Python implementation: {value}")
+            bail!("Un-supported Python implementation: {s}")
         }
     }
 }

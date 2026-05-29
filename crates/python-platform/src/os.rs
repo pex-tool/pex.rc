@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
+use std::str::FromStr;
 
 use anyhow::bail;
 #[cfg(target_os = "linux")]
@@ -29,42 +30,6 @@ pub(crate) struct ReleaseInfo<'a> {
 }
 
 impl Os {
-    pub(crate) fn parse(value: &str) -> anyhow::Result<Self> {
-        match value {
-            "linux" => {
-                // We default to manylinux2014 support like out rust builds do.
-                Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 17))))
-            }
-            "macos" => {
-                // We default to 11.3 support like our rust builds do.
-                // This is macOS Big Sur from April 2021.
-                Ok(Self::Mac(MacRelease::new(11, 3)))
-            }
-            "windows" => Ok(Self::Windows(None)),
-            value if let Some(version) = value.strip_prefix("macos_") => {
-                Ok(Self::Mac(MacRelease::parse(version, '_')?))
-            }
-            // See: https://peps.python.org/pep-0600/
-            value if let Some(version) = value.strip_prefix("manylinux") => match version {
-                "1" => Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 5)))),
-                "2010" => Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 12)))),
-                "2014" => Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 17)))),
-                _ if let Some(glibc_version) = version.strip_prefix("_") => Ok(Self::Linux(
-                    Libc::Gnu(LibcVersion::parse(glibc_version, '_')?),
-                )),
-                _ => bail!("Invalid manylinux specification: {value}"),
-            },
-            // See: https://peps.python.org/pep-0656/
-            value if let Some(version) = value.strip_prefix("musllinux_") => {
-                Ok(Self::Linux(Libc::Musl(LibcVersion::parse(version, '_')?)))
-            }
-            value if let Some(release) = value.strip_prefix("windows_") => {
-                Ok(Self::Windows(Some(WindowsRelease::parse(release)?)))
-            }
-            value => bail!("Un-supported operating system: {value}"),
-        }
-    }
-
     #[cfg(target_os = "linux")]
     #[time("debug", "Os.{}")]
     pub fn current() -> anyhow::Result<Self> {
@@ -115,6 +80,46 @@ impl Os {
             Os::Linux(_) => "linux",
             Os::Mac(_) => "macos",
             Os::Windows(_) => "windows",
+        }
+    }
+}
+
+impl FromStr for Os {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "linux" => {
+                // We default to manylinux2014 support like out rust builds do.
+                Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 17))))
+            }
+            "macos" => {
+                // We default to 11.3 support like our rust builds do.
+                // This is macOS Big Sur from April 2021.
+                Ok(Self::Mac(MacRelease::new(11, 3)))
+            }
+            "windows" => Ok(Self::Windows(None)),
+            value if let Some(version) = value.strip_prefix("macos_") => {
+                Ok(Self::Mac(MacRelease::parse(version, '_')?))
+            }
+            // See: https://peps.python.org/pep-0600/
+            value if let Some(version) = value.strip_prefix("manylinux") => match version {
+                "1" => Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 5)))),
+                "2010" => Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 12)))),
+                "2014" => Ok(Self::Linux(Libc::Gnu(LibcVersion::new(2, 17)))),
+                _ if let Some(glibc_version) = version.strip_prefix("_") => Ok(Self::Linux(
+                    Libc::Gnu(LibcVersion::parse(glibc_version, '_')?),
+                )),
+                _ => bail!("Invalid manylinux specification: {value}"),
+            },
+            // See: https://peps.python.org/pep-0656/
+            value if let Some(version) = value.strip_prefix("musllinux_") => {
+                Ok(Self::Linux(Libc::Musl(LibcVersion::parse(version, '_')?)))
+            }
+            value if let Some(release) = value.strip_prefix("windows_") => {
+                Ok(Self::Windows(Some(release.parse()?)))
+            }
+            value => bail!("Un-supported operating system: {value}"),
         }
     }
 }

@@ -132,7 +132,7 @@ fn prepare_boot(
         #[cfg(unix)]
         env::var_os("_PEXRC_SH_BOOT_SEED_DIR").map(PathBuf::from),
     )?;
-    let mut command = Command::new(venv.interpreter.raw().path.as_ref());
+    let mut command = Command::new(&venv.interpreter.details.path);
     command
         .args(python_args)
         .arg(venv.prefix().as_os_str())
@@ -192,9 +192,9 @@ fn prepare_venv<'a>(
 
         let interpreter_relpath = venv
             .interpreter
-            .raw()
+            .details
             .path
-            .strip_prefix(&venv.interpreter.raw().prefix)?;
+            .strip_prefix(&venv.interpreter.details.prefix)?;
         let shebang_interpreter = venv_dir.join(interpreter_relpath);
         let shebang_arg = if (pex_info.venv && pex_info.venv_hermetic_scripts)
             || (!pex_info.venv
@@ -249,12 +249,11 @@ fn prepare_venv<'a>(
             // N.B.: This symlink is probed by the --sh-boot script to confirm the venv is still
             // linked to an existing base Python (no uninstalls or upgrades).
             platform::unix::symlink(
-                venv_interpreter
+                &venv_interpreter
                     .clone()
                     .resolve_base_interpreter(&mut pex.scripts()?)?
-                    .raw()
-                    .path
-                    .as_ref(),
+                    .details
+                    .path,
                 sh_boot_seed_dir.join(format!("base-{python}")),
                 false,
             )?;

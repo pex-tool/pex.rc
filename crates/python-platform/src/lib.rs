@@ -17,24 +17,31 @@ mod windows;
 
 use std::borrow::Cow;
 use std::fmt::Display;
-use std::io::{BufRead, BufReader, Cursor};
 use std::ops::Deref;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
-pub use linux::LinuxInfo;
 use logging_timer::time;
-pub use markers::{PlatformRelease, PlatformVersion};
 use pep508_rs::MarkerEnvironment;
 use pep508_rs::pep440_rs::Version;
 use serde::{Deserialize, Serialize};
 
 pub use crate::arch::Arch;
 use crate::implementation::Implementation;
+pub use crate::linux::LinuxInfo;
 use crate::mac::Release;
+pub use crate::markers::{PlatformRelease, PlatformVersion};
 pub use crate::os::{Libc, Os};
 use crate::platform::Platform;
+pub use crate::version::{
+    CPythonAbiInfo,
+    CPythonImplementation,
+    PyPyImplementation,
+    PyPyVersion,
+    PythonImplementation,
+    PythonVersion,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct NonEmptyVec<T>(Vec<T>);
@@ -46,6 +53,14 @@ impl<T> NonEmptyVec<T> {
         }
         Ok(Self(vec))
     }
+
+    pub fn first(&self) -> &T {
+        &self.0[0]
+    }
+
+    fn transformed<U: ?Sized>(&self, transform: impl Fn(&T) -> &U) -> NonEmptyVec<&U> {
+        NonEmptyVec(self.0.iter().map(transform).collect())
+    }
 }
 
 impl<T> Deref for NonEmptyVec<T> {
@@ -56,30 +71,27 @@ impl<T> Deref for NonEmptyVec<T> {
     }
 }
 
-pub trait PythonPlatform {
+pub trait PythonPlatform<'a> {
     fn description(&self) -> impl Display;
     fn marker_env(&self) -> &MarkerEnvironment;
-    fn supported_tags(&self) -> &NonEmptyVec<String>;
+    fn supported_tags(&self) -> NonEmptyVec<&'_ str>;
     fn version(&self) -> Cow<'_, Version> {
         Cow::Borrowed(&self.marker_env().python_full_version().version)
-    }
-    fn primary_tag(&self) -> &str {
-        self.supported_tags()[0].as_ref()
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub struct PlatformDetails {
+pub struct PlatformDetails<'a> {
     pub source: String,
     pub marker_env: MarkerEnvironment,
-    pub supported_tags: NonEmptyVec<String>,
+    pub supported_tags: NonEmptyVec<Cow<'a, str>>,
 }
 
-impl PlatformDetails {
+impl<'a> PlatformDetails<'a> {
     pub fn new(
         source: impl Display,
         marker_env: MarkerEnvironment,
-        supported_tags: Vec<String>,
+        supported_tags: Vec<Cow<'a, str>>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             source: source.to_string(),
@@ -88,48 +100,31 @@ impl PlatformDetails {
         })
     }
 
-    pub fn spawn(
-        python: &Path,
-    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<PlatformDetails>> {
-        let child = Command::new(python)
-            .arg("-V")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        Ok(move || {
-            let output = child.wait_with_output()?;
-            let version = parse_version(output.stdout).or_else(|_| parse_version(output.stderr))?;
-            parse(&version, None, None)
+    pub fn python(
+        python_exe: &Path,
+        python_version: PythonImplementation,
+    ) -> anyhow::Result<PlatformDetails<'a>> {
+        let platform = Platform::current()?;
+        let release_info = Os::current_release()?;
+        Ok(Self {
+            source: python_exe.display().to_string(),
+            marker_env: markers::calculate(
+                python_version,
+                platform,
+                Some(PlatformRelease(release_info.release)),
+                Some(PlatformVersion(release_info.version)),
+            )?,
+            supported_tags: NonEmptyVec::new(
+                tags::calculate(python_version, platform)
+                    .into_iter()
+                    .map(Cow::Owned)
+                    .collect(),
+            )?,
         })
     }
-
-    pub fn python(python: &Path) -> anyhow::Result<PlatformDetails> {
-        Self::spawn(python)?()
-    }
 }
 
-fn parse_version(data: Vec<u8>) -> anyhow::Result<String> {
-    let line = BufReader::new(Cursor::new(data))
-        .lines()
-        .next()
-        .ok_or_else(|| anyhow!("No Python version output found."))?;
-    let mut text = line?;
-    let start = text
-        .find(" ")
-        .ok_or_else(|| anyhow!("No Python version output found."))?;
-    text.drain(..start + 1);
-    let version = text
-        .split(" ")
-        .next()
-        .expect("Should split at least 1 element.");
-    if version.is_empty() {
-        bail!("No Python version output found.")
-    }
-    text.truncate(version.len());
-    Ok(text)
-}
-
-impl PythonPlatform for PlatformDetails {
+impl<'a> PythonPlatform<'a> for PlatformDetails<'a> {
     fn description(&self) -> impl Display {
         &self.source
     }
@@ -138,8 +133,8 @@ impl PythonPlatform for PlatformDetails {
         &self.marker_env
     }
 
-    fn supported_tags(&self) -> &NonEmptyVec<String> {
-        &self.supported_tags
+    fn supported_tags(&self) -> NonEmptyVec<&'_ str> {
+        self.supported_tags.transformed(|tag| tag.as_ref())
     }
 }
 
@@ -148,13 +143,13 @@ pub fn parse<'a>(
     spec: &'a str,
     platform_release: Option<PlatformRelease<'a>>,
     platform_version: Option<PlatformVersion<'a>>,
-) -> anyhow::Result<PlatformDetails> {
+) -> anyhow::Result<PlatformDetails<'a>> {
     let mut components = spec.split("-");
     let implementation_or_version = components
         .next()
         .expect("There is always at least one split component.");
     let python_version =
-        if let Ok(implementation) = Implementation::parse(implementation_or_version) {
+        if let Ok(implementation) = Implementation::from_str(implementation_or_version) {
             let version = components.next().ok_or_else(|| {
                 anyhow!(
                     "Expected a Python platform specification starting with \
@@ -169,9 +164,9 @@ pub fn parse<'a>(
 
     let (platform, platform_release, platform_version) = {
         let (os, arch, platform_release, platform_version) = if let Some(os) = components.next() {
-            let os = Os::parse(os)?;
+            let os = os.parse()?;
             let arch = if let Some(arch) = components.next() {
-                Arch::parse(arch)?
+                arch.parse()?
             } else {
                 match &os {
                     Os::Linux(_) => Arch::X64,
@@ -219,14 +214,13 @@ pub fn parse<'a>(
         )
     }
 
-    let marker_env = markers::calculate(
-        &python_version,
-        &platform,
-        platform_release,
-        platform_version,
-    )?;
+    let marker_env =
+        markers::calculate(python_version, platform, platform_release, platform_version)?;
 
-    let supported_tags = tags::calculate(&python_version, platform);
+    let supported_tags = tags::calculate(python_version, platform)
+        .into_iter()
+        .map(Cow::Owned)
+        .collect();
 
     PlatformDetails::new(
         format!("abbreviated platform {spec}"),

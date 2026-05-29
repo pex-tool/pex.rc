@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 use anyhow::bail;
 use strum::IntoEnumIterator;
@@ -60,10 +61,14 @@ impl Release {
             Release::Windows2000Server => "2000Server",
         }
     }
+}
 
-    pub fn parse(release: &str) -> anyhow::Result<Release> {
+impl FromStr for Release {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         for value in Self::iter() {
-            if release.eq_ignore_ascii_case(value.as_str()) {
+            if s.eq_ignore_ascii_case(value.as_str()) {
                 return Ok(value);
             }
         }
@@ -77,7 +82,7 @@ impl Release {
             }
         }
         bail!(
-            "Invalid Windows release: {release}\n\
+            "Invalid Windows release: {s}\n\
             The following releases are currently supported:\n\
             {Releases}"
         )

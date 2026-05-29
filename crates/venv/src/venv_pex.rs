@@ -361,13 +361,13 @@ fn calculate_spread_path(
                         .join("site")
                         .join(format!(
                             "python{major}.{minor}",
-                            major = venv.interpreter.raw().version.major,
-                            minor = venv.interpreter.raw().version.minor
+                            major = venv.interpreter.details.version.major,
+                            minor = venv.interpreter.details.version.minor
                         ))
                         .join(wheel_details.project_name)
                         .join(components.collect::<PathBuf>()),
                 ))
-            } else if let Some(spread_path) = venv.interpreter.raw().paths.get(key) {
+            } else if let Some(spread_path) = venv.interpreter.details.paths.get(key) {
                 Ok(Some(spread_path.join(components.collect::<PathBuf>())))
             } else {
                 bail!(
@@ -402,7 +402,7 @@ fn calculate_spread_path(
                         .chain(stash_rel_path.components())
                         .collect(),
                 ))
-            } else if let Some(spread_path) = venv.interpreter.raw().paths.get(key) {
+            } else if let Some(spread_path) = venv.interpreter.details.paths.get(key) {
                 Ok(Some(spread_path.components().chain(components).collect()))
             } else {
                 bail!(
@@ -1081,7 +1081,7 @@ fn write_pex_extra_sys_path_support_files(
         .write_all(VenvPexExtraSysPathPy::read(scripts)?.contents().as_bytes())?;
 
     let python_version = {
-        let version = venv.interpreter.raw().version;
+        let version = venv.interpreter.details.version;
         (version.major, version.minor)
     };
 

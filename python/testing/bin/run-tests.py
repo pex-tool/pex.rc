@@ -70,11 +70,18 @@ def run_tests():
         ),
         formatter_class=RawTextHelpFormatter,
     )
-    arg_parser.add_argument(
+    profile = arg_parser.add_mutually_exclusive_group()
+    profile.add_argument(
         "--release",
         default=None,
         action="store_true",
         help="Build pexrc for use in tests in release mode.",
+    )
+    profile.add_argument(
+        "--debug",
+        default=None,
+        action="store_true",
+        help="Build pexrc for use in tests in debug mode and enable Rust backtraces.",
     )
 
     run_test_args = []
@@ -101,6 +108,10 @@ def run_tests():
         _PEXRC_TEST_SESSION_PEXRC_ROOT=seed_pexrc_root(session_dir, pexrc),
         PYTHONPATH=PYTHONPATH,
     )
+    if options.debug:
+        env.update(RUST_BACKTRACE="1")
+    if options.debug or not options.release:
+        env.update(_PEXRC_TEST_DISABLE_ASSERT_FASTER="1")
     return subprocess.call(
         args=["pytest", "-n", "auto"] + pytest_args,
         cwd=os.path.abspath(os.path.join("python", "tests")),

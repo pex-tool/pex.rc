@@ -3,136 +3,112 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail};
-use cache::{CacheDir, HashOptions, atomic_file, hash_file};
+use cache::{CacheDir, HashOptions, atomic_dir, hash_file};
 use fs_err as fs;
+use fs_err::File;
 use logging_timer::time;
 use ouroboros::self_referencing;
 use pep440_rs::Version;
 use pep508_rs::MarkerEnvironment;
-use python_platform::{NonEmptyVec, PlatformDetails, PythonPlatform};
+use python_platform::{
+    CPythonAbiInfo,
+    CPythonImplementation,
+    NonEmptyVec,
+    PlatformDetails,
+    PyPyImplementation,
+    PyPyVersion,
+    PythonImplementation,
+    PythonPlatform,
+    PythonVersion,
+};
 use scripts::{IdentifyInterpreter, Scripts};
 use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub struct PythonVersion<'a> {
-    pub major: u8,
-    pub minor: u8,
-    pub micro: u8,
-    pub releaselevel: &'a str,
-    pub serial: u8,
-}
-
-impl<'a> Display for PythonVersion<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{major}.{minor}.{micro}",
-            major = self.major,
-            minor = self.minor,
-            micro = self.micro
-        ))?;
-
-        // N.B.: Using this for possible strings reference:
-        // https://peps.python.org/pep-0739/#implementation-version-releaselevel
-
-        if let Some(level_abbrev) = match self.releaselevel {
-            "alpha" => Some("a"),
-            "beta" => Some("b"),
-            "candidate" => Some("rc"),
-            _ => None,
-        } {
-            f.write_fmt(format_args!("{level_abbrev}{serial}", serial = self.serial))?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub struct PyPyVersion(u8, u8, u8);
-
-impl Display for PyPyVersion {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{major}.{minor}.{patch}",
-            major = self.0,
-            minor = self.1,
-            patch = self.2
-        ))
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub struct CPythonAbiInfo {
-    pub free_threaded: Option<bool>,
-    pub debug: bool,
-    pub pymalloc: Option<bool>,
-    pub ucs4: Option<bool>,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub struct RawInterpreter<'a> {
-    #[serde(borrow)]
-    pub path: Cow<'a, Path>,
-    #[serde(borrow)]
-    pub prefix: Cow<'a, Path>,
-    #[serde(borrow)]
-    pub base_prefix: Option<Cow<'a, Path>>,
-    #[serde(borrow)]
-    pub version: PythonVersion<'a>,
+pub struct InterpreterDetails {
+    pub path: PathBuf,
+    pub prefix: PathBuf,
+    pub base_prefix: Option<PathBuf>,
+    pub version: PythonVersion,
     pub pypy_version: Option<PyPyVersion>,
     pub cpython_abi_info: Option<CPythonAbiInfo>,
     pub paths: BTreeMap<String, PathBuf>,
     pub has_ensurepip: bool,
 }
 
+impl InterpreterDetails {
+    pub fn python_implementation(&self) -> PythonImplementation {
+        if let Some(cpython_abi_info) = self.cpython_abi_info {
+            PythonImplementation::CPython(CPythonImplementation {
+                version: self.version,
+                abi_info: cpython_abi_info,
+            })
+        } else {
+            PythonImplementation::PyPy(PyPyImplementation {
+                version: self.version,
+                pypy_version: self.pypy_version,
+            })
+        }
+    }
+}
+
+// N.B. The extra complexity of the JsonPlatformDetails container for parsing PlatformDetails nets
+// a ~2.5x perf increase on warm cache loads as compared to storing a PlatformDetails using String
+// tags directly.
+#[self_referencing]
+struct JsonPlatformDetails {
+    contents: String,
+    #[borrows(contents)]
+    #[covariant]
+    platform_details: PlatformDetails<'this>,
+}
+
+impl JsonPlatformDetails {
+    fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let contents = fs::read_to_string(path)?;
+        Self::try_new(contents, |contents| Ok(serde_json::from_str(contents)?))
+    }
+}
+
+impl Clone for JsonPlatformDetails {
+    fn clone(&self) -> Self {
+        Self::new(self.borrow_contents().clone(), |contents| {
+            serde_json::from_str(contents)
+                .expect("We've already successfully parsed our JSON contents")
+        })
+    }
+}
+
+impl Eq for JsonPlatformDetails {}
+
+impl PartialEq for JsonPlatformDetails {
+    fn eq(&self, other: &Self) -> bool {
+        self.borrow_platform_details()
+            .eq(other.borrow_platform_details())
+    }
+}
+
+impl Hash for JsonPlatformDetails {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.borrow_platform_details().hash(state)
+    }
+}
+
 #[cfg(target_os = "linux")]
 static LINUX_INFO: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-#[self_referencing]
+#[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Interpreter {
-    data: Vec<u8>,
-    realpath: PathBuf,
-    platform_details: PlatformDetails,
-    #[borrows(data)]
-    #[covariant]
-    interpreter: RawInterpreter<'this>,
-}
-
-impl Eq for Interpreter {}
-
-impl PartialEq for Interpreter {
-    fn eq(&self, other: &Self) -> bool {
-        self.raw().eq(other.raw())
-    }
-}
-
-impl Hash for Interpreter {
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: Hasher,
-    {
-        self.raw().hash(state)
-    }
-}
-
-impl Clone for Interpreter {
-    fn clone(&self) -> Self {
-        Self::new(
-            self.borrow_data().clone(),
-            self.borrow_realpath().clone(),
-            self.borrow_platform_details().clone(),
-            |data| {
-                serde_json::from_slice(data)
-                    .expect("We've already parsed out data successfully once.")
-            },
-        )
-    }
+    pub realpath: PathBuf,
+    pub details: InterpreterDetails,
+    platform_details: JsonPlatformDetails,
 }
 
 impl Interpreter {
@@ -188,42 +164,40 @@ impl Interpreter {
     pub fn load_uncached(
         python_exe: impl AsRef<Path>,
         identification_script: &IdentifyInterpreter,
-        platform_details: PlatformDetails,
     ) -> anyhow::Result<Self> {
-        let json_bytes = Self::identify(python_exe.as_ref(), identification_script)?;
-        Self::try_new(
-            json_bytes,
-            python_exe.as_ref().canonicalize()?,
-            platform_details,
-            |data| {
-                serde_json::from_slice(data).map_err(|err| {
-                    anyhow!(
-                        "Failed to identify Python interpreter {exe}: {err}",
-                        exe = python_exe.as_ref().display()
-                    )
-                })
-            },
-        )
+        let data = Self::identify(python_exe.as_ref(), identification_script)?;
+        let details: InterpreterDetails =
+            serde_json::from_slice(data.as_slice()).map_err(|err| {
+                anyhow!(
+                    "Failed to identify Python interpreter {exe}: {err}",
+                    exe = python_exe.as_ref().display()
+                )
+            })?;
+        let platform_details =
+            PlatformDetails::python(python_exe.as_ref(), details.python_implementation())?;
+        Ok(Self {
+            realpath: python_exe.as_ref().canonicalize()?,
+            details,
+            platform_details: JsonPlatformDetails::new(String::new(), |_| platform_details),
+        })
     }
 
     #[cfg(unix)]
     pub fn most_specific_exe_name(&self) -> String {
-        let interpreter = self.raw();
-        let name = if interpreter.pypy_version.is_some() {
+        let name = if self.details.pypy_version.is_some() {
             "pypy"
         } else {
             "python"
         };
         format!(
             "{name}{major}.{minor}",
-            major = interpreter.version.major,
-            minor = interpreter.version.minor
+            major = self.details.version.major,
+            minor = self.details.version.minor
         )
     }
 
     pub fn prefix_rel_paths(&self) -> Vec<Cow<'_, Path>> {
-        let interpreter = self.raw();
-        Self::candidate_rel_paths(&interpreter.version, interpreter.pypy_version.is_some())
+        Self::candidate_rel_paths(&self.details.version, self.details.pypy_version.is_some())
     }
 
     #[cfg(unix)]
@@ -298,7 +272,7 @@ impl Interpreter {
     ) -> anyhow::Result<Self> {
         let check_pypy_version = |interpreter: &Interpreter| match (
             pypy_version.as_ref(),
-            interpreter.raw().pypy_version.as_ref(),
+            interpreter.details.pypy_version.as_ref(),
         ) {
             (Some(expected_pypy_version), Some(actual_pypy_version))
                 if expected_pypy_version == actual_pypy_version =>
@@ -314,11 +288,11 @@ impl Interpreter {
         for rel_path in candidate_rel_paths {
             let candidate_path = prefix.as_ref().join(rel_path);
             if let Ok(interpreter) = Self::load(&candidate_path, &identification_script) {
-                if interpreter.raw().version != version {
+                if interpreter.details.version != version {
                     if re_cache_version_mismatch
                         && (
-                            interpreter.raw().version.major,
-                            interpreter.raw().version.minor,
+                            interpreter.details.version.major,
+                            interpreter.details.version.minor,
                         ) == (version.major, version.minor)
                     {
                         re_cache_candidates.push(interpreter)
@@ -332,7 +306,7 @@ impl Interpreter {
         }
         for interpreter in re_cache_candidates {
             let interpreter = interpreter.reload(&identification_script)?;
-            if interpreter.raw().version == version && check_pypy_version(&interpreter) {
+            if interpreter.details.version == version && check_pypy_version(&interpreter) {
                 return Ok(interpreter);
             }
         }
@@ -360,70 +334,82 @@ impl Interpreter {
         identification_script: &IdentifyInterpreter,
     ) -> anyhow::Result<Self> {
         let interpreter_info = Self::interpreter_info(python_exe)?;
-        let platform_details = PlatformDetails::spawn(python_exe)?;
-        Self::load_internal(
-            &interpreter_info,
-            python_exe,
-            identification_script,
-            platform_details,
-        )
+        Self::load_internal(&interpreter_info, python_exe, identification_script)
     }
 
     fn load_internal(
         interpreter_info: &Path,
         python_exe: &Path,
         identification_script: &IdentifyInterpreter,
-        platform_details: impl FnOnce() -> anyhow::Result<PlatformDetails>,
     ) -> anyhow::Result<Self> {
-        let file = atomic_file(interpreter_info, |file| {
+        if let Some((details, platform_details)) = atomic_dir(interpreter_info, |path| {
             let json_bytes = Self::identify(python_exe, identification_script)?;
-            BufWriter::new(file).write_all(&json_bytes)?;
-            Ok(())
-        })?;
-        let size = file.metadata()?.len();
-        let mut data = Vec::with_capacity(usize::try_from(size)?);
-        BufReader::new(file).read_to_end(&mut data)?;
-        Self::try_new(
-            data,
-            python_exe.canonicalize()?,
-            platform_details()?,
-            |data| {
-                serde_json::from_slice(data).map_err(|err| {
+            let details: InterpreterDetails = serde_json::from_slice(json_bytes.as_slice())
+                .map_err(|err| {
                     anyhow!(
                         "Failed to identify Python interpreter {exe}: {err}",
                         exe = python_exe.display()
                     )
-                })
-            },
-        )
+                })?;
+
+            let implementation_details = File::create_new(path.join("interpreter-details.json"))?;
+            BufWriter::new(implementation_details).write_all(&json_bytes)?;
+
+            let platform_details =
+                PlatformDetails::python(python_exe, details.python_implementation())?;
+            let platform_details_json = path.join("platform-details.json");
+            serde_json::to_writer(
+                BufWriter::new(File::create_new(&platform_details_json)?),
+                &platform_details,
+            )?;
+            Ok((details, JsonPlatformDetails::load(platform_details_json)?))
+        })? {
+            Ok(Self {
+                realpath: python_exe.canonicalize()?,
+                details,
+                platform_details,
+            })
+        } else {
+            let details: InterpreterDetails = serde_json::from_reader(BufReader::new(File::open(
+                interpreter_info.join("interpreter-details.json"),
+            )?))?;
+            let platform_details =
+                JsonPlatformDetails::load(interpreter_info.join("platform-details.json"))?;
+            Ok(Self {
+                realpath: python_exe.canonicalize()?,
+                details,
+                platform_details,
+            })
+        }
     }
 
     fn reload(self, identification_script: &IdentifyInterpreter) -> anyhow::Result<Self> {
-        let python_exe = self.raw().path.as_ref();
+        let python_exe = self.details.path.as_ref();
         let interpreter_info = Self::interpreter_info(python_exe)?;
-        fs::remove_file(&interpreter_info)?;
-        let platform_details = PlatformDetails::spawn(python_exe)?;
-        Self::load_internal(
-            &interpreter_info,
-            python_exe,
-            identification_script,
-            platform_details,
-        )
+        fs::remove_dir_all(&interpreter_info)?;
+        Self::load_internal(&interpreter_info, python_exe, identification_script)
     }
 
     #[time("debug", "Interpreter.{}")]
     pub fn store(&self) -> anyhow::Result<()> {
-        let hash = hash_file(self.raw().path.as_ref(), &Self::INTERPRETER_HASH_CONFIG)?;
+        let hash = hash_file(self.details.path.as_ref(), &Self::INTERPRETER_HASH_CONFIG)?;
         let interpreter_info = CacheDir::Interpreter.path()?.join(hash.base64_digest());
-        atomic_file(&interpreter_info, |file| {
-            serde_json::to_writer(BufWriter::new(file), self.raw())?;
+        atomic_dir(&interpreter_info, |path| {
+            serde_json::to_writer(
+                BufWriter::new(File::create_new(path.join("interpreter-details.json"))?),
+                &self.details,
+            )?;
+            serde_json::to_writer(
+                BufWriter::new(File::create_new(path.join("platform-details.json"))?),
+                &self.platform_details(),
+            )?;
             Ok(())
         })?;
         Ok(())
     }
 
     pub fn hermetic_args(&self) -> &'static str {
-        if self.raw().version.major == 3 && self.raw().version.minor >= 4 {
+        if self.details.version.major == 3 && self.details.version.minor >= 4 {
             "-I"
         } else {
             "-sE"
@@ -432,13 +418,13 @@ impl Interpreter {
 
     #[time("debug", "Interpreter.{}")]
     pub fn resolve_base_interpreter(self, scripts: &mut Scripts) -> anyhow::Result<Interpreter> {
-        if let Some(base_prefix) = self.raw().base_prefix.as_ref()
-            && base_prefix != &self.raw().prefix
+        if let Some(base_prefix) = self.details.base_prefix.as_ref()
+            && base_prefix != &self.details.prefix
         {
             let resolved = Self::at_prefix(
                 base_prefix,
-                self.raw().version,
-                self.raw().pypy_version,
+                self.details.version,
+                self.details.pypy_version,
                 scripts,
                 true,
             )?;
@@ -448,8 +434,8 @@ impl Interpreter {
     }
 
     pub fn is_venv(&self) -> bool {
-        if let Some(base_prefix) = self.raw().base_prefix.as_deref()
-            && base_prefix != self.raw().prefix
+        if let Some(base_prefix) = self.details.base_prefix.as_deref()
+            && base_prefix != self.details.prefix
         {
             true
         } else {
@@ -457,50 +443,29 @@ impl Interpreter {
         }
     }
 
-    #[inline]
-    pub fn raw(&self) -> &RawInterpreter<'_> {
-        self.borrow_interpreter()
-    }
-
-    #[inline]
-    pub fn with_raw_mut<R>(&mut self, func: impl FnOnce(&mut RawInterpreter) -> R) -> R {
-        self.with_interpreter_mut(func)
-    }
-
-    pub fn realpath(&self) -> &Path {
-        self.borrow_realpath()
-    }
-
-    pub fn set_realpath(&mut self, value: &Path) {
-        self.with_realpath_mut(|realpath| {
-            realpath.clear();
-            realpath.push(value)
-        })
-    }
-
-    pub fn platform_details(&self) -> &PlatformDetails {
-        self.borrow_platform_details()
+    pub fn platform_details(&self) -> &PlatformDetails<'_> {
+        self.platform_details.borrow_platform_details()
     }
 }
 
-impl PythonPlatform for Interpreter {
+impl<'a> PythonPlatform<'a> for Interpreter {
     fn description(&self) -> impl Display {
         format!(
             "interpreter at {python_exe}",
-            python_exe = self.raw().path.as_ref().display()
+            python_exe = self.details.path.display()
         )
     }
 
     fn marker_env(&self) -> &MarkerEnvironment {
-        self.borrow_platform_details().marker_env()
+        self.platform_details().marker_env()
     }
 
-    fn supported_tags(&self) -> &NonEmptyVec<String> {
-        self.borrow_platform_details().supported_tags()
+    fn supported_tags(&self) -> NonEmptyVec<&'_ str> {
+        self.platform_details().supported_tags()
     }
 
     fn version(&self) -> Cow<'_, Version> {
-        let version = self.raw().version;
+        let version = self.details.version;
         Cow::Owned(Version::new([
             u64::from(version.major),
             u64::from(version.minor),
@@ -516,7 +481,7 @@ mod tests {
 
     use anyhow::Context;
     use pretty_assertions::assert_eq;
-    use python_platform::{PlatformDetails, PythonPlatform};
+    use python_platform::PythonPlatform;
     use rstest::rstest;
     use scripts::{IdentifyInterpreter, Scripts};
     use testing::{
@@ -573,19 +538,15 @@ mod tests {
         let expected_tags: Vec<String> =
             serde_json::from_str(String::from_utf8(output.stdout).unwrap().as_str()).unwrap();
 
-        let platform_details = PlatformDetails::python(&venv_python_exe).unwrap();
-        let interpreter = Interpreter::load_uncached(
-            &venv_python_exe,
-            &interpreter_identification_script,
-            platform_details,
-        )
-        .with_context(|| {
-            format!(
-                "Failed to load interpreter info for {python}",
-                python = venv_python_exe.display()
-            )
-        })
-        .unwrap();
+        let interpreter =
+            Interpreter::load_uncached(&venv_python_exe, &interpreter_identification_script)
+                .with_context(|| {
+                    format!(
+                        "Failed to load interpreter info for {python}",
+                        python = venv_python_exe.display()
+                    )
+                })
+                .unwrap();
         assert_eq!(
             expected_tags,
             interpreter
@@ -616,9 +577,8 @@ mod tests {
             venv_interpreter
                 .resolve_base_interpreter(&mut embedded_scripts)
                 .unwrap()
-                .raw()
+                .details
                 .path
-                .as_ref()
         )
     }
 }

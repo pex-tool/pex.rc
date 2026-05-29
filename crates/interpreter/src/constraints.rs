@@ -30,7 +30,7 @@ enum InterpreterImplementation {
 
 impl InterpreterImplementation {
     fn of(interpreter: &Interpreter) -> Option<Self> {
-        if let Some(abi_info) = interpreter.raw().cpython_abi_info {
+        if let Some(abi_info) = interpreter.details.cpython_abi_info {
             if let Some(free_threaded) = abi_info.free_threaded {
                 if free_threaded {
                     Some(Self::CPythonFreeThreaded)
@@ -99,9 +99,9 @@ impl InterpreterConstraint {
     pub fn exact_version(interpreter: &Interpreter) -> Self {
         let python_version = Version::new(
             [
-                u64::from(interpreter.raw().version.major),
-                u64::from(interpreter.raw().version.minor),
-                u64::from(interpreter.raw().version.micro),
+                u64::from(interpreter.details.version.major),
+                u64::from(interpreter.details.version.minor),
+                u64::from(interpreter.details.version.micro),
             ]
             .iter(),
         );
@@ -179,8 +179,8 @@ impl InterpreterConstraint {
             }
         }
         self.contains_version(
-            interpreter.raw().version.major,
-            interpreter.raw().version.minor,
+            interpreter.details.version.major,
+            interpreter.details.version.minor,
         )
     }
 
@@ -288,8 +288,8 @@ impl InterpreterConstraints {
             insert_specs(
                 &mut binary_specs,
                 implementation.as_ref(),
-                interpreter.raw().version.major,
-                interpreter.raw().version.minor,
+                interpreter.details.version.major,
+                interpreter.details.version.minor,
             );
         }
         if !self.0.is_empty() {

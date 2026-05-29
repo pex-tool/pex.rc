@@ -44,17 +44,16 @@ pub(crate) struct InterpreterArgs {
 pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow::Result<()> {
     let mut out = args.output.writer()?;
     for interpreter in compatible_interpreters(python, &pex, args.all)? {
-        let raw_interpeter = interpreter.raw();
         match args.verbose {
             0 => writeln!(
                 &mut out,
                 "{path}",
-                path = raw_interpeter.path.as_ref().display()
+                path = interpreter.details.path.display()
             )?,
             1 => args.json.serialize(
                 &mut out,
                 &json!({
-                    "path": raw_interpeter.path.as_ref(),
+                    "path": interpreter.details.path,
                     "requirement": InterpreterConstraint::exact_version(&interpreter).to_string(),
                     "platform": Platform::of(&interpreter)?.to_string()
                 }),
@@ -62,7 +61,7 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow:
             2 => args.json.serialize(
                 &mut out,
                 &json!({
-                    "path": raw_interpeter.path.as_ref(),
+                    "path": interpreter.details.path,
                     "requirement": InterpreterConstraint::exact_version(&interpreter).to_string(),
                     "platform": Platform::of(&interpreter)?.to_string(),
                     "supported_tags": interpreter.supported_tags()
@@ -76,20 +75,20 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow:
                     args.json.serialize(
                         &mut out,
                         &json!({
-                            "path": raw_interpeter.path.as_ref(),
+                            "path": interpreter.details.path,
                             "requirement": InterpreterConstraint::exact_version(&interpreter).to_string(),
                             "platform": Platform::of(&interpreter)?.to_string(),
                             "supported_tags": interpreter.supported_tags(),
                             "env_markers": interpreter.marker_env(),
                             "venv": true,
-                            "base_interpreter": base_interpreter.raw().path.as_ref()
+                            "base_interpreter": base_interpreter.details.path
                         }),
                     )?
                 } else {
                     args.json.serialize(
                         &mut out,
                         &json!({
-                            "path": raw_interpeter.path.as_ref(),
+                            "path": interpreter.details.path,
                             "requirement": InterpreterConstraint::exact_version(&interpreter).to_string(),
                             "platform": Platform::of(&interpreter)?.to_string(),
                             "supported_tags": interpreter.supported_tags(),

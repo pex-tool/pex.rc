@@ -6,16 +6,18 @@ use crate::linux::LibcVersion;
 use crate::mac::Release;
 use crate::os::Libc;
 use crate::platform::{Linux, Mac, Platform, Windows};
-use crate::version::{CPythonVersion, PyPyVersion, PythonVersion, SimpleVersion};
+use crate::version::{CPythonImplementation, PyPyImplementation, PythonImplementation};
 
-pub(crate) fn calculate(python_version: &PythonVersion, platform: Platform) -> Vec<String> {
+pub(crate) fn calculate(python_version: PythonImplementation, platform: Platform) -> Vec<String> {
     let platforms = calculate_supported_platforms(platform);
     let mut tags = Vec::with_capacity(2048);
     match python_version {
-        PythonVersion::CPython(version) => {
+        PythonImplementation::CPython(version) => {
             add_cpython_tags(&mut tags, platforms.as_slice(), version)
         }
-        PythonVersion::PyPy(version) => add_pypy_tags(&mut tags, platforms.as_slice(), version),
+        PythonImplementation::PyPy(version) => {
+            add_pypy_tags(&mut tags, platforms.as_slice(), version)
+        }
     }
     add_compatible_tags(&mut tags, platforms.as_slice(), python_version);
     tags
@@ -161,23 +163,27 @@ fn calculate_windows_platform(windows: Windows) -> &'static str {
     }
 }
 
-fn add_cpython_tags(tags: &mut Vec<String>, platforms: &[String], python_version: &CPythonVersion) {
-    let major = python_version.major_version();
-    let minor = python_version.minor_version();
+fn add_cpython_tags(
+    tags: &mut Vec<String>,
+    platforms: &[String],
+    python_version: CPythonImplementation,
+) {
+    let major = python_version.major;
+    let minor = python_version.minor;
 
     let interpreter = format_args!("cp{major}{minor}");
 
-    let threading = if python_version.free_threaded {
+    let threading = if python_version.free_threaded() {
         "t"
     } else {
         ""
     };
-    let debug = if python_version.debug { "d" } else { "" };
-    let pymalloc = if python_version.pymalloc { "m" } else { "" };
-    let ucs4 = if python_version.ucs4 { "u" } else { "" };
+    let debug = if python_version.debug() { "d" } else { "" };
+    let pymalloc = if python_version.pymalloc() { "m" } else { "" };
+    let ucs4 = if python_version.ucs4() { "u" } else { "" };
 
     let abi = format!("cp{major}{minor}{threading}{debug}{pymalloc}{ucs4}");
-    let abis: &[String] = if python_version.debug {
+    let abis: &[String] = if python_version.debug() {
         &[format!("cp{major}{minor}{threading}"), abi]
     } else {
         &[abi]
@@ -191,12 +197,12 @@ fn add_cpython_tags(tags: &mut Vec<String>, platforms: &[String], python_version
 
     // N.B.: PEP 384 was first implemented in Python 3.2. The free-threaded builds do not support
     // abi3.
-    let abi3 = (major, minor) >= (3, 2) && !python_version.free_threaded;
+    let abi3 = (major, minor) >= (3, 2) && !python_version.free_threaded();
 
     // PEP 803 was first implemented in Python 3.15 but, per PEP 803, this returns tags going back
     // to Python 3.2 to mirror the abi3 implementation and leave open the possibility of abi3t
     // wheels supporting older Python versions.
-    let abi3t = (major, minor) >= (3, 2) && python_version.free_threaded;
+    let abi3t = (major, minor) >= (3, 2) && python_version.free_threaded();
 
     if abi3 {
         for platform in platforms {
@@ -228,12 +234,12 @@ fn add_cpython_tags(tags: &mut Vec<String>, platforms: &[String], python_version
     }
 }
 
-fn add_pypy_tags(tags: &mut Vec<String>, platforms: &[String], python_version: &PyPyVersion) {
-    let major = python_version.major_version();
-    let minor = python_version.minor_version();
+fn add_pypy_tags(tags: &mut Vec<String>, platforms: &[String], python_version: PyPyImplementation) {
+    let major = python_version.major;
+    let minor = python_version.minor;
     if let Some(pypy_version) = python_version.pypy_version.as_ref() {
-        let pypy_major = pypy_version.major_version();
-        let pypy_minor = pypy_version.minor_version();
+        let pypy_major = pypy_version.major();
+        let pypy_minor = pypy_version.minor();
         for platform in platforms {
             tags.push(format!(
                 "pp{major}{minor}-pypy{major}{minor}_pp{pypy_major}{pypy_minor}-{platform}"
@@ -246,31 +252,24 @@ fn add_pypy_tags(tags: &mut Vec<String>, platforms: &[String], python_version: &
 }
 
 mod py_interpreter {
-    use pep440_rs::Version;
+    use crate::PythonVersion;
 
     enum State {
         Latest,
         MajorOnly,
-        Descending(u64),
+        Descending(u8),
         Finished,
     }
 
     pub(super) struct Range {
-        major: u64,
-        minor: Option<u64>,
+        version: PythonVersion,
         state: State,
     }
 
     impl Range {
-        pub(super) fn new(version: &Version) -> Self {
-            let release = version.release();
+        pub(super) fn new(version: &PythonVersion) -> Self {
             Self {
-                major: release[0],
-                minor: if release.len() > 1 {
-                    Some(release[1])
-                } else {
-                    None
-                },
+                version: *version,
                 state: State::Latest,
             }
         }
@@ -283,19 +282,15 @@ mod py_interpreter {
             match self.state {
                 State::Latest => {
                     self.state = State::MajorOnly;
-                    if let Some(minor) = self.minor {
-                        Some(format!("py{major}{minor}", major = self.major))
-                    } else {
-                        self.next()
-                    }
+                    Some(format!(
+                        "py{major}{minor}",
+                        major = self.version.major,
+                        minor = self.version.minor
+                    ))
                 }
                 State::MajorOnly => {
-                    if let Some(minor) = self.minor {
-                        self.state = State::Descending(minor - 1);
-                    } else {
-                        self.state = State::Finished;
-                    }
-                    Some(format!("py{major}", major = self.major))
+                    self.state = State::Descending(self.version.minor - 1);
+                    Some(format!("py{major}", major = self.version.major))
                 }
                 State::Descending(minor) => {
                     if minor == 0 {
@@ -303,7 +298,7 @@ mod py_interpreter {
                     } else {
                         self.state = State::Descending(minor - 1);
                     }
-                    Some(format!("py{major}{minor}", major = self.major))
+                    Some(format!("py{major}{minor}", major = self.version.major))
                 }
                 State::Finished => None,
             }
@@ -314,25 +309,24 @@ mod py_interpreter {
 fn add_compatible_tags(
     tags: &mut Vec<String>,
     platforms: &[String],
-    python_version: &PythonVersion,
+    python_version: PythonImplementation,
 ) {
-    let version = python_version.version();
-    for version in py_interpreter::Range::new(version) {
+    for version in py_interpreter::Range::new(&python_version) {
         for platform in platforms {
             tags.push(format!("{version}-none-{platform}"))
         }
     }
     tags.push(match python_version {
-        PythonVersion::CPython(_) => format!(
+        PythonImplementation::CPython(_) => format!(
             "cp{major}{minor}-none-any",
-            major = python_version.major_version(),
-            minor = python_version.minor_version()
+            major = python_version.major,
+            minor = python_version.minor
         ),
-        PythonVersion::PyPy(_) => {
-            format!("pp{major}-none-any", major = python_version.major_version())
+        PythonImplementation::PyPy(_) => {
+            format!("pp{major}-none-any", major = python_version.major)
         }
     });
-    for version in py_interpreter::Range::new(version) {
+    for version in py_interpreter::Range::new(&python_version) {
         tags.push(format!("{version}-none-any"))
     }
 }

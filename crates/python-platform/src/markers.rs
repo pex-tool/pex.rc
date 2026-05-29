@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
-use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 
-use pep440_rs::{PrereleaseKind, Version};
 use pep508_rs::{MarkerEnvironment, MarkerEnvironmentBuilder};
 
 use crate::arch::Arch;
 use crate::platform::{Linux, Mac, Platform, Windows};
-use crate::version::{PythonVersion, SimpleVersion};
+use crate::version::PythonImplementation;
 
 macro_rules! generate_marker_variable {
     ( $marker_variable_type:ident ) => {
@@ -36,17 +34,17 @@ generate_marker_variable!(PlatformRelease);
 generate_marker_variable!(PlatformVersion);
 
 pub(crate) fn calculate(
-    python_version: &PythonVersion,
-    platform: &Platform,
+    python_version: PythonImplementation,
+    platform: Platform,
     platform_release: Option<PlatformRelease>,
     platform_version: Option<PlatformVersion>,
 ) -> anyhow::Result<MarkerEnvironment> {
     let (implementation_name, platform_python_implementation) = match python_version {
-        PythonVersion::CPython(_) => ("cpython", "CPython"),
-        PythonVersion::PyPy(_) => ("pypy", "PyPy"),
+        PythonImplementation::CPython(_) => ("cpython", "CPython"),
+        PythonImplementation::PyPy(_) => ("pypy", "PyPy"),
     };
 
-    let major_version = python_version.major_version();
+    let major_version = python_version.major;
     let (os_name, platform_system, sys_platform) = match platform {
         Platform::Linux(_) => (
             "posix",
@@ -71,14 +69,14 @@ pub(crate) fn calculate(
             Arch::X64 => "x86_64",
         },
         Platform::Mac(Mac { arm64, .. }) => {
-            if *arm64 {
+            if arm64 {
                 "arm64"
             } else {
                 "x86_64"
             }
         }
         Platform::Windows(Windows { arm64, .. }) => {
-            if *arm64 {
+            if arm64 {
                 "ARM64"
             } else {
                 "AMD64"
@@ -105,38 +103,11 @@ pub(crate) fn calculate(
         }
     };
 
-    struct ImplementationVersion<'a>(&'a Version);
-    impl<'a> Display for ImplementationVersion<'a> {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            let release = self.0.release();
-            write!(
-                f,
-                "{major}.{minor}.{patch}",
-                major = release[0],
-                minor = release[1],
-                patch = release[2]
-            )?;
-            if let Some(prerelease) = self.0.pre() {
-                write!(
-                    f,
-                    "{}",
-                    match prerelease.kind {
-                        PrereleaseKind::Alpha => "a",
-                        PrereleaseKind::Beta => "b",
-                        PrereleaseKind::Rc => "rc",
-                    }
-                )?;
-                write!(f, "{}", prerelease.number)?;
-            }
-            Ok(())
-        }
-    }
-
-    let implementation_version = ImplementationVersion(python_version.version()).to_string();
+    let implementation_version = python_version.to_string();
     let python_version_str = format!(
         "{major}.{minor}",
         major = major_version,
-        minor = python_version.minor_version()
+        minor = python_version.minor
     );
 
     Ok(MarkerEnvironment::try_from(MarkerEnvironmentBuilder {

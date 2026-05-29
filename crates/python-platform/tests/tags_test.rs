@@ -5,16 +5,7 @@ use std::path::Path;
 
 use interpreter::Interpreter;
 use pretty_assertions::assert_eq;
-use python_platform::{
-    Arch,
-    Libc,
-    Os,
-    PlatformDetails,
-    PlatformRelease,
-    PlatformVersion,
-    PythonPlatform,
-    parse,
-};
+use python_platform::{Arch, Libc, Os, PlatformRelease, PlatformVersion, PythonPlatform, parse};
 use rstest::rstest;
 use scripts::IdentifyInterpreter;
 use testing::{interpreter_identification_script, python_exe};
@@ -24,20 +15,14 @@ fn test_abbreviated_platform(
     python_exe: &Path,
     interpreter_identification_script: IdentifyInterpreter,
 ) {
-    let platform_details = PlatformDetails::python(python_exe).unwrap();
-    let interpreter = Interpreter::load_uncached(
-        python_exe,
-        &interpreter_identification_script,
-        platform_details,
-    )
-    .unwrap();
+    let interpreter =
+        Interpreter::load_uncached(python_exe, &interpreter_identification_script).unwrap();
 
-    let raw_interpreter = interpreter.raw();
     let spec = format!(
         "cpython-{major}.{minor}.{patch}-{os}-{arch}",
-        major = raw_interpreter.version.major,
-        minor = raw_interpreter.version.minor,
-        patch = raw_interpreter.version.micro,
+        major = interpreter.details.version.major,
+        minor = interpreter.details.version.minor,
+        patch = interpreter.details.version.micro,
         os = match Os::current().unwrap() {
             Os::Linux(libc) => match libc {
                 Libc::Gnu(libc_version) => format!(

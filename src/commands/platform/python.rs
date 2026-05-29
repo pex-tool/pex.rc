@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 use cli::{Json, Output};
-use python_platform::PlatformDetails;
+use interpreter::Interpreter;
+use scripts::{IdentifyInterpreter, Scripts};
 
 #[derive(Clone)]
 enum PythonPlatform {
@@ -122,8 +123,10 @@ impl Python {
                 self.json.serialize(&mut out, &platform)
             }
             PythonPlatform::Interpreter(path) => {
-                let platform = PlatformDetails::python(path)?;
-                self.json.serialize(&mut out, &platform)
+                let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
+                let interpreter = Interpreter::load(path, &identification_script)?;
+                self.json
+                    .serialize(&mut out, interpreter.platform_details())
             }
         }
     }
