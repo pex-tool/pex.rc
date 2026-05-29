@@ -113,7 +113,7 @@ impl Os {
     pub(crate) fn name(&self) -> &'static str {
         match self {
             Os::Linux(_) => "linux",
-            Os::Mac(_) => "mac",
+            Os::Mac(_) => "macos",
             Os::Windows(_) => "windows",
         }
     }
