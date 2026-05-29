@@ -53,7 +53,7 @@ fn test_abbreviated_platform(
             },
             Os::Mac(mac_version) => {
                 format!(
-                    "mac_{major}_{minor}",
+                    "macos_{major}_{minor}",
                     major = mac_version.major,
                     minor = mac_version.minor
                 )
