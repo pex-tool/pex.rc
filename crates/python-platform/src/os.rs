@@ -10,7 +10,7 @@ use logging_timer::time;
 
 use crate::linux::LibcVersion;
 use crate::mac::Release as MacRelease;
-use crate::windows::Release as WindowsRelease;
+use crate::windows::{Release as WindowsRelease, Release};
 
 #[derive(Copy, Clone)]
 pub enum Libc {
@@ -98,7 +98,12 @@ impl FromStr for Os {
                 // This is macOS Big Sur from April 2021.
                 Ok(Self::Mac(MacRelease::new(11, 3)))
             }
-            "windows" => Ok(Self::Windows(None)),
+            "windows" => {
+                // We default to 10 ~arbitrarily. This does correspond to ~2014 (2015) though, like
+                // our Linux glibc default. Reasonably old backward compatiility for Windows, which,
+                // like Linux, is pretty great about not breaking backwards compatibility.
+                Ok(Self::Windows(Some(Release::Windows10)))
+            }
             value if let Some(version) = value.strip_prefix("macos_") => {
                 Ok(Self::Mac(MacRelease::parse(version, '_')?))
             }

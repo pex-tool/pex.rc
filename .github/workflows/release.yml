@@ -62,7 +62,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: package
-      - name: Build pexrc binary for all targets.
+      - name: Build pexrc binary.
         run: |
           chmod +x target/release/package
           export CARGO="$(command -v cargo)"

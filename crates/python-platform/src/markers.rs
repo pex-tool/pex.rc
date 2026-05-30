@@ -88,7 +88,12 @@ pub(crate) fn calculate(
         Cow::Owned(release.to_string())
     } else {
         match platform {
-            Platform::Linux(_) => Cow::Borrowed("<unknown>"),
+            Platform::Linux(_) => {
+                // At the time of writing this is the oldest Linux LTS kernel and a Civil
+                // Infrastructure Platform release; so seemingly a good backwards compatibility
+                // target.
+                Cow::Borrowed("4.4.302-cip103")
+            }
             Platform::Mac(Mac { release, .. }) => Cow::Owned(format!(
                 "{major}.{minor}.{patch}",
                 major = release.major,

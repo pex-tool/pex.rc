@@ -72,9 +72,9 @@ pub struct Python {
     /// + 3.14.5-windows
     ///
     /// When using these, defaults for each operating system are chosen:
-    /// + linux: glibc 2.17 & x86_64
+    /// + linux: 4.4.302-cip103 (January 2016) & glibc 2.17 (December 2012) & x86_64
     /// + macos: 11.3 (Big Sur April 2021) & aarch64
-    /// + windows: x86_64
+    /// + windows: 10 (first released July 2015) & x86_64
     ///
     /// Linux can be further refined by using the manylinux and musllinux standards; for example:
     /// + 3.14.5-manylinux1
@@ -90,7 +90,7 @@ pub struct Python {
     /// Windows can be further refined by specifying the release as well:
     /// + 3.14.5-windows_11
     ///
-    /// Finally, when specifying an operating system, an explicit chip architecture suffixe can be
+    /// Finally, when specifying an operating system, an explicit chip architecture suffix can be
     /// selected from among the following:
     /// + aarch64 (or arm64)
     /// + armv7 [^1]
@@ -105,11 +105,9 @@ pub struct Python {
     /// + cpython-3.14.5-windows_11-amd64
     ///
     /// [^1]: These chip architectures are only supported for Linux.
-    /// [^2]: The derived Python platform specification is complete save for two environment markers
-    ///       that appear to be unused in the wild:
-    ///       + platform_release: "<unknown>" unless macos_<release> or windows_<release> was
-    ///                           specified
-    ///       + platform_version: "<unknown>"
+    /// [^2]: The derived Python platform specification is complete save for the platform_release
+    ///       environment marker that appears to be unused in the wild. Its value is defaulted to
+    ///       "<unknown>".
     #[arg(value_parser = PythonPlatform::parse, verbatim_doc_comment)]
     python_platform: PythonPlatform,
 }

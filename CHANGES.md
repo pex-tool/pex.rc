@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.15.0-unreleased
+
+This release adds defaults for Linux and Windows for the `platform_release` environment marker when
+generating platform details via `pexrc platform python <spec>`. Now the only `"<unknown>"` marker
+when using a spec it the `platform_version` which is actively antagonistic to any likely real-world
+use.
+
 ## 0.14.0
 
 This release adds `pexrc platform {info,python}` for displaying both local and foreign platform
