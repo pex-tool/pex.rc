@@ -12,7 +12,7 @@ use fs_err::File;
 use interpreter::Interpreter;
 use logging_timer::time;
 use platform::symlink_or_link_or_copy;
-use python_platform::PythonPlatform;
+use python_platform::{PythonPlatform, PythonVersion};
 use scripts::{IdentifyInterpreter, Scripts, VendoredVirtualenv};
 use target_lexicon::{HOST, OperatingSystem};
 
@@ -131,29 +131,28 @@ impl<'a> Virtualenv<'a> {
     ) -> anyhow::Result<Self> {
         let venv_interpreter = Self::host_interpreter(path.as_ref(), &interpreter)?;
 
-        let site_packages_relpath =
-            if interpreter.details.version.major == 3 && interpreter.details.version.minor >= 3 {
-                create_pep_405_venv(
-                    interpreter,
-                    path.as_ref(),
-                    linker,
-                    include_system_site_packages,
-                    scripts,
-                    pip,
-                    prompt,
-                )?
-            } else {
-                let virtualenv_script = VendoredVirtualenv::read(scripts)?;
-                create_virtualenv_venv(
-                    &interpreter,
-                    path.as_ref(),
-                    linker,
-                    virtualenv_script,
-                    include_system_site_packages,
-                    pip,
-                    prompt,
-                )?
-            };
+        let site_packages_relpath = if interpreter.details.version >= PythonVersion::simple(3, 3) {
+            create_pep_405_venv(
+                interpreter,
+                path.as_ref(),
+                linker,
+                include_system_site_packages,
+                scripts,
+                pip,
+                prompt,
+            )?
+        } else {
+            let virtualenv_script = VendoredVirtualenv::read(scripts)?;
+            create_virtualenv_venv(
+                &interpreter,
+                path.as_ref(),
+                linker,
+                virtualenv_script,
+                include_system_site_packages,
+                pip,
+                prompt,
+            )?
+        };
 
         Ok(Self {
             interpreter: venv_interpreter,
@@ -472,10 +471,7 @@ fn site_packages_relpath<'a>(interpreter: &Interpreter) -> Cow<'a, Path> {
         return Cow::Borrowed(Path::new("Lib\\site-packages"));
     }
     if interpreter.marker_env().platform_python_implementation() == "PyPy"
-        && (
-            interpreter.details.version.major,
-            interpreter.details.version.minor,
-        ) < (3, 8)
+        && interpreter.details.version < PythonVersion::simple(3, 8)
     {
         Cow::Borrowed(Path::new("site-packages"))
     } else {

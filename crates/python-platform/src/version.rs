@@ -88,8 +88,14 @@ impl Display for PythonVersion {
 }
 
 impl PythonVersion {
-    pub fn simple(major: u8, minor: u8) -> Self {
-        Self::new(major, minor, None)
+    pub const fn simple(major: u8, minor: u8) -> Self {
+        Self {
+            major,
+            minor,
+            micro: 0,
+            releaselevel: ReleaseLevel::Final,
+            serial: 0,
+        }
     }
 
     pub fn new(major: u8, minor: u8, micro: Option<u8>) -> Self {

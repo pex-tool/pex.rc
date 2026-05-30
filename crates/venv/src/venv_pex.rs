@@ -31,6 +31,7 @@ use pex::{
     filter_zipped_user_source,
 };
 use platform::{Perms, mark_executable, path_as_bytes, path_as_str, symlink_or_link_or_copy};
+use python_platform::PythonVersion;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scripts::{
     Scripts,
@@ -1080,14 +1081,9 @@ fn write_pex_extra_sys_path_support_files(
     pex_extra_sys_path_py_fp
         .write_all(VenvPexExtraSysPathPy::read(scripts)?.contents().as_bytes())?;
 
-    let python_version = {
-        let version = venv.interpreter.details.version;
-        (version.major, version.minor)
-    };
-
     // Starting with Python 3.15 .start files trump import lines in .pth files.
     // See: https://peps.python.org/pep-0829/#abstract
-    if python_version >= (3, 15) {
+    if venv.interpreter.details.version >= PythonVersion::simple(3, 15) {
         let mut pex_extra_sys_path_start_fp =
             File::create_new(venv.site_packages_path("PEX_EXTRA_SYS_PATH.start"))?;
         pex_extra_sys_path_start_fp.write_all(
@@ -1099,7 +1095,7 @@ fn write_pex_extra_sys_path_support_files(
 
     // After ~Python 3.20 .pth import lines will start to raise warnings; so we no longer emit a
     // .pth compatibility bridge. See: https://peps.python.org/pep-0829/#abstract
-    if python_version < (3, 20) {
+    if venv.interpreter.details.version < PythonVersion::simple(3, 20) {
         let mut pex_extra_sys_path_pth_fp =
             File::create_new(venv.site_packages_path("PEX_EXTRA_SYS_PATH.pth"))?;
         pex_extra_sys_path_pth_fp

@@ -197,12 +197,13 @@ fn add_cpython_tags(
 
     // N.B.: PEP 384 was first implemented in Python 3.2. The free-threaded builds do not support
     // abi3.
-    let abi3 = (major, minor) >= (3, 2) && !python_version.free_threaded();
+    let of_abi3_era = (major, minor) >= (3, 2);
+    let abi3 = of_abi3_era && !python_version.free_threaded();
 
     // PEP 803 was first implemented in Python 3.15 but, per PEP 803, this returns tags going back
     // to Python 3.2 to mirror the abi3 implementation and leave open the possibility of abi3t
     // wheels supporting older Python versions.
-    let abi3t = (major, minor) >= (3, 2) && python_version.free_threaded();
+    let abi3t = of_abi3_era && python_version.free_threaded();
 
     if abi3 {
         for platform in platforms {
