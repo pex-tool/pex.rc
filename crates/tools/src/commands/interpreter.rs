@@ -64,7 +64,7 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow:
                     "path": interpreter.details.path,
                     "requirement": InterpreterConstraint::exact_version(&interpreter).to_string(),
                     "platform": Platform::of(&interpreter)?.to_string(),
-                    "supported_tags": interpreter.supported_tags()
+                    "supported_tags": interpreter.supported_tags().collect::<Vec<_>>()
                 }),
             )?,
             _ => {
@@ -78,7 +78,7 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow:
                             "path": interpreter.details.path,
                             "requirement": InterpreterConstraint::exact_version(&interpreter).to_string(),
                             "platform": Platform::of(&interpreter)?.to_string(),
-                            "supported_tags": interpreter.supported_tags(),
+                            "supported_tags": interpreter.supported_tags().collect::<Vec<_>>(),
                             "env_markers": interpreter.marker_env(),
                             "venv": true,
                             "base_interpreter": base_interpreter.details.path
@@ -91,7 +91,7 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow:
                             "path": interpreter.details.path,
                             "requirement": InterpreterConstraint::exact_version(&interpreter).to_string(),
                             "platform": Platform::of(&interpreter)?.to_string(),
-                            "supported_tags": interpreter.supported_tags(),
+                            "supported_tags": interpreter.supported_tags().collect::<Vec<_>>(),
                             "env_markers": interpreter.marker_env(),
                             "venv": false
                         }),

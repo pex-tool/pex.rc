@@ -105,7 +105,7 @@ pub struct Python {
     /// + cpython-3.14.5-windows_11-amd64
     ///
     /// [^1]: These chip architectures are only supported for Linux.
-    /// [^2]: The derived Python platform specification is complete save for the platform_release
+    /// [^2]: The derived Python platform specification is complete save for the platform_version
     ///       environment marker that appears to be unused in the wild. Its value is defaulted to
     ///       "<unknown>".
     #[arg(value_parser = PythonPlatform::parse, verbatim_doc_comment)]

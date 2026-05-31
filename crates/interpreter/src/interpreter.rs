@@ -15,12 +15,10 @@ use fs_err as fs;
 use fs_err::File;
 use logging_timer::time;
 use ouroboros::self_referencing;
-use pep440_rs::Version;
 use pep508_rs::MarkerEnvironment;
 use python_platform::{
     CPythonAbiInfo,
     CPythonImplementation,
-    NonEmptyVec,
     PlatformDetails,
     PyPyImplementation,
     PyPyVersion,
@@ -460,17 +458,12 @@ impl<'a> PythonPlatform<'a> for Interpreter {
         self.platform_details().marker_env()
     }
 
-    fn supported_tags(&self) -> NonEmptyVec<&'_ str> {
+    fn supported_tags(&self) -> impl Iterator<Item = &'_ str> {
         self.platform_details().supported_tags()
     }
 
-    fn version(&self) -> Cow<'_, Version> {
-        let version = self.details.version;
-        Cow::Owned(Version::new([
-            u64::from(version.major),
-            u64::from(version.minor),
-            u64::from(version.micro),
-        ]))
+    fn primary_tag(&self) -> &str {
+        self.platform_details().primary_tag()
     }
 }
 
@@ -551,8 +544,7 @@ mod tests {
             expected_tags,
             interpreter
                 .supported_tags()
-                .iter()
-                .cloned()
+                .map(ToOwned::to_owned)
                 .collect::<Vec<_>>()
         );
     }

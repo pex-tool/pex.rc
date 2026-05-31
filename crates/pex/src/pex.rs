@@ -259,7 +259,6 @@ impl<'a> Pex<'a> {
     ) -> anyhow::Result<IndexMap<&'a str, ResolvedWheel<'a>>> {
         let supported_tags: HashMap<Tag, usize> = target
             .supported_tags()
-            .iter()
             .enumerate()
             .map(|(idx, tag)| Tag::parse(tag).map(|tag| (tag, idx)))
             .collect::<anyhow::Result<_>>()?;

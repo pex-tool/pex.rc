@@ -44,22 +44,18 @@ pub use crate::version::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-pub struct NonEmptyVec<T>(Vec<T>);
+struct NonEmptyVec<T>(Vec<T>);
 
 impl<T> NonEmptyVec<T> {
-    pub fn new(vec: Vec<T>) -> anyhow::Result<Self> {
+    fn new(vec: Vec<T>) -> anyhow::Result<Self> {
         if vec.is_empty() {
             bail!("Given an empty vec.")
         }
         Ok(Self(vec))
     }
 
-    pub fn first(&self) -> &T {
+    fn first(&self) -> &T {
         &self.0[0]
-    }
-
-    fn transformed<U: ?Sized>(&self, transform: impl Fn(&T) -> &U) -> NonEmptyVec<&U> {
-        NonEmptyVec(self.0.iter().map(transform).collect())
     }
 }
 
@@ -74,7 +70,8 @@ impl<T> Deref for NonEmptyVec<T> {
 pub trait PythonPlatform<'a> {
     fn description(&self) -> impl Display;
     fn marker_env(&self) -> &MarkerEnvironment;
-    fn supported_tags(&self) -> NonEmptyVec<&'_ str>;
+    fn supported_tags(&self) -> impl Iterator<Item = &'_ str>;
+    fn primary_tag(&self) -> &str;
     fn version(&self) -> Cow<'_, Version> {
         Cow::Borrowed(&self.marker_env().python_full_version().version)
     }
@@ -82,9 +79,10 @@ pub trait PythonPlatform<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct PlatformDetails<'a> {
-    pub source: String,
-    pub marker_env: MarkerEnvironment,
-    pub supported_tags: NonEmptyVec<Cow<'a, str>>,
+    #[serde(borrow)]
+    source: Cow<'a, str>,
+    marker_env: MarkerEnvironment,
+    supported_tags: NonEmptyVec<Cow<'a, str>>,
 }
 
 impl<'a> PlatformDetails<'a> {
@@ -94,7 +92,7 @@ impl<'a> PlatformDetails<'a> {
         supported_tags: Vec<Cow<'a, str>>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            source: source.to_string(),
+            source: Cow::Owned(source.to_string()),
             marker_env,
             supported_tags: NonEmptyVec::new(supported_tags)?,
         })
@@ -107,7 +105,10 @@ impl<'a> PlatformDetails<'a> {
         let platform = Platform::current()?;
         let release_info = Os::current_release()?;
         Ok(Self {
-            source: python_exe.display().to_string(),
+            source: Cow::Owned(format!(
+                "interpreter at {python_exe}",
+                python_exe = python_exe.display()
+            )),
             marker_env: markers::calculate(
                 python_version,
                 platform,
@@ -133,8 +134,12 @@ impl<'a> PythonPlatform<'a> for PlatformDetails<'a> {
         &self.marker_env
     }
 
-    fn supported_tags(&self) -> NonEmptyVec<&'_ str> {
-        self.supported_tags.transformed(|tag| tag.as_ref())
+    fn supported_tags(&self) -> impl Iterator<Item = &'_ str> {
+        self.supported_tags.iter().map(AsRef::as_ref)
+    }
+
+    fn primary_tag(&self) -> &str {
+        self.supported_tags.first()
     }
 }
 

@@ -16,7 +16,7 @@ pub struct Platform<'a> {
 
 impl<'a> Platform<'a> {
     pub fn of(interpreter: &'a Interpreter) -> anyhow::Result<Self> {
-        let tag = Tag::parse(interpreter.supported_tags().first())?;
+        let tag = Tag::parse(interpreter.primary_tag())?;
         Ok(Self {
             implementation: &tag.python[0..2],
             version: interpreter.details.version,

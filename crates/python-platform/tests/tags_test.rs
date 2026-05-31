@@ -63,9 +63,9 @@ fn test_abbreviated_platform(
     )
     .unwrap();
 
-    assert_eq!(interpreter.marker_env(), &platform_details.marker_env);
+    assert_eq!(interpreter.marker_env(), platform_details.marker_env());
     assert_eq!(
-        interpreter.supported_tags().iter().collect::<Vec<_>>(),
-        platform_details.supported_tags().iter().collect::<Vec<_>>()
+        interpreter.supported_tags().collect::<Vec<_>>(),
+        platform_details.supported_tags().collect::<Vec<_>>()
     );
 }
