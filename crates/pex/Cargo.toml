@@ -26,6 +26,7 @@ python-pkginfo = { workspace = true }
 python-platform = { path = "../python-platform" }
 rayon = { workspace = true }
 regex = { workspace = true }
+resolver = { path = "../resolver" }
 rfc2047-decoder = { workspace = true }
 rust-ini = { workspace = true }
 scripts = { path = "../scripts" }
@@ -37,6 +38,7 @@ tempfile = { workspace = true }
 url = { workspace = true }
 version-ranges = { workspace = true }
 walkdir = { workspace = true }
+wheel = { path = "../wheel" }
 zip = { workspace = true }
 
 [dev-dependencies]

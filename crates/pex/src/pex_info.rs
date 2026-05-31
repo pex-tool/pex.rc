@@ -12,8 +12,7 @@ use logging_timer::time;
 use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use crate::wheel::WheelFile;
+use wheel::WheelFile;
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub enum BinPath {
@@ -62,7 +61,7 @@ impl From<InterpreterSelectionStrategy> for SelectionStrategy {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct RawPexInfo<'a> {
     pub bind_resource_paths: Option<IndexMap<&'a str, &'a str>>,
     pub build_properties: IndexMap<&'a str, Value>,
@@ -87,7 +86,8 @@ pub struct RawPexInfo<'a> {
     pub pex_paths: Vec<Cow<'a, Path>>,
     #[serde(borrow)]
     pub pex_root: Option<Cow<'a, str>>,
-    pub requirements: Vec<&'a str>,
+    #[serde(borrow)]
+    pub requirements: Vec<Cow<'a, str>>,
     pub script: Option<&'a str>,
     pub strip_pex_env: Option<bool>,
     pub venv: bool,
@@ -123,9 +123,7 @@ impl PexInfo {
         })
     }
 
-    pub(crate) fn parse_distributions(
-        &self,
-    ) -> impl Iterator<Item = anyhow::Result<WheelFile<'_>>> {
+    pub fn parse_distributions(&self) -> impl Iterator<Item = anyhow::Result<WheelFile<'_>>> {
         self.borrow_info()
             .distributions
             .keys()

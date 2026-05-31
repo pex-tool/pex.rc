@@ -10,13 +10,13 @@ use csv::{StringRecord, Terminator};
 use fs_err::File;
 use ouroboros::self_referencing;
 
-use crate::wheel::file::MetadataDirs;
+use crate::file::MetadataDirs;
 
-pub(crate) struct Entry<'a> {
-    pub(crate) path: Cow<'a, Path>,
-    pub(crate) raw_path: &'a str,
-    pub(crate) hash: &'a str,
-    pub(crate) size: &'a str,
+pub struct Entry<'a> {
+    pub path: Cow<'a, Path>,
+    pub raw_path: &'a str,
+    pub hash: &'a str,
+    pub size: &'a str,
 }
 
 fn parse_entry_record<'a>(
@@ -71,7 +71,7 @@ pub struct Record {
 }
 
 impl Record {
-    pub(crate) fn parse(
+    pub fn parse(
         wheel_dir: &Path,
         metadata_dirs: &MetadataDirs,
     ) -> anyhow::Result<(Self, PathBuf)> {
@@ -107,7 +107,7 @@ impl Record {
         })
     }
 
-    pub(crate) fn entries(&self) -> &[Entry<'_>] {
+    pub fn entries(&self) -> &[Entry<'_>] {
         self.borrow_entries().as_slice()
     }
 
@@ -117,7 +117,7 @@ impl Record {
         })
     }
 
-    pub(crate) fn filtered(
+    pub fn filtered(
         &self,
         metadata_dirs: &MetadataDirs,
         stash_dir: Option<&Path>,

@@ -15,19 +15,16 @@ use chrono::{DateTime, Utc};
 use fs_err as fs;
 use fs_err::File;
 use logging_timer::time;
+use pex::{Layout, Pex};
 use platform::PosixPath;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use repackage::original_wheel_info::{OriginalWheelInfo, ZipFileName};
 use walkdir::WalkDir;
+use wheel::{Record, WheelFile, WheelLayout};
 use zip::read::ZipArchiveMetadata;
 use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
-
-use crate::wheel::WheelFile;
-use crate::wheel::layout::WheelLayout;
-use crate::wheel::original_wheel_info::{OriginalWheelInfo, ZipFileName};
-use crate::wheel::record::Record;
-use crate::{Layout, Pex};
 
 #[derive(Copy, Clone)]
 enum DirPexDepType {

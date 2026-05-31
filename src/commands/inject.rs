@@ -19,17 +19,19 @@ use indexmap::IndexSet;
 use interpreter::Interpreter;
 use log::info;
 use owo_colors::OwoColorize;
-use pex::{Layout, Pex, WheelFile, WheelOptions};
+use pex::{Layout, Pex};
 use platform::mark_executable;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scripts::{IdentifyInterpreter, Scripts};
 use target::SimplifiedTarget;
 use tempfile::NamedTempFile;
+use wheel::WheelFile;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::compression_method::CompressionArgs;
 use crate::embeds::{Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
+use crate::package::{WheelOptions, repackage_wheels};
 use crate::source;
 
 #[derive(Args)]
@@ -300,7 +302,7 @@ fn inject_pex_dir(
         }
     }
     let deps_dir = dest_pex.path().join(".deps");
-    pex::repackage_wheels(&pex, options, &deps_dir)?;
+    repackage_wheels(&pex, options, &deps_dir)?;
     let wheel_file_names = pex
         .info
         .raw()
@@ -456,7 +458,7 @@ fn inject_pex_zip(
     let deps_dir = tempfile::tempdir_in(pex.path.parent().unwrap_or_else(|| Path::new(".")))?;
     let stored_file_options =
         SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    pex::repackage_wheels(&pex, options, deps_dir.path())?;
+    repackage_wheels(&pex, options, deps_dir.path())?;
     let mut fingerprints = Vec::with_capacity(pex_info.distributions.len());
     for wheel_file_name in pex_info.distributions.keys().copied() {
         dst_zip.start_file(format!(".deps/{wheel_file_name}"), stored_file_options)?;

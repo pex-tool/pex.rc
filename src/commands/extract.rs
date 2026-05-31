@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use cache::Fingerprint;
 use clap::Args;
 use owo_colors::OwoColorize;
-use pex::{Pex, WheelOptions};
+use pex::Pex;
 
 use crate::compression_method::CompressionArgs;
+use crate::package::{WheelOptions, repackage_wheels};
 use crate::source;
 
 #[derive(Args)]
@@ -38,7 +39,7 @@ impl Extract {
 }
 
 fn to_dir(dest_dir: &Path, pex: Pex, options: &WheelOptions) -> anyhow::Result<()> {
-    let wheels = pex::repackage_wheels(&pex, options, dest_dir)?;
+    let wheels = repackage_wheels(&pex, options, dest_dir)?;
     let count = wheels.len();
 
     let mut wheel_info = Vec::with_capacity(count);

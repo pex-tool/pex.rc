@@ -10,11 +10,12 @@ use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
-use interpreter::Tag;
 use ouroboros::self_referencing;
 use pep440_rs::Version;
 use pep508_rs::PackageName;
 use zip::ZipArchive;
+
+use crate::Tag;
 
 pub struct WheelDir<'a> {
     project_name: &'a str,
@@ -23,7 +24,7 @@ pub struct WheelDir<'a> {
 }
 
 impl<'a> WheelDir<'a> {
-    pub(crate) fn contains(&self, path: &Path) -> bool {
+    pub fn contains(&self, path: &Path) -> bool {
         if let Some(Component::Normal(start)) = path.components().next() {
             let start = start.as_encoded_bytes();
             if start.starts_with(self.project_name.as_bytes()) {
@@ -126,7 +127,7 @@ pub struct MetadataDirs {
 }
 
 impl MetadataDirs {
-    pub(crate) fn locate_in_dir(
+    pub fn locate_in_dir(
         wheel_dir: &Path,
         project_name: &PackageName,
         version: &Version,
@@ -150,7 +151,7 @@ impl MetadataDirs {
         Self::locate(project_name, version, listing, wheel_dir.display())
     }
 
-    pub(crate) fn locate_in_zip(
+    pub fn locate_in_zip(
         zip: &ZipArchive<impl Read + Seek>,
         zip_source: impl Display,
         prefix: Option<&str>,
@@ -234,10 +235,10 @@ impl Clone for MetadataDirs {
 
 pub struct WheelFile<'a> {
     pub file_name: &'a str,
-    pub(crate) raw_project_name: &'a str,
+    pub raw_project_name: &'a str,
     pub project_name: PackageName,
-    pub(crate) raw_version: &'a str,
-    pub(crate) version: Version,
+    pub raw_version: &'a str,
+    pub version: Version,
     _build_tag: Option<&'a str>,
     pub tags: Vec<Tag<'a>>,
 }
@@ -310,11 +311,11 @@ impl<'a> WheelFile<'a> {
         })
     }
 
-    pub(crate) fn metadata_dirs(&self, wheel_dir: &Path) -> anyhow::Result<MetadataDirs> {
+    pub fn metadata_dirs(&self, wheel_dir: &Path) -> anyhow::Result<MetadataDirs> {
         MetadataDirs::locate_in_dir(wheel_dir, &self.project_name, &self.version)
     }
 
-    pub(crate) fn metadata_dirs_from_zip(
+    pub fn metadata_dirs_from_zip(
         &self,
         zip: &ZipArchive<impl Read + Seek>,
         zip_source: impl Display,
@@ -335,11 +336,11 @@ mod tests {
     use std::borrow::Cow;
     use std::str::FromStr;
 
-    use interpreter::Tag;
     use pep440_rs::Version;
     use pep508_rs::PackageName;
 
-    use crate::wheel::file::{WheelFile, locate_metadata_dir};
+    use crate::file::locate_metadata_dir;
+    use crate::{Tag, WheelFile};
 
     #[test]
     fn test_parse_wheel_file_name_simple() {

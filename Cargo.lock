@@ -1479,6 +1479,7 @@ dependencies = [
  "textwrap",
  "time",
  "url",
+ "wheel",
  "which",
  "windows-registry",
 ]
@@ -2078,6 +2079,7 @@ dependencies = [
  "python-platform",
  "rayon",
  "regex",
+ "resolver",
  "rfc2047-decoder",
  "rstest",
  "rust-ini",
@@ -2091,6 +2093,7 @@ dependencies = [
  "url",
  "version-ranges",
  "walkdir",
+ "wheel",
  "zip",
 ]
 
@@ -2119,13 +2122,17 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "logging",
+ "logging_timer",
  "owo-colors",
+ "pep508_rs",
  "pex",
  "platform",
  "python-platform",
  "python-proxy",
  "rayon",
+ "repackage",
  "request",
+ "resolver",
  "scripts",
  "serde_json",
  "sha2 0.11.0",
@@ -2134,6 +2141,7 @@ dependencies = [
  "tempfile",
  "url",
  "walkdir",
+ "wheel",
  "zip",
  "zstd",
 ]
@@ -2566,6 +2574,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
 
 [[package]]
+name = "repackage"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fs-err",
+ "logging_timer",
+ "ouroboros",
+ "pex",
+ "platform",
+ "rayon",
+ "serde",
+ "serde_json",
+ "walkdir",
+ "wheel",
+ "zip",
+]
+
+[[package]]
 name = "request"
 version = "0.0.0"
 dependencies = [
@@ -2613,6 +2640,23 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "resolver"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "dashmap",
+ "indexmap 2.14.0",
+ "logging_timer",
+ "pep440_rs",
+ "pep508_rs",
+ "python-platform",
+ "regex",
+ "url",
+ "version-ranges",
+ "wheel",
 ]
 
 [[package]]
@@ -3472,6 +3516,8 @@ dependencies = [
  "python-platform",
  "rayon",
  "regex",
+ "repackage",
+ "resolver",
  "scripts",
  "serde",
  "serde_json",
@@ -3664,6 +3710,7 @@ dependencies = [
  "python-platform",
  "python-proxy",
  "rayon",
+ "resolver",
  "rstest",
  "rust-ini",
  "scripts",
@@ -3672,6 +3719,7 @@ dependencies = [
  "tempfile",
  "testing",
  "walkdir",
+ "wheel",
  "zip",
 ]
 
@@ -3849,6 +3897,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31141ce3fc3e300ae89b78c0dd67f9708061d1d2eda54b8209346fd6be9a92c"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "wheel"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "csv",
+ "fs-err",
+ "glob",
+ "mailparse",
+ "ouroboros",
+ "pep440_rs",
+ "pep508_rs",
+ "python-pkginfo",
+ "regex",
+ "rfc2047-decoder",
+ "rstest",
+ "rust-ini",
+ "serde",
+ "serde_json",
+ "testing",
+ "url",
+ "zip",
 ]
 
 [[package]]

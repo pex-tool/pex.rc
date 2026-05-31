@@ -25,10 +25,10 @@ use pex::{
     Pex,
     PexPath,
     RawPexInfo,
-    WheelOptions,
     collect_loose_user_source,
     collect_zipped_user_source_indexes,
 };
+use repackage::{WheelOptions, repackage_wheels};
 use scripts::IdentifyInterpreter;
 use tar::Header;
 use zip::{CompressionMethod, ZipArchive};
@@ -83,10 +83,10 @@ pub(crate) fn extract(python: &Path, pex: Pex, args: ExtractArgs) -> anyhow::Res
         )
     };
     let options = WheelOptions::new(CompressionMethod::Deflated, None, timestamp);
-    pex::repackage_wheels(&pex, &options, &args.dest_dir)?;
+    repackage_wheels(&pex, &options, &args.dest_dir)?;
     let pex_path = PexPath::from_pex_info(&pex.info, true);
     for additional_pex in pex_path.load_pexes()? {
-        pex::repackage_wheels(&additional_pex, &options, &args.dest_dir)?;
+        repackage_wheels(&additional_pex, &options, &args.dest_dir)?;
     }
 
     if args.sources || args.serve {
@@ -253,15 +253,7 @@ build-backend = "setuptools.build_meta"
         "packages",
         sources.packages.into_iter().map(Cow::Owned).collect(),
     );
-    let install_requires = IniList(
-        "install_requires",
-        pex_info
-            .requirements
-            .iter()
-            .copied()
-            .map(Cow::Borrowed)
-            .collect(),
-    );
+    let install_requires = IniList("install_requires", pex_info.requirements.to_vec());
 
     let mut console_scripts = Vec::with_capacity(1);
     if let Some(entry_point) = pex_info.entry_point

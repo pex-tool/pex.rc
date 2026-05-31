@@ -20,12 +20,14 @@ pex = { path = "../pex" }
 platform = { path = "../platform" }
 python-platform = { path = "../python-platform" }
 rayon = { workspace = true }
+resolver = { path = "../resolver" }
 rust-ini = { workspace = true }
 scripts = { path = "../scripts" }
 serde_json = { workspace = true }
 target-lexicon = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
+wheel = { path = "../wheel" }
 zip = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

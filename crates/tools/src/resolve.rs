@@ -7,7 +7,8 @@ use indexmap::IndexMap;
 use interpreter::{Interpreter, SearchPath};
 use pep440_rs::{Version, VersionSpecifiers};
 use pep508_rs::{PackageName, Requirement};
-use pex::{CollectWheelMetadata, Pex};
+use pex::Pex;
+use resolver::CollectWheelMetadata;
 use url::Url;
 
 pub(crate) struct WheeInfo<'a> {

@@ -1,0 +1,27 @@
+[package]
+name = "wheel"
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+csv = { workspace = true }
+fs-err = { workspace = true }
+mailparse = { workspace = true }
+ouroboros = { workspace = true }
+pep440_rs = { workspace = true }
+pep508_rs = { workspace = true }
+python-pkginfo = { workspace = true }
+regex = { workspace = true }
+rfc2047-decoder = { workspace = true }
+rust-ini = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+glob = { workspace = true }
+rstest = { workspace = true }
+testing = { path = "../testing" }

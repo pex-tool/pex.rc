@@ -25,12 +25,15 @@ members = [
     "crates/platform",
     "crates/python-platform",
     "crates/python-proxy",
+    "crates/repackage",
     "crates/request",
+    "crates/resolver",
     "crates/scripts",
     "crates/target",
     "crates/testing",
     "crates/tools",
-    "crates/venv"
+    "crates/venv",
+    "crates/wheel"
 ]
 
 [package.metadata.build]
@@ -245,13 +248,17 @@ interpreter = { path = "crates/interpreter" }
 itertools = { workspace = true }
 log = { workspace = true }
 logging = { path = "crates/logging" }
+logging_timer = { workspace = true }
 owo-colors = { workspace = true }
+pep508_rs = { workspace = true }
 pex = { path = "crates/pex" }
 platform = { path = "crates/platform" }
 python-platform = { path = "crates/python-platform" }
 python-proxy = { path = "crates/python-proxy" }
 rayon = { workspace = true }
 request = { path = "crates/request" }
+repackage = { path = "crates/repackage" }
+resolver = { path = "crates/resolver" }
 scripts = { path = "crates/scripts", features = ["embedded"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -260,5 +267,6 @@ target = { path = "crates/target" }
 tempfile = { workspace = true }
 url = { workspace = true }
 walkdir = { workspace = true }
+wheel = { path = "crates/wheel" }
 zip = { workspace = true }
 zstd = { workspace = true }

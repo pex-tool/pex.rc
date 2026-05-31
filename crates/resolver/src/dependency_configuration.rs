@@ -15,8 +15,6 @@ use regex::{Regex, RegexBuilder};
 use url::Url;
 use version_ranges::Ranges;
 
-use crate::PexInfo;
-
 enum ExcludeConstraint {
     None,
     VersionRanges(Ranges<Version>),
@@ -35,10 +33,8 @@ static OVERRIDE_REPLACE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 impl DependencyConfiguration {
-    pub(crate) fn load(pex_info: &PexInfo) -> anyhow::Result<Self> {
-        let excluded = pex_info
-            .raw()
-            .excluded
+    pub fn parse(excluded: &[&str], overridden: &[&str]) -> anyhow::Result<Self> {
+        let parsed_excludes = excluded
             .iter()
             .map(|excluded| {
                 match Requirement::<Url>::from_str(excluded).map_err(|err| anyhow!("{err}")) {
@@ -57,8 +53,8 @@ impl DependencyConfiguration {
             })
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
-        let mut overridden: HashMap<PackageName, IndexSet<Requirement<Url>>> = HashMap::new();
-        for override_spec in &pex_info.raw().overridden {
+        let mut parsed_overrides: HashMap<PackageName, IndexSet<Requirement<Url>>> = HashMap::new();
+        for override_spec in overridden {
             let (name, requirement) = if let Some(captures) =
                 OVERRIDE_REPLACE.captures(override_spec)
                 && let Some(name) = captures.name("project")
@@ -72,16 +68,19 @@ impl DependencyConfiguration {
                 let requirement = Requirement::from_str(override_spec)?;
                 (requirement.name.clone(), requirement)
             };
-            overridden.entry(name).or_default().insert(requirement);
+            parsed_overrides
+                .entry(name)
+                .or_default()
+                .insert(requirement);
         }
 
         Ok(Self {
-            excluded,
-            overridden,
+            excluded: parsed_excludes,
+            overridden: parsed_overrides,
         })
     }
 
-    pub(crate) fn excluded(&self, requirement: &Requirement<Url>) -> bool {
+    pub fn excluded(&self, requirement: &Requirement<Url>) -> bool {
         if let Some(constraint) = self.excluded.get(&requirement.name) {
             match constraint {
                 ExcludeConstraint::None => true,
@@ -101,7 +100,7 @@ impl DependencyConfiguration {
         }
     }
 
-    pub(crate) fn overridden<'a>(
+    pub fn overridden<'a>(
         &self,
         requirement: &Requirement<Url>,
         target: &impl PythonPlatform<'a>,

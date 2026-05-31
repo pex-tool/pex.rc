@@ -1,6 +1,7 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::io::{BufReader, Cursor, ErrorKind, Read, Seek, Write};
@@ -16,16 +17,9 @@ use indexmap::IndexMap;
 use logging_timer::time;
 use pex::{
     BinPath,
-    EntryPoint,
-    EntryPoints,
     Layout,
-    MetadataDirs,
     Pex,
     RawPexInfo,
-    Record,
-    ResolvedWheel,
-    WheelDir,
-    WheelLayout,
     collect_loose_user_source,
     collect_zipped_user_source_indexes,
     filter_zipped_user_source,
@@ -33,6 +27,7 @@ use pex::{
 use platform::{Perms, mark_executable, path_as_bytes, path_as_str, symlink_or_link_or_copy};
 use python_platform::PythonVersion;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use resolver::ResolvedWheel;
 use scripts::{
     Scripts,
     VenvPex,
@@ -42,6 +37,7 @@ use scripts::{
     VenvPexRepl,
 };
 use serde_json::Value;
+use wheel::{EntryPoint, EntryPoints, MetadataDirs, Record, WheelDir, WheelLayout};
 use zip::ZipArchive;
 
 use crate::Provenance;
@@ -1201,7 +1197,7 @@ fn write_repl(
     };
 
     struct ActivationDetails<'a> {
-        requirements: &'a Vec<&'a str>,
+        requirements: &'a Vec<Cow<'a, str>>,
         selected_wheels: &'a Vec<&'a str>,
     }
 

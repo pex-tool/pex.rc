@@ -1,0 +1,17 @@
+[package]
+name = "resolver"
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+dashmap = { workspace = true }
+indexmap = { workspace = true }
+logging_timer = { workspace = true }
+pep440_rs = { workspace = true }
+pep508_rs = { workspace = true }
+python-platform = { path = "../python-platform" }
+regex = { workspace = true }
+url = { workspace = true }
+version-ranges = { workspace = true }
+wheel = { path = "../wheel" }

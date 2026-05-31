@@ -3,7 +3,8 @@
 
 use chrono::{DateTime, Utc};
 use clap::{Args, ValueEnum};
-use pex::WheelOptions;
+
+use crate::package::WheelOptions;
 
 #[derive(Clone, ValueEnum)]
 pub enum CompressionMethod {

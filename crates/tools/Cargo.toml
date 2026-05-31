@@ -34,6 +34,8 @@ platform = { path = "../platform" }
 python-platform = { path = "../python-platform" }
 rayon = { workspace = true }
 regex = { workspace = true }
+repackage = { path = "../repackage" }
+resolver = { path = "../resolver" }
 scripts = { path = "../scripts" }
 shell-quote = { workspace = true }
 serde = { workspace = true }

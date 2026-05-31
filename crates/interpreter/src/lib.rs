@@ -14,7 +14,6 @@ mod interpreter;
 mod platform;
 mod pyenv;
 mod search_path;
-mod tag;
 mod version;
 
 pub use constraints::unix::calculate_compatible_binary_names as calculate_compatible_unix_binary_names;
@@ -27,5 +26,5 @@ pub use constraints::{
 pub use interpreter::{Interpreter, InterpreterDetails};
 pub use platform::Platform;
 pub use search_path::SearchPath;
-pub use tag::Tag;
 pub use version::{LATEST_STABLE, OLDEST_SUPPORTED_STABLE};
+pub use wheel::Tag;

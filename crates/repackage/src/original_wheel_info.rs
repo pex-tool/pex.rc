@@ -28,10 +28,10 @@ impl DateTime {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct ZipFileName<'a>(#[serde(borrow)] Cow<'a, str>);
+pub struct ZipFileName<'a>(#[serde(borrow)] Cow<'a, str>);
 
 impl<'a> ZipFileName<'a> {
-    pub(crate) fn from(path: PathBuf) -> anyhow::Result<Self> {
+    pub fn from(path: PathBuf) -> anyhow::Result<Self> {
         Ok(Self(Cow::Owned(
             path.into_os_string()
                 .into_string()
@@ -40,12 +40,12 @@ impl<'a> ZipFileName<'a> {
     }
 
     #[cfg(unix)]
-    pub(crate) fn as_path(&self) -> Cow<'_, Path> {
+    pub fn as_path(&self) -> Cow<'_, Path> {
         Cow::Borrowed(Path::new(self.0.as_ref()))
     }
 
     #[cfg(windows)]
-    pub(crate) fn as_path(&self) -> Cow<'_, Path> {
+    pub fn as_path(&self) -> Cow<'_, Path> {
         Cow::Owned(self.0.split("/").collect())
     }
 }
@@ -71,7 +71,7 @@ struct RawOriginalWheelInfo<'a> {
 }
 
 #[self_referencing]
-pub(crate) struct OriginalWheelInfo {
+pub struct OriginalWheelInfo {
     data: Vec<u8>,
     #[borrows(data)]
     #[covariant]
@@ -79,11 +79,11 @@ pub(crate) struct OriginalWheelInfo {
 }
 
 impl OriginalWheelInfo {
-    pub(crate) const fn file_name() -> &'static str {
+    pub const fn file_name() -> &'static str {
         "original-whl-info.json"
     }
 
-    pub(crate) fn load_from_dir(dir: impl AsRef<Path>) -> anyhow::Result<Option<Self>> {
+    pub fn load_from_dir(dir: impl AsRef<Path>) -> anyhow::Result<Option<Self>> {
         let path = dir.as_ref().join(Self::file_name());
         Ok(if path.exists() {
             let mut file = File::open(path)?;
@@ -94,17 +94,17 @@ impl OriginalWheelInfo {
         })
     }
 
-    pub(crate) fn read(contents: impl Read, size: u64) -> anyhow::Result<Self> {
+    pub fn read(contents: impl Read, size: u64) -> anyhow::Result<Self> {
         let mut data = Vec::with_capacity(usize::try_from(size)?);
         BufReader::new(contents).read_to_end(&mut data)?;
         Ok(Self::try_new(data, |data| serde_json::from_slice(data))?)
     }
 
-    pub(crate) fn filename(&self) -> &str {
+    pub fn filename(&self) -> &str {
         self.borrow_info().filename
     }
 
-    pub(crate) fn iter_file_options(
+    pub fn iter_file_options(
         &self,
         base_options: SimpleFileOptions,
         timestamp: Option<chrono::DateTime<Utc>>,

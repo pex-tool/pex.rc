@@ -10,7 +10,7 @@ use pep508_rs::{PackageName, Requirement};
 use python_pkginfo::Metadata;
 use url::Url;
 
-use crate::wheel::file::{MetadataDirs, WheelFile};
+use crate::file::{MetadataDirs, WheelFile};
 
 pub struct WheelMetadata<'a> {
     pub file_name: &'a str,
@@ -24,7 +24,7 @@ pub struct WheelMetadata<'a> {
     pub metadata_dirs: MetadataDirs,
 }
 
-pub(crate) trait MetadataReader {
+pub trait MetadataReader {
     fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs>;
     fn read(
         &mut self,
@@ -47,7 +47,7 @@ fn parse_root_is_purelib_from_wheel(content: &[u8]) -> anyhow::Result<bool> {
 }
 
 impl<'a> WheelMetadata<'a> {
-    pub(crate) fn parse(
+    pub fn parse(
         wheel_file: WheelFile<'a>,
         metadata_dirs: MetadataDirs,
         metadata_reader: &mut impl MetadataReader,
@@ -104,9 +104,7 @@ mod tests {
     use testing::{tmp_dir, venv_python_exe};
     use zip::ZipArchive;
 
-    use crate::wheel::MetadataDirs;
-    use crate::wheel::file::WheelFile;
-    use crate::wheel::metadata::{MetadataReader, WheelMetadata};
+    use crate::{MetadataDirs, MetadataReader, WheelFile, WheelMetadata};
 
     #[fixture]
     #[once]

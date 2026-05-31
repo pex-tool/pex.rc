@@ -2,36 +2,35 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::FileType;
 use std::io;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail};
-use dashmap::DashMap;
 use fs_err as fs;
 use fs_err::File;
 use indexmap::IndexMap;
-use interpreter::{Interpreter, InterpreterConstraints, SearchPath, Tag};
+use interpreter::{Interpreter, InterpreterConstraints, SearchPath};
 use itertools::Itertools;
 use log::{Level, debug, warn};
 use logging_timer::{time, timer};
-use pep440_rs::{Version, VersionSpecifiers};
-use pep508_rs::{ExtraName, PackageName, Requirement, VersionOrUrl};
+use pep508_rs::Requirement;
 use python_platform::PythonPlatform;
 use rayon::prelude::*;
+use resolver::dependency_configuration::DependencyConfiguration;
+use resolver::{CollectWheelMetadata, ResolvedWheel};
 use scripts::{IdentifyInterpreter, Scripts};
 use strum_macros::{AsRefStr, EnumString};
 use url::Url;
 use walkdir::{DirEntry, WalkDir};
+use wheel::{MetadataDirs, MetadataReader, WheelFile};
 use zip::ZipArchive;
 
-use crate::wheel::{MetadataDirs, MetadataReader, WheelFile, WheelMetadata};
-use crate::{DependencyConfiguration, InterpreterSelectionStrategy, PexInfo, WheelDir};
+use crate::{InterpreterSelectionStrategy, PexInfo};
 
 #[derive(AsRefStr, EnumString)]
 pub enum Layout {
@@ -129,78 +128,11 @@ pub struct ResolveError {
     pub err: anyhow::Error,
 }
 
-pub struct ResolvedWheel<'a> {
-    file_name: &'a str,
-    pub project_name: &'a str,
-    pub version: &'a str,
-    pub root_is_purelib: bool,
-    pub metadata_dirs: MetadataDirs,
-}
-
-impl<'a> ResolvedWheel<'a> {
-    pub fn data_dir(&'a self) -> WheelDir<'a> {
-        self.metadata_dirs.data_dir()
-    }
-
-    pub fn dist_info_dir(&'a self) -> WheelDir<'a> {
-        self.metadata_dirs.dist_info_dir()
-    }
-
-    pub fn pex_info_dir(&'a self) -> WheelDir<'a> {
-        self.metadata_dirs.pex_info_dir()
-    }
-}
-
-#[derive(Clone)]
-pub struct CollectWheelMetadata<'a>(Arc<DashMap<&'a str, WheelMetadata<'a>>>);
-
-impl<'a> Default for CollectWheelMetadata<'a> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<'a> CollectWheelMetadata<'a> {
-    pub fn new() -> Self {
-        Self(Arc::new(DashMap::new()))
-    }
-
-    pub fn into_collected(self) -> anyhow::Result<Vec<WheelMetadata<'a>>> {
-        let metadata = Arc::try_unwrap(self.0)
-            .ok()
-            .ok_or_else(|| anyhow!("Metadata is still being collected."))?;
-        Ok(metadata.into_iter().map(|(_, metadata)| metadata).collect())
-    }
-
-    fn collect(&self, file_name: &'a str, metadata_func: impl FnOnce() -> WheelMetadata<'a>) {
-        self.0.entry(file_name).or_insert_with(metadata_func);
-    }
-}
-
 pub struct Resolve<'a> {
     pub interpreter: Interpreter,
     pub wheels: IndexMap<&'a str, ResolvedWheel<'a>>,
     pub scripts: Scripts,
     pub additional_wheels: Vec<(&'a Pex<'a>, IndexMap<&'a str, ResolvedWheel<'a>>)>,
-}
-
-#[derive(Hash, Eq, PartialEq)]
-struct RequirementKey {
-    package_name: PackageName,
-    extras: BTreeSet<ExtraName>,
-}
-
-impl RequirementKey {
-    fn of(requirement: &Requirement<Url>) -> Self {
-        Self {
-            package_name: requirement.name.clone(),
-            extras: requirement.extras.iter().cloned().collect(),
-        }
-    }
-
-    fn satisfies(&self, requested: &RequirementKey) -> bool {
-        self.package_name == requested.package_name && requested.extras.is_subset(&self.extras)
-    }
 }
 
 impl<'a> Pex<'a> {
@@ -252,8 +184,10 @@ impl<'a> Pex<'a> {
             Layout::ZipApp => Ok(Scripts::Zipped(ZipArchive::new(File::open(&path)?)?)),
         }
     }
+
     pub fn dependency_configuration(&self) -> anyhow::Result<DependencyConfiguration> {
-        DependencyConfiguration::load(&self.info)
+        let pex_info = self.info.raw();
+        DependencyConfiguration::parse(pex_info.excluded.as_slice(), pex_info.overridden.as_slice())
     }
 
     #[time("debug", "Pex.{}")]
@@ -263,233 +197,55 @@ impl<'a> Pex<'a> {
         dependency_configuration: &DependencyConfiguration,
         collect_extra_metadata: Option<CollectWheelMetadata<'a>>,
     ) -> anyhow::Result<IndexMap<&'a str, ResolvedWheel<'a>>> {
-        let supported_tags: HashMap<Tag, usize> = target
-            .supported_tags()
-            .enumerate()
-            .map(|(idx, tag)| Tag::parse(tag).map(|tag| (tag, idx)))
-            .collect::<anyhow::Result<_>>()?;
-
-        let wheel_files = self
-            .info
-            .parse_distributions()
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let ranked_wheel_files = wheel_files
-            .into_iter()
-            .filter_map(|wheel_file| {
-                for tag in &wheel_file.tags {
-                    if let Some(rank) = supported_tags.get(tag) {
-                        return Some(RankedWheelFile {
-                            wheel_file,
-                            rank: *rank,
-                        });
-                    }
-                }
-                None
-            })
-            .collect::<Vec<_>>();
-
-        let ranked_wheels = self.load_wheel_metadata(target, ranked_wheel_files)?;
-
-        struct WheelInfo<'b> {
-            file_name: &'b str,
-            raw_project_name: &'b str,
-            raw_version: &'b str,
-            version: Version,
-            requires_dists: Vec<Requirement<Url>>,
-            requires_python: Option<VersionSpecifiers>,
-            root_is_purelib: bool,
-            rank: usize,
-            metadata_dirs: MetadataDirs,
-        }
-
-        let mut wheels_by_project_name: HashMap<PackageName, Vec<WheelInfo>> =
-            HashMap::with_capacity(ranked_wheels.len());
-        for ranked_wheel in ranked_wheels {
-            wheels_by_project_name
-                .entry(ranked_wheel.metadata.project_name)
-                .or_default()
-                .push(WheelInfo {
-                    file_name: ranked_wheel.metadata.file_name,
-                    raw_project_name: ranked_wheel.metadata.raw_project_name,
-                    raw_version: ranked_wheel.metadata.raw_version,
-                    version: ranked_wheel.metadata.version,
-                    requires_dists: ranked_wheel.metadata.requires_dists,
-                    requires_python: ranked_wheel.metadata.requires_python,
-                    root_is_purelib: ranked_wheel.metadata.root_is_purelib,
-                    rank: ranked_wheel.rank,
-                    metadata_dirs: ranked_wheel.metadata.metadata_dirs,
-                })
-        }
-        for wheels in wheels_by_project_name.values_mut() {
-            wheels.sort_by_key(|WheelInfo { rank, .. }| *rank);
-        }
-
-        let mut resolved_by_project_name: IndexMap<RequirementKey, ResolvedWheel> =
-            IndexMap::with_capacity(wheels_by_project_name.len());
-        let mut indexed_extras: Vec<Vec<ExtraName>> = vec![vec![]];
-        let mut to_resolve: VecDeque<(Requirement<Url>, usize)> = self
+        let requirements: Vec<Requirement<Url>> = self
             .info
             .raw()
             .requirements
             .iter()
-            .map(|requirement| {
-                Requirement::from_str(requirement).map(|requirement| (requirement, 0))
-            })
-            .filter_map(|result| match result {
-                Ok((requirement, extras_index)) => {
-                    if dependency_configuration.excluded(&requirement) {
-                        None
-                    } else {
-                        Some(Ok((requirement, extras_index)))
-                    }
-                }
-                Err(err) => Some(Err(err)),
-            })
-            .collect::<Result<_, _>>()?;
-        let marker_env = target.marker_env();
-        let no_wheels: Vec<WheelInfo> = vec![];
-        while let Some((requirement, extras_index)) = to_resolve.pop_front() {
-            let requirement_key = RequirementKey::of(&requirement);
+            .map(|requirement| Ok(requirement.as_ref().parse()?))
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-            // Already processed.
-            if resolved_by_project_name.contains_key(&requirement_key) {
-                continue;
-            }
-            if resolved_by_project_name
-                .keys()
-                .any(|key| key.satisfies(&requirement_key))
-            {
-                continue;
-            }
+        let parse_wheel_files = || {
+            self.info
+                .parse_distributions()
+                .collect::<anyhow::Result<Vec<_>>>()
+        };
 
-            // Does not apply.
-            if !requirement
-                .marker
-                .evaluate(marker_env, &indexed_extras[extras_index])
-            {
-                continue;
-            }
-
-            let wheels = wheels_by_project_name
-                .get(&requirement.name)
-                .or_else(|| {
-                    if self.info.raw().ignore_errors {
-                        Some(&no_wheels)
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| {
-                    let inapplicable_wheels = self
-                        .info
-                        .parse_distributions()
-                        .filter_map(|result| match result {
-                            Ok(wheel_file) if wheel_file.project_name == requirement.name => {
-                                Some(wheel_file.file_name)
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
-                    let count = inapplicable_wheels.len();
-                    let wheels = if count == 1 { "wheel" } else { "wheels" };
-                    let reason = if inapplicable_wheels.is_empty() {
-                        format_args!(
-                            "The PEX contains {count} embedded {wheels} for project: {project}",
-                            project = requirement.name
-                        )
-                    } else {
-                        format_args!(
-                            "The PEX contains {count} inapplicable {wheels} for project: \
-                            {project}\n\
-                            {inapplicable_wheels}",
-                            project = requirement.name,
-                            inapplicable_wheels = inapplicable_wheels.join("\n")
-                        )
-                    };
-                    anyhow!(
-                        "The PEX at {path} has requirement {requirement} that cannot be satisfied \
-                        for {target}.\n\
-                        {reason}",
-                        path = self.path.display(),
-                        target = target.description(),
-                        reason = reason,
-                    )
-                })?;
-            for WheelInfo {
-                file_name,
-                raw_project_name,
-                raw_version,
-                version,
-                requires_dists,
-                requires_python,
-                root_is_purelib,
-                metadata_dirs,
-                ..
-            } in wheels
-            {
-                if let Some(version_or_url) = requirement.version_or_url.as_ref() {
-                    match version_or_url {
-                        VersionOrUrl::VersionSpecifier(version_specifier) => {
-                            if !version_specifier.contains(version) {
-                                continue;
-                            }
-                        }
-                        VersionOrUrl::Url(url) => bail!(
-                            "A PEX should never contain an URL requirement.\
-                            The PEX at {path} requires: {url}",
-                            path = self.path.display()
-                        ),
-                    }
-                }
-                let extras_index = if requirement.extras.is_empty() {
-                    0
-                } else {
-                    let idx = indexed_extras.len();
-                    indexed_extras.push(requirement.extras);
-                    idx
-                };
-                if let Some(extra_metadata) = collect_extra_metadata.as_ref() {
-                    extra_metadata.collect(file_name, || WheelMetadata {
-                        file_name,
-                        raw_project_name,
-                        project_name: requirement.name.clone(),
-                        raw_version,
-                        version: version.clone(),
-                        requires_dists: requires_dists.clone(),
-                        requires_python: requires_python.clone(),
-                        root_is_purelib: *root_is_purelib,
-                        metadata_dirs: metadata_dirs.clone(),
-                    })
-                }
-                resolved_by_project_name.insert(
-                    requirement_key,
-                    ResolvedWheel {
-                        file_name,
-                        project_name: raw_project_name,
-                        version: raw_version,
-                        root_is_purelib: *root_is_purelib,
-                        metadata_dirs: metadata_dirs.clone(),
-                    },
-                );
-                for req in requires_dists {
-                    if dependency_configuration.excluded(req) {
-                        continue;
-                    }
-                    to_resolve.push_back((
-                        dependency_configuration
-                            .overridden(req, target, &indexed_extras[extras_index])?
-                            .unwrap_or_else(|| req.clone()),
-                        extras_index,
-                    ))
-                }
-                break;
-            }
+        let ignore_errors = self.info.raw().ignore_errors;
+        match self.layout {
+            // N.B.: When deps_are_wheel_files for a `--layout loose` PEX, our layout detection
+            // detects as `--layout packed`, which properly handles the .whl zips.
+            Layout::Loose => resolver::resolve_wheels(
+                target,
+                requirements,
+                parse_wheel_files,
+                &mut LoosePexMetadataReader(self.path),
+                dependency_configuration,
+                collect_extra_metadata,
+                ignore_errors,
+            ),
+            // N.B.: When deps_are_wheel_files for a `--layout packed` PEX, the packed wheel chroot
+            // zips and normal .whl zips have the same for code and metadata; so no differentiation
+            // in behavior is needed.
+            Layout::Packed => resolver::resolve_wheels(
+                target,
+                requirements,
+                parse_wheel_files,
+                &mut PackedPexMetadataReader(self.path),
+                dependency_configuration,
+                collect_extra_metadata,
+                ignore_errors,
+            ),
+            Layout::ZipApp => resolver::resolve_wheels(
+                target,
+                requirements,
+                parse_wheel_files,
+                &mut ZipAppPexMetadataReader::new(self.path, self.info.raw().deps_are_wheel_files)?,
+                dependency_configuration,
+                collect_extra_metadata,
+                ignore_errors,
+            ),
         }
-        Ok(resolved_by_project_name
-            .into_values()
-            .map(|resolved_wheel| (resolved_wheel.file_name, resolved_wheel))
-            .collect())
     }
 
     pub fn resolve_all(
@@ -682,45 +438,6 @@ impl<'a> Pex<'a> {
                 .join("\n")
         )
     }
-
-    fn load_wheel_metadata(
-        &'a self,
-        target: &impl PythonPlatform<'a>,
-        wheel_files: Vec<RankedWheelFile<'a>>,
-    ) -> anyhow::Result<Vec<RankedWheel<'a>>> {
-        let python_version = target.version();
-        match self.layout {
-            // N.B.: When deps_are_wheel_files for a `--layout loose` PEX, our layout detection
-            // detects as `--layout packed`, which properly handles the .whl zips.
-            Layout::Loose => read_wheel_metadata(
-                python_version.as_ref(),
-                wheel_files,
-                &mut LoosePexMetadataReader(self.path),
-            ),
-            // N.B.: When deps_are_wheel_files for a `--layout packed` PEX, the packed wheel chroot
-            // zips and normal .whl zips have the same for code and metadata; so no differentiation
-            // in behavior is needed.
-            Layout::Packed => read_wheel_metadata(
-                python_version.as_ref(),
-                wheel_files,
-                &mut PackedPexMetadataReader(self.path),
-            ),
-            Layout::ZipApp => read_wheel_metadata(
-                python_version.as_ref(),
-                wheel_files,
-                &mut ZipAppPexMetadataReader::new(self.path, self.info.raw().deps_are_wheel_files)?,
-            ),
-        }
-    }
-}
-struct RankedWheelFile<'a> {
-    wheel_file: WheelFile<'a>,
-    rank: usize,
-}
-
-struct RankedWheel<'a> {
-    metadata: WheelMetadata<'a>,
-    rank: usize,
 }
 
 struct ZipAppPexMetadataReader<'a> {
@@ -829,29 +546,6 @@ impl<'a> MetadataReader for PackedPexMetadataReader<'a> {
     }
 }
 
-fn read_wheel_metadata<'a>(
-    python_version: &Version,
-    ranked_wheel_files: Vec<RankedWheelFile<'a>>,
-    metadata_reader: &mut impl MetadataReader,
-) -> anyhow::Result<Vec<RankedWheel<'a>>> {
-    let mut ranked_wheels = Vec::with_capacity(ranked_wheel_files.len());
-    for ranked_wheel_file in ranked_wheel_files {
-        let metadata_dirs = metadata_reader.locate_dirs(&ranked_wheel_file.wheel_file)?;
-        let metadata =
-            WheelMetadata::parse(ranked_wheel_file.wheel_file, metadata_dirs, metadata_reader)?;
-        if let Some(requires_python) = &metadata.requires_python
-            && !requires_python.contains(python_version)
-        {
-            continue;
-        }
-        ranked_wheels.push(RankedWheel {
-            metadata,
-            rank: ranked_wheel_file.rank,
-        });
-    }
-    Ok(ranked_wheels)
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -863,16 +557,16 @@ mod tests {
     use interpreter::{Interpreter, SearchPath};
     use pep440_rs::VersionSpecifiers;
     use pep508_rs::{Requirement, VersionOrUrl};
+    use resolver::ResolvedWheel;
     use rstest::{fixture, rstest};
     use scripts::{IdentifyInterpreter, Scripts};
     use testing::{embedded_scripts, interpreter_identification_script, python_exe, tmp_dir};
     use url::Url;
     use version_ranges::Ranges;
+    use wheel::WheelFile;
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
 
-    use crate::pex::ResolvedWheel;
-    use crate::wheel::WheelFile;
     use crate::{Pex, PexPath};
 
     const EXPECTED_ANSICOLORS_PEX_WHEELS: [&str; 1] = ["ansicolors==1.1.8"];
