@@ -193,12 +193,7 @@ fn prepare_venv<'a>(
     let search_path = SearchPath::from_env()?;
     let venv_dir = venv_dir(Some(python), &pex, &search_path, &additional_pexes)?;
     if let Some(venv_interpreter) = atomic_dir(&venv_dir, |work_dir| {
-        let mut resolve = pex.resolve(
-            Some(python),
-            additional_pexes.iter(),
-            search_path,
-            None,
-        )?;
+        let mut resolve = pex.resolve(Some(python), additional_pexes.iter(), search_path, None)?;
         let venv = Virtualenv::create(
             resolve.interpreter,
             Cow::Borrowed(work_dir),
