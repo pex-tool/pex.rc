@@ -32,7 +32,7 @@ fn parse_entry_record<'a>(
             match fields.as_slice() {
                 &[raw_path, hash, size] => {
                     // N.B.: The spec here is very poor:
-                    // https://packaging.python.org/en/latest/specifications/recording-installed-packages/#the-record-file
+                    // https://packaging.python.org/specifications/recording-installed-packages/#the-record-file
                     // There is no such thing as "on Windows" since a non-platform-specific wheel
                     // could be created on Windows or Unix and uploaded to a registry. That said,
                     // the occurrence of a dir name like bin/suffix\\ on Windows or vice versa seems

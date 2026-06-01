@@ -12,7 +12,7 @@ use fs_err::File;
 #[derive(Args)]
 pub struct Output {
     /// A file to send output to; STDOUT by default.
-    #[arg(short = 'o', long)]
+    #[arg(short = 'o', long, help_heading = "Output")]
     output: Option<PathBuf>,
 }
 

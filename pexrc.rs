@@ -4,7 +4,7 @@
 #![deny(clippy::all)]
 
 use clap::{Args, Parser, Subcommand};
-use pexrc::commands::{Build, Extract, Inject, Platform, Script, info};
+use pexrc::commands::{Build, Extract, Inject, Platform, Python, Script, info};
 
 /// Pex Runtime Control.
 #[derive(Parser)]
@@ -51,6 +51,9 @@ enum Commands {
     /// Work with supported platforms.
     #[command(subcommand)]
     Platform(Platform),
+    /// Work with local Python installations.
+    #[command(subcommand)]
+    Python(Python),
     /// Create a Windows-style Python venv console script executable.
     Script(Script),
 }
@@ -95,6 +98,10 @@ fn main() -> anyhow::Result<()> {
         Commands::Platform(platform) => match platform {
             Platform::List(list) => list.execute(),
             Platform::Python(python) => python.execute(),
+        },
+        Commands::Python(python) => match python {
+            Python::Inspect(inspect) => inspect.execute(),
+            Python::List(list) => list.execute(),
         },
         Commands::Script(script) => script.execute(),
     }

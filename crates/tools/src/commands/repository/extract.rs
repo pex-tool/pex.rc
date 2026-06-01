@@ -427,7 +427,7 @@ fn add_loose_source(
             .path()
             .strip_prefix(pex)
             .expect("Walker paths of a PEX directory are always sub-paths");
-        if entry.path().is_file()
+        if entry.file_type().is_file()
             && !entry_relpath.as_os_str().as_encoded_bytes().contains(&b'/')
             && let Some(file_name) = entry_relpath.file_name()
             && file_name.as_encoded_bytes().ends_with(b".py")
@@ -446,7 +446,7 @@ fn add_loose_source(
                     .expect("We confirmed the file name ended with .py above")
                     .to_string(),
             );
-        } else if entry.path().is_dir() {
+        } else if entry.file_type().is_dir() {
             let mut package = String::new();
             for component in entry_relpath.components() {
                 if let Component::Normal(name) = component {

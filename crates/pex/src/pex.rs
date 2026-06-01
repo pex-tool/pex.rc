@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
+use std::fs::FileType;
 use std::io;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -56,7 +57,12 @@ impl Layout {
                             .filter(|e| e.path().extension() == Some(OsStr::new("whl")))
                     })
                     .next()
-                && wheel.path().is_file()
+                && wheel
+                    .file_type()
+                    .ok()
+                    .as_ref()
+                    .map(FileType::is_file)
+                    .unwrap_or_default()
             {
                 Layout::Packed
             } else {
@@ -503,6 +509,7 @@ impl<'a> Pex<'a> {
                     .unwrap_or(InterpreterSelectionStrategy::Oldest)
                     .into(),
                 search_path,
+                false,
             )?
             .collect::<Vec<_>>();
 

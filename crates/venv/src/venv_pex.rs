@@ -462,7 +462,7 @@ fn populate_wheel_dir(
         })
         .collect::<Result<Vec<_>, _>>()?;
     wheel_contents.into_par_iter().try_for_each(|(src, dst)| {
-        if src.path().is_dir() {
+        if src.file_type().is_dir() {
             fs::create_dir_all(&dst)?;
         } else {
             if let Some(parent_dir) = dst.parent() {

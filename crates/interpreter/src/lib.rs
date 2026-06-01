@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![deny(clippy::all)]
+#![feature(coroutines)]
+#![cfg_attr(windows, feature(coroutine_trait))]
+#![cfg_attr(windows, feature(iter_from_coroutine))]
+#![feature(stmt_expr_attributes)]
 
 mod constraints;
 mod interpreter;
@@ -11,6 +15,7 @@ mod search_path;
 mod tag;
 mod version;
 
+pub use constraints::unix::calculate_compatible_binary_names as calculate_compatible_unix_binary_names;
 pub use constraints::{
     InterpreterConstraint,
     InterpreterConstraints,

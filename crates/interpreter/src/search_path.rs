@@ -58,7 +58,7 @@ impl SearchPath {
                 }
                 if !contained {
                     bail!(
-                        "The given PEX_PYTHON {python} if not contained in the given \
+                        "The given PEX_PYTHON {python} is not contained in the given \
                         PEX_PYTHON_PATH: {pex_python_path}",
                         python = python.display(),
                         pex_python_path = pex_python_path.display()

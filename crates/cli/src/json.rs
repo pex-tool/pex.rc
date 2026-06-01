@@ -10,7 +10,7 @@ use serde_json::ser::PrettyFormatter;
 #[derive(Args)]
 pub struct Json {
     /// Pretty-print json output with the given indent.
-    #[arg(short = 'i', long)]
+    #[arg(short = 'i', long, help_heading = "Output")]
     indent: Option<u8>,
 }
 

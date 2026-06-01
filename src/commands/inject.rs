@@ -293,7 +293,7 @@ fn inject_pex_dir(
     {
         let entry = entry?;
         let dst = dest_pex.path().join(entry.path().strip_prefix(pex.path)?);
-        if entry.path().is_dir() {
+        if entry.file_type().is_dir() {
             fs::create_dir_all(dst)?;
         } else {
             fs::copy(entry.path(), dst)?;

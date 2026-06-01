@@ -21,7 +21,7 @@ use crate::downloads::ensure_download;
 use crate::metadata::{Build, CargoBinstall, Download, Embeds, Glibc};
 
 pub(crate) struct ToolBox<'a> {
-    emeds: Embeds<'a>,
+    embeds: Embeds<'a>,
     binstall: CargoBinstall<'a>,
     zig_version: &'a str,
     glibc: Glibc<'a>,
@@ -40,7 +40,7 @@ impl<'a> From<Build<'a>> for ToolBox<'a> {
         let downloads: Vec<(&'static str, Download<'a>)> = Vec::new();
 
         Self {
-            emeds: build.embeds,
+            embeds: build.embeds,
             binstall: build.cargo_binstall,
             zig_version: build.zig_version,
             glibc: build.glibc,
@@ -77,7 +77,7 @@ impl<'a> ToolBox<'a> {
             }
         }
         Ok(ToolInventory {
-            embeds: self.emeds,
+            embeds: self.embeds,
             binstall: self.binstall,
             downloads: self.downloads,
             zig,

@@ -18,6 +18,7 @@ use interpreter::{
     SearchPath,
     SelectionStrategy,
     VersionSpec,
+    calculate_compatible_unix_binary_names,
 };
 use itertools::Itertools;
 use pex::{Pex, PexPath};
@@ -63,16 +64,20 @@ pub fn sh_boot_shebang(
         .interpreter_selection_strategy
         .unwrap_or(pex::InterpreterSelectionStrategy::Oldest)
         .into();
-    let pythons = interpreter_constraints
-        .calculate_compatible_binary_names(selection_strategy, preferred_interpreter)
-        .into_iter()
-        .map(|(binary_name, version_spec)| {
-            binary_name
-                .into_string()
-                .map(|binary_name| (binary_name, version_spec))
-                .map_err(|err| anyhow!("{err}", err = err.display()))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let pythons = calculate_compatible_unix_binary_names(
+        &interpreter_constraints,
+        selection_strategy,
+        preferred_interpreter,
+        true,
+    )
+    .into_iter()
+    .map(|(binary_name, version_spec)| {
+        binary_name
+            .into_string()
+            .map(|binary_name| (binary_name, version_spec))
+            .map_err(|err| anyhow!("{err}", err = err.display()))
+    })
+    .collect::<anyhow::Result<Vec<_>>>()?;
     let python_args = if hermetic {
         if pythons.iter().any(|(_, version_spec)| {
             matches!(version_spec, None | Some(VersionSpec::Major(_)))

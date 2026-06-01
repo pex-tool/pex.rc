@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.16.0
+
+This release fixes interpreter discovery for Windows. The [PEP-514 spec](
+https://peps.python.org/pep-0514/) is now implemented while also searching further on the 
+`PEX_PYTHON_PATH` or `PATH` as appropriate.
+
+In addition, the new `pexrc python {list,inspect}` tools allow insight into the `pexrc` interpreter
+discovery mechanism.
+ 
 ## 0.15.0
 
 This release adds defaults for Linux and Windows for the `platform_release` environment marker when

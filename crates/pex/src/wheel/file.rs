@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
+use std::fs::FileType;
 use std::io::{Read, Seek};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
@@ -133,7 +134,13 @@ impl MetadataDirs {
         let read_dir = wheel_dir.read_dir()?;
         let listing = read_dir.into_iter().filter_map(|result| {
             result.ok().and_then(|entry| {
-                if entry.path().is_dir() {
+                if entry
+                    .file_type()
+                    .ok()
+                    .as_ref()
+                    .map(FileType::is_dir)
+                    .unwrap_or_default()
+                {
                     entry.file_name().into_string().ok().map(Cow::Owned)
                 } else {
                     None
@@ -237,7 +244,7 @@ pub struct WheelFile<'a> {
 
 impl<'a> WheelFile<'a> {
     pub fn parse_file_name(file_name: &'a str) -> anyhow::Result<Self> {
-        // See: https://packaging.python.org/en/latest/specifications/binary-distribution-format/#file-name-convention
+        // See: https://packaging.python.org/specifications/binary-distribution-format/#file-name-convention
         // {distribution}-{version}(-{build tag})?-{python tag}-{abi tag}-{platform tag}.whl
         if !file_name.ends_with(".whl") {
             bail!("Not a wheel file name {file_name}")
