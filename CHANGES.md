@@ -1,11 +1,14 @@
 # Release Notes
 
-## 0.15.0-unreleased
+## 0.15.0
 
 This release adds defaults for Linux and Windows for the `platform_release` environment marker when
 generating platform details via `pexrc platform python <spec>`. Now the only `<unknown>` marker
 when using a spec is the `platform_version` which is actively antagonistic to any likely real-world
 use.
+
+This release also fixes injected windowed PEXes launched with `pythonw.exe` on Windows. Previously
+these would incorrectly re-exec with `python.exe` and display a console.
 
 ## 0.14.0
 

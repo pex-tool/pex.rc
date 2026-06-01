@@ -127,12 +127,31 @@ fn prepare_boot(
     argv: Vec<String>,
 ) -> anyhow::Result<Command> {
     let venv = prepare_venv(
-        python,
+        python.as_ref(),
         pex.as_ref(),
         #[cfg(unix)]
         env::var_os("_PEXRC_SH_BOOT_SEED_DIR").map(PathBuf::from),
     )?;
-    let mut command = Command::new(&venv.interpreter.details.path);
+
+    let mut command = {
+        #[cfg(windows)]
+        {
+            let python_exe = {
+                if let Some(file_name) = python.as_ref().file_name().and_then(OsStr::to_str)
+                    // N.B.: This could be either pythonw.exe or pypyw.exe (or pypy<version>w.exe).
+                    && file_name.ends_with("w.exe")
+                {
+                    // Either way, our venv machinery ensures "pythonw.exe" exists.
+                    Cow::Owned(venv.interpreter.details.path.with_file_name("pythonw.exe"))
+                } else {
+                    Cow::Borrowed(&venv.interpreter.details.path)
+                }
+            };
+            Command::new(python_exe.as_ref())
+        }
+        #[cfg(unix)]
+        Command::new(&venv.interpreter.details.path)
+    };
     command
         .args(python_args)
         .arg(venv.prefix().as_os_str())
@@ -153,7 +172,7 @@ pub fn mount(python: impl AsRef<Path>, pex: impl AsRef<Path>) -> anyhow::Result<
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
     };
     prepare_venv(
-        python,
+        python.as_ref(),
         pex.as_ref(),
         #[cfg(unix)]
         None,
@@ -163,19 +182,19 @@ pub fn mount(python: impl AsRef<Path>, pex: impl AsRef<Path>) -> anyhow::Result<
 
 #[time("debug", "{}")]
 fn prepare_venv<'a>(
-    python: impl AsRef<Path>,
-    pex: impl AsRef<Path>,
+    python: &Path,
+    pex: &Path,
     #[cfg(unix)] sh_boot_seed_dir: Option<PathBuf>,
 ) -> anyhow::Result<Virtualenv<'a>> {
-    let pex = Pex::load(pex.as_ref())?;
+    let pex = Pex::load(pex)?;
     let pex_path = PexPath::from_pex_info(&pex.info, true);
     let pex_info = pex.info.raw();
     let additional_pexes = pex_path.load_pexes()?;
     let search_path = SearchPath::from_env()?;
-    let venv_dir = venv_dir(Some(python.as_ref()), &pex, &search_path, &additional_pexes)?;
+    let venv_dir = venv_dir(Some(python), &pex, &search_path, &additional_pexes)?;
     if let Some(venv_interpreter) = atomic_dir(&venv_dir, |work_dir| {
         let mut resolve = pex.resolve(
-            Some(python.as_ref()),
+            Some(python),
             additional_pexes.iter(),
             search_path,
             None,

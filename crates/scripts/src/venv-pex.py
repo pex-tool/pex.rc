@@ -51,7 +51,10 @@ else:
         return locals_map
 
 
-if sys.platform == "win32":
+IS_WINDOWS = sys.platform == "win32"
+
+
+if IS_WINDOWS:
 
     def safe_execv(argv):
         # type: (List[str]) -> NoReturn
@@ -113,11 +116,14 @@ def boot(
     venv_dir = os.path.abspath(os.path.dirname(__file__))
     venv_bin_dir = os.path.join(venv_dir, venv_bin_dir)
     python = os.path.join(venv_bin_dir, os.path.basename(shebang_python))
+    venv_pythons = [python, shebang_python]
+    if IS_WINDOWS:
+        venv_pythons.append(os.path.join(venv_bin_dir, "pythonw.exe"))
 
     def iter_valid_venv_pythons():
         # Allow for both the known valid venv pythons and their fully resolved venv path
         # version in the case their parent directories contain symlinks.
-        for python_binary in (python, shebang_python):
+        for python_binary in venv_pythons:
             yield python_binary
             yield os.path.join(
                 os.path.realpath(os.path.dirname(python_binary)), os.path.basename(python_binary)
