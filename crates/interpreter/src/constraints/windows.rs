@@ -228,7 +228,12 @@ fn iter_python_exes(
                                         && let Some(file_stem) = file_stem.to_str()
                                     {
                                         for name in &names {
-                                            if file_stem.starts_with(name) {
+                                            if file_stem.starts_with(name)
+                                                // N.B.: Since this is a {PEX_PYTHON_,}PATH search,
+                                                // we may pick up pythonw.exe, pypyw.exe, etc. but
+                                                // we only want to report the console pythons.
+                                                && !file_stem.ends_with("w")
+                                            {
                                                 yield file;
                                                 break;
                                             }
