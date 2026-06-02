@@ -29,6 +29,8 @@ use python_platform::{
 use scripts::{IdentifyInterpreter, Scripts};
 use serde::{Deserialize, Serialize};
 
+use crate::pyenv::Pyenv;
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct InterpreterDetails {
     pub path: PathBuf,
@@ -331,8 +333,16 @@ impl Interpreter {
         python_exe: &Path,
         identification_script: &IdentifyInterpreter,
     ) -> anyhow::Result<Self> {
-        let interpreter_info = Self::interpreter_info(python_exe)?;
-        Self::load_internal(&interpreter_info, python_exe, identification_script)
+        #[cfg(unix)]
+        let python_exe = Pyenv::locate()
+            .map(|pyenv| pyenv.resolve_if_shim(python_exe))
+            .unwrap_or(Ok(Cow::Borrowed(python_exe)))?;
+        let interpreter_info = Self::interpreter_info(python_exe.as_ref())?;
+        Self::load_internal(
+            &interpreter_info,
+            python_exe.as_ref(),
+            identification_script,
+        )
     }
 
     fn load_internal(

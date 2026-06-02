@@ -51,7 +51,7 @@ def cpython_abi_info(sys_config_vars):
     # extension modules is the best option.
     # https://github.com/pypa/pip/issues/3383#issuecomment-173267692
     has_ext = "_d.pyd" in EXTENSION_SUFFIXES
-    if with_debug or (with_debug is None and (has_refcount or has_ext)):
+    if (with_debug is None and (has_refcount or has_ext)) or bool(with_debug):
         debug = True
 
     if sys.version_info >= (3, 13):
@@ -59,7 +59,7 @@ def cpython_abi_info(sys_config_vars):
 
     if sys.version_info < (3, 8):
         with_pymalloc = sys_config_vars.get("WITH_PYMALLOC")
-        pymalloc = with_pymalloc or with_pymalloc is None
+        pymalloc = with_pymalloc is None or bool(with_pymalloc)
 
         if sys.version_info < (3, 3):
             unicode_size = sys_config_vars.get("Py_UNICODE_SIZE")

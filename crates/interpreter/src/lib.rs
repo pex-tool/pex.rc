@@ -11,6 +11,7 @@ mod constraints;
 mod interpreter;
 
 mod platform;
+mod pyenv;
 mod search_path;
 mod tag;
 mod version;

@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.16.1
+
+This release fixes interpreter detection for `pyenv` shims on unix. Previously the cache of
+interpreter information for the shimmed Python was based on the shim and not the Python executable
+it resolved to.
+
+In addition, interpreter discovery on Windows is fixed to only discover `python.exe` / `pypy.exe`.
+The windowed versions are resolved based off the console versions just in time when needed.
+
 ## 0.16.0
 
 This release fixes interpreter discovery for Windows. The [PEP-514 spec](

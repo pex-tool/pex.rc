@@ -28,7 +28,7 @@ use pep508_rs::pep440_rs::Version;
 use serde::{Deserialize, Serialize};
 
 pub use crate::arch::Arch;
-use crate::implementation::Implementation;
+pub use crate::implementation::Implementation;
 pub use crate::linux::LinuxInfo;
 use crate::mac::Release;
 pub use crate::markers::{PlatformRelease, PlatformVersion};

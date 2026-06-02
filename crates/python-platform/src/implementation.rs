@@ -6,7 +6,7 @@ use std::str::FromStr;
 use anyhow::bail;
 
 #[derive(Copy, Clone)]
-pub(crate) enum Implementation {
+pub enum Implementation {
     CPython,
     PyPy,
 }

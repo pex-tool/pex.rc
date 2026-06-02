@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.16.0"
+version = "0.16.1"
 edition = { workspace = true }
 publish = false
 
@@ -247,7 +247,6 @@ log = { workspace = true }
 logging = { path = "crates/logging" }
 owo-colors = { workspace = true }
 pex = { path = "crates/pex" }
-pexrs = { path = "crates/pexrs" }
 platform = { path = "crates/platform" }
 python-platform = { path = "crates/python-platform" }
 python-proxy = { path = "crates/python-proxy" }

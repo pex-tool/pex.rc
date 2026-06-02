@@ -1,8 +1,6 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::PathBuf;
-
 use clap::{ArgAction, Args};
 use cli::{Json, Output};
 use interpreter::{
@@ -12,7 +10,9 @@ use interpreter::{
     SearchPath,
     SelectionStrategy,
 };
+use log::debug;
 use owo_colors::OwoColorize;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scripts::{IdentifyInterpreter, Scripts};
 
 #[derive(Args)]
@@ -28,9 +28,9 @@ pub struct List {
     #[command(flatten)]
     output: Output,
 
-    /// Constrain the interpreters to those meeting any of the given constraints.
+    /// Limit the interpreters to those meeting any of the given constraints.
     ///
-    /// Interpreter constraints are composed of implementation names and a version specifiers in
+    /// Interpreter constraints are composed of implementation names and version specifiers in
     /// one of the following forms:
     /// + `<implementation name>`
     /// + `<version specifier>`
@@ -46,8 +46,8 @@ pub struct List {
     ///
     /// Some examples:
     /// + `PyPy`: any PyPy interpreter
-    /// + `==3.14.*`: any Python interpreter version 3.14
-    /// + `CPython>=3.12`: any CPython interpreter version 3.12 or greater
+    /// + `>=3.12`: any Python interpreter version 3.12 or greater
+    /// + `CPython[free-threaded]==3.14.*`: any free-threaded CPython 3.14 interpreter
     ///
     /// [^1]: https://peps.python.org/pep-0440/
     /// [^2]: https://packaging.python.org/specifications/version-specifiers/#version-specifiers
@@ -67,28 +67,30 @@ pub struct List {
 impl List {
     pub fn execute(self) -> anyhow::Result<()> {
         let ics = InterpreterConstraints::from(self.constraints);
-        let pythons = ics.iter_possibly_compatible_python_exes(
-            SelectionStrategy::Newest,
-            SearchPath::from_env()?,
-            false,
-        )?;
-        let pythons: Vec<PathBuf> = if !ics.is_empty() {
+        let mut pythons = ics
+            .iter_possibly_compatible_python_exes(
+                SelectionStrategy::Newest,
+                SearchPath::from_env()?,
+                false,
+            )?
+            .collect::<Vec<_>>();
+
+        if !ics.is_empty() {
             let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
-            pythons
-                .filter_map(|python| {
-                    if let Some(interpreter) =
-                        Interpreter::load(&python, &identification_script).ok()
-                        && ics.contains(&interpreter)
-                    {
-                        Some(python)
-                    } else {
-                        None
-                    }
-                })
+            pythons = pythons
+                .into_par_iter()
+                .filter_map(
+                    |python| match Interpreter::load(&python, &identification_script) {
+                        Ok(interpreter) if ics.contains(&interpreter) => Some(python),
+                        Err(err) => {
+                            debug!("Failed to load {python}: {err}", python = python.display());
+                            None
+                        }
+                        _ => None,
+                    },
+                )
                 .collect()
-        } else {
-            pythons.collect()
-        };
+        }
 
         let mut out = self.output.writer()?;
         if self.json {

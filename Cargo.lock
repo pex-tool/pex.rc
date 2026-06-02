@@ -1458,7 +1458,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "cache",
- "elf",
  "fs-err",
  "indexmap 2.14.0",
  "log",
@@ -2097,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2122,7 +2121,6 @@ dependencies = [
  "logging",
  "owo-colors",
  "pex",
- "pexrs",
  "platform",
  "python-platform",
  "python-proxy",
