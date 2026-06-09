@@ -21,14 +21,14 @@ pub(crate) struct WheeInfo<'a> {
 }
 
 pub(crate) fn resolve<'a>(
-    python: &Path,
+    python: Option<&Path>,
     pex: &'a Pex<'a>,
     additional_pexes: &'a [Pex<'a>],
 ) -> anyhow::Result<(Interpreter, IndexMap<PackageName, WheeInfo<'a>>)> {
     let search_path = SearchPath::from_env()?;
     let collect_metadata = CollectWheelMetadata::new();
     let resolve = pex.resolve(
-        Some(python),
+        python,
         additional_pexes.iter(),
         search_path,
         Some(collect_metadata.clone()),

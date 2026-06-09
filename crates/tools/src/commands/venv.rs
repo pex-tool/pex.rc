@@ -225,9 +225,9 @@ impl InstallScopeState {
     }
 }
 
-pub(crate) fn create(python: &Path, pex: Pex, args: VenvArgs) -> anyhow::Result<()> {
+pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow::Result<()> {
     let search_path = SearchPath::from_env()?;
-    let pex_path = PexPath::from_pex_info(&pex.info, true);
+    let pex_path = PexPath::from_pex_info(pex.info.raw(), true);
     let additional_pexes = pex_path.load_pexes()?;
 
     let resolved_wheel_metadata = if args.pip {
@@ -236,7 +236,7 @@ pub(crate) fn create(python: &Path, pex: Pex, args: VenvArgs) -> anyhow::Result<
         None
     };
     let resolve = pex.resolve(
-        Some(python),
+        python,
         additional_pexes.iter(),
         search_path,
         resolved_wheel_metadata.clone(),

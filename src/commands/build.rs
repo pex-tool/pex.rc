@@ -2,18 +2,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
-use std::io::BufReader;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::io::{BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::{io, process};
 
+use anyhow::{anyhow, bail};
+use boot::{create_sh_boot_shebang, inject_boot};
+use cache::{DigestingReader, default_digest};
 use clap::{ArgAction, Args};
+use fs_err as fs;
 use fs_err::File;
+use indexmap::IndexSet;
+use interpreter::Interpreter;
 use pep508_rs::Requirement;
 use pex::{PexInfo, RawPexInfo};
+use platform::mark_executable;
+use python_platform::PythonImplementation;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use repackage::{WheelOptions, recompress_zipped_whl};
 use resolver::dependency_configuration::DependencyConfiguration;
-use scripts::Scripts;
+use resolver::resolve_wheels;
+use scripts::{IdentifyInterpreter, Scripts};
+use tempfile::NamedTempFile;
 use url::Url;
+use wheel::{MetadataDirs, MetadataReader, WheelFile};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::target::{PYTHON_PLATFORM_LONG_HELP, PythonPlatform};
+use crate::compression_method::CompressionArgs;
+use crate::embeds::{Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
+use crate::target::{PYTHON_PLATFORM_LONG_HELP, PythonPlatform, RequiredTargets};
 
 #[derive(Args, Debug)]
 #[group(skip)]
@@ -64,6 +83,9 @@ pub struct Build {
     /// the other given inputs.
     #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
     pex_info: Option<PathBuf>,
+
+    #[command(flatten)]
+    compression_args: CompressionArgs,
 
     /// Instead of building a zipapp PEX, build a packed PEX.
     ///
@@ -118,6 +140,22 @@ pub struct Build {
 
 impl Build {
     pub fn execute(self) -> anyhow::Result<()> {
+        let wheel_options = self.compression_args.into_wheel_options(None);
+        let mut wheels = Vec::with_capacity(self.wheels.len());
+        for wheel in self.wheels {
+            if wheel.is_dir() {
+                for entry in wheel.read_dir()? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_file()
+                        && entry.file_name().as_encoded_bytes().ends_with(b".whl")
+                    {
+                        wheels.push(entry.path())
+                    }
+                }
+            } else {
+                wheels.push(wheel)
+            }
+        }
         if let Some(pex_info) = self.pex_info {
             let pex_info_file = File::open(&pex_info)?;
             let size = pex_info_file.metadata()?.len();
@@ -126,27 +164,42 @@ impl Build {
                 size,
                 Some(|| Cow::Owned(pex_info.display().to_string())),
             )?;
-            let requirements = if self.requirements.is_empty() {
-                pex_info
-                    .raw()
-                    .requirements
-                    .iter()
-                    .map(|requirement| Ok(requirement.parse::<Requirement<Url>>()?))
-                    .collect::<anyhow::Result<Vec<_>>>()?
+            let (mut raw_pex_info, requirements) = if self.requirements.is_empty() {
+                (
+                    Cow::Borrowed(pex_info.raw()),
+                    pex_info
+                        .raw()
+                        .requirements
+                        .iter()
+                        .map(|requirement| Ok(requirement.parse::<Requirement<Url>>()?))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                )
             } else {
-                self.requirements
+                (
+                    Cow::Owned(RawPexInfo {
+                        requirements: self
+                            .requirements
+                            .iter()
+                            .map(ToString::to_string)
+                            .map(Cow::Owned)
+                            .collect(),
+                        ..Default::default()
+                    }),
+                    self.requirements,
+                )
             };
-            create_pex(
+            build_pex(
                 self.targets,
-                requirements.as_slice(),
-                self.wheels,
-                pex_info.raw(),
+                requirements,
+                wheels,
+                wheel_options,
+                raw_pex_info.to_mut(),
                 self.packed,
                 self.sh_boot,
                 self.output,
             )
         } else {
-            let pex_info = RawPexInfo {
+            let mut pex_info = RawPexInfo {
                 requirements: self
                     .requirements
                     .iter()
@@ -155,12 +208,12 @@ impl Build {
                     .collect(),
                 ..Default::default()
             };
-
-            create_pex(
+            build_pex(
                 self.targets,
-                self.requirements.as_slice(),
-                self.wheels,
-                &pex_info,
+                self.requirements,
+                wheels,
+                wheel_options,
+                &mut pex_info,
                 self.packed,
                 self.sh_boot,
                 self.output,
@@ -169,21 +222,366 @@ impl Build {
     }
 }
 
-fn create_pex(
-    _targets: Vec<PythonPlatform>,
-    _requirements: &[Requirement<Url>],
-    _wheels: Vec<PathBuf>,
-    pex_info: &RawPexInfo,
-    _packed: bool,
-    _sh_boot: bool,
-    _output: Option<PathBuf>,
+#[allow(clippy::too_many_arguments)]
+fn build_pex(
+    targets: Vec<PythonPlatform>,
+    requirements: Vec<Requirement<Url>>,
+    mut wheels: Vec<PathBuf>,
+    wheel_options: WheelOptions,
+    pex_info: &mut RawPexInfo,
+    packed: bool,
+    sh_boot: bool,
+    output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let _dependency_configuration = DependencyConfiguration::parse(
-        pex_info.excluded.as_slice(),
-        pex_info.overridden.as_slice(),
-    )?;
-    // 1. Resolve wheels (targets, requirements, wheels, dependency_configuration)
-    let _scripts = Scripts::Embedded;
-    // 2. Call create_packed_pex or create_zipapp (resolve, pex_info, scripts, sh_boot, output)
-    todo!("Creating a PEX from sources and requirements is coming soon.")
+    if !targets.is_empty() {
+        let dependency_configuration = DependencyConfiguration::parse(
+            pex_info.excluded.as_slice(),
+            pex_info.overridden.as_slice(),
+        )?;
+
+        let file_names = file_names(wheels.iter().map(AsRef::as_ref))?
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let wheel_files = || {
+            file_names
+                .iter()
+                .map(|file_name| WheelFile::parse_file_name(file_name))
+                .collect::<anyhow::Result<Vec<_>>>()
+        };
+        let mut wheel_paths_by_file_name: HashMap<&str, PathBuf> =
+            HashMap::with_capacity(wheels.len());
+        for (file_name, path) in file_names.iter().zip(wheels) {
+            wheel_paths_by_file_name.insert(file_name, path);
+        }
+        let mut wheel_repository = Wheels::new(wheel_paths_by_file_name);
+        let mut resolved_file_names: IndexSet<&str> = IndexSet::with_capacity(file_names.len());
+        for target in &targets {
+            let resolved_wheels = match target {
+                PythonPlatform::Spec(spec) => {
+                    let platform = python_platform::parse(spec, None, None)?;
+                    resolve_wheels(
+                        &platform,
+                        requirements.clone(),
+                        wheel_files,
+                        &mut wheel_repository,
+                        &dependency_configuration,
+                        None,
+                        pex_info.ignore_errors,
+                    )?
+                }
+                PythonPlatform::Interpreter(path) => {
+                    let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
+                    let interpreter = Interpreter::load(path, &identification_script)?;
+                    resolve_wheels(
+                        &interpreter,
+                        requirements.clone(),
+                        wheel_files,
+                        &mut wheel_repository,
+                        &dependency_configuration,
+                        None,
+                        pex_info.ignore_errors,
+                    )?
+                }
+            };
+            resolved_file_names.extend(resolved_wheels.keys());
+        }
+        wheels = wheel_repository.select(resolved_file_names.into_iter())?;
+    }
+
+    match output {
+        Some(path) => {
+            let subject = Cow::Owned(format!("PEX at {path}", path = path.display()));
+            create_pex(
+                subject,
+                wheels,
+                wheel_options,
+                pex_info,
+                packed,
+                sh_boot,
+                &path,
+            )
+        }
+        None => {
+            let subject = Cow::Borrowed("ephemeral PEX");
+            if packed {
+                let chroot = tempfile::tempdir()?;
+                let path = chroot.path();
+                create_pex(
+                    subject,
+                    wheels,
+                    wheel_options,
+                    pex_info,
+                    packed,
+                    sh_boot,
+                    path,
+                )?;
+                execute_pex(path)
+            } else {
+                let pex = NamedTempFile::new()?;
+                let path = pex.path();
+                create_pex(
+                    subject,
+                    wheels,
+                    wheel_options,
+                    pex_info,
+                    packed,
+                    sh_boot,
+                    path,
+                )?;
+                execute_pex(path)
+            }
+        }
+    }
+}
+
+fn file_names<'a>(paths: impl ExactSizeIterator<Item = &'a Path>) -> anyhow::Result<Vec<&'a str>> {
+    let mut file_names = Vec::with_capacity(paths.len());
+    for path in paths {
+        let file_name = path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Invalid path {path}: file name is not UTF-8.",
+                    path = path.display()
+                )
+            })?;
+        file_names.push(file_name);
+    }
+    Ok(file_names)
+}
+
+struct Wheels<'a> {
+    wheel_files: HashMap<&'a str, PathBuf>,
+    wheel_zips: HashMap<String, ZipArchive<File>>,
+}
+
+impl<'a> Wheels<'a> {
+    fn new(wheel_files: HashMap<&'a str, PathBuf>) -> Self {
+        let wheel_zips = HashMap::with_capacity(wheel_files.len());
+        Self {
+            wheel_files,
+            wheel_zips,
+        }
+    }
+
+    fn select(
+        mut self,
+        file_names: impl ExactSizeIterator<Item = &'a str>,
+    ) -> anyhow::Result<Vec<PathBuf>> {
+        let mut paths = Vec::with_capacity(file_names.len());
+        for file_name in file_names {
+            paths.push(
+                self.wheel_files
+                    .remove(file_name)
+                    .ok_or_else(|| anyhow!("XXX"))?,
+            )
+        }
+        Ok(paths)
+    }
+}
+
+impl<'a> MetadataReader for Wheels<'a> {
+    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+        if let Some(path) = self.wheel_files.get(wheel_file.file_name) {
+            let wheel_zip = ZipArchive::new(File::open(path)?)?;
+            let metadata_dirs = MetadataDirs::locate_in_zip(
+                &wheel_zip,
+                path.display(),
+                None,
+                &wheel_file.project_name,
+                &wheel_file.version,
+            )?;
+            self.wheel_zips
+                .insert(wheel_file.file_name.to_string(), wheel_zip);
+            Ok(metadata_dirs)
+        } else {
+            bail!("XXX")
+        }
+    }
+
+    fn read(
+        &mut self,
+        metadata_dirs: &MetadataDirs,
+        wheel_file: &WheelFile,
+        file_name: &str,
+    ) -> anyhow::Result<String> {
+        let zip = self
+            .wheel_zips
+            .get_mut(wheel_file.file_name)
+            .ok_or_else(|| anyhow!("XXX"))?;
+        let dist_info_dir = metadata_dirs.dist_info_dir();
+        Ok(io::read_to_string(
+            zip.by_name(&format!("{dist_info_dir}/{file_name}"))?,
+        )?)
+    }
+}
+
+fn create_pex(
+    subject: Cow<'_, str>,
+    wheels: Vec<PathBuf>,
+    wheel_options: WheelOptions,
+    pex_info: &mut RawPexInfo,
+    packed: bool,
+    sh_boot: bool,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let wheel_files = file_names(wheels.iter().map(AsRef::as_ref))?
+        .into_iter()
+        .map(WheelFile::parse_file_name)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let required_targets = RequiredTargets::for_wheel_files(subject, wheel_files.iter())?;
+    let targets = required_targets.unique_targets();
+    let clibs = targets
+        .iter()
+        .map(|target| {
+            CLIB_BY_TARGET
+                .get(&target)
+                .expect("The allowed --target values are all keys in CLIB_BY_TARGET.")
+        })
+        .collect::<Vec<_>>();
+    let proxies = targets
+        .iter()
+        .map(|target| {
+            PROXY_BY_TARGET
+                .get(&target)
+                .expect("The allowed --target values are all keys in PROXY_BY_TARGET.")
+        })
+        .chain(
+            targets
+                .iter()
+                .filter_map(|target| PROXYW_BY_TARGET.get(&target)),
+        )
+        .collect::<Vec<_>>();
+    if packed {
+        create_packed_pex(
+            wheels,
+            wheel_options,
+            pex_info,
+            clibs,
+            proxies,
+            sh_boot,
+            path,
+        )
+    } else {
+        create_zipapp(
+            wheels,
+            wheel_options,
+            pex_info,
+            clibs,
+            proxies,
+            sh_boot,
+            path,
+        )
+    }
+}
+
+fn create_packed_pex(
+    _wheels: Vec<PathBuf>,
+    _wheel_options: WheelOptions,
+    _pex_info: &RawPexInfo,
+    _clibs: Vec<&Binary>,
+    _proxies: Vec<&Binary>,
+    _sh_boot: bool,
+    _path: &Path,
+) -> anyhow::Result<()> {
+    todo!("XXX")
+}
+
+fn create_zipapp(
+    wheels: Vec<PathBuf>,
+    wheel_options: WheelOptions,
+    pex_info: &mut RawPexInfo,
+    clibs: Vec<&Binary>,
+    proxies: Vec<&Binary>,
+    sh_boot: bool,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
+        NamedTempFile::new_in(parent_dir)?
+    } else {
+        NamedTempFile::new()?
+    };
+    if sh_boot {
+        // TODO: XXX hermetic option.
+        let hermetic = true;
+        // TODO: Derive the preferred Python.
+        let _preferred_python: Option<PythonImplementation> = None;
+        let sh_boot_shebang = create_sh_boot_shebang("<subject>", pex_info, hermetic, false, None)?;
+        dst_zip_fp.write_all(sh_boot_shebang.as_bytes())?;
+    } else {
+        // TODO: XXX: shebang option + if not set default selection.
+        dst_zip_fp.write_all(b"#!/usr/bin/env python")?;
+    }
+    let mut dst_zip = ZipWriter::new(&dst_zip_fp);
+
+    let directory_options = SimpleFileOptions::default();
+    let file_options = wheel_options.file_options()?;
+    let deflated_file_options =
+        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let stored_file_options =
+        SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    // TODO: XXX: Extract this up earlier.
+    let deps_dir = tempfile::tempdir()?;
+    let zips = wheels
+        .into_par_iter()
+        .map(|wheel| {
+            let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
+            let whl_file = WheelFile::parse_file_name(
+                wheel
+                    .file_name()
+                    .ok_or_else(|| anyhow!("XXX"))?
+                    .to_str()
+                    .ok_or_else(|| anyhow!("YYY"))?,
+            )?;
+            recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
+                .map(|file| (whl_file.file_name.to_string(), file))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    for (file_name, zip) in zips {
+        dst_zip.start_file(format!(".deps/{file_name}"), stored_file_options)?;
+        let mut src = DigestingReader::new(default_digest(), zip);
+        io::copy(&mut src, &mut dst_zip)?;
+        pex_info.distributions.insert(
+            Cow::Owned(file_name),
+            Cow::Owned(src.into_fingerprint().hex_digest()),
+        );
+    }
+    pex_info.deps_are_wheel_files = true;
+
+    dst_zip.add_directory("__pex__", directory_options)?;
+    Scripts::Embedded.inject(&mut dst_zip, file_options)?;
+
+    let deflate_options =
+        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    dst_zip.add_directory("__pex__/.clibs", directory_options)?;
+    for clib in clibs {
+        clib.embed_in_zip(&mut dst_zip, "__pex__/.clibs", deflate_options)?;
+    }
+    dst_zip.add_directory("__pex__/.proxies", directory_options)?;
+    for proxy in proxies {
+        proxy.embed_in_zip(&mut dst_zip, "__pex__/.proxies", file_options)?;
+    }
+
+    dst_zip.start_file("PEX-INFO", deflated_file_options)?;
+    pex_info.write(&mut dst_zip)?;
+
+    inject_boot(&mut dst_zip, deflate_options)?;
+
+    dst_zip.finish()?;
+    mark_executable(dst_zip_fp.as_file_mut())?;
+
+    if path.is_dir() {
+        fs::remove_dir_all(path)?;
+    }
+    dst_zip_fp.persist(path)?;
+
+    Ok(())
+}
+
+fn execute_pex(pex: &Path) -> anyhow::Result<()> {
+    let exit_code = pexrs::boot(None, vec![], pex, vec![], false)?;
+    process::exit(exit_code)
 }

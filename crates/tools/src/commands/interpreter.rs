@@ -41,7 +41,11 @@ pub(crate) struct InterpreterArgs {
     output: Output,
 }
 
-pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow::Result<()> {
+pub(crate) fn display(
+    python: Option<&Path>,
+    pex: Pex,
+    args: InterpreterArgs,
+) -> anyhow::Result<()> {
     let mut out = args.output.writer()?;
     for interpreter in compatible_interpreters(python, &pex, args.all)? {
         match args.verbose {
@@ -104,14 +108,14 @@ pub(crate) fn display(python: &Path, pex: Pex, args: InterpreterArgs) -> anyhow:
 }
 
 fn compatible_interpreters(
-    python: &Path,
+    python: Option<&Path>,
     pex: &Pex,
     all: bool,
 ) -> anyhow::Result<impl IntoIterator<Item = Interpreter>> {
     let search_path = SearchPath::from_env()?;
     if all {
         let mut interpreters = indexset![
-            pex.resolve(Some(python), [].iter(), search_path.clone(), None)?
+            pex.resolve(python, [].iter(), search_path.clone(), None)?
                 .interpreter
         ];
         let mut scripts = pex.scripts()?;
@@ -136,7 +140,7 @@ fn compatible_interpreters(
         Ok(interpreters)
     } else {
         Ok(indexset![
-            pex.resolve(Some(python), [].iter(), search_path, None)?
+            pex.resolve(python, [].iter(), search_path, None)?
                 .interpreter
         ])
     }

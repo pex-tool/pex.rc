@@ -1,7 +1,8 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::io::Read;
+use std::io;
+use std::io::{Read, Seek, Write};
 use std::iter::Iterator;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -10,12 +11,37 @@ use anyhow::anyhow;
 use include_dir::{Dir, include_dir};
 use indexmap::IndexMap;
 use target::SimplifiedTarget;
+use zip::ZipWriter;
+use zip::write::SimpleFileOptions;
 
 #[derive(Eq, PartialEq, Hash)]
 pub struct Binary<'a> {
     pub target: SimplifiedTarget,
     pub path: &'a Path,
     pub contents: &'a [u8],
+}
+
+impl<'a> Binary<'a> {
+    pub fn embed_in_zip(
+        &self,
+        dst_zip: &mut ZipWriter<impl Write + Seek>,
+        dst_dir: &str,
+        file_options: SimpleFileOptions,
+    ) -> anyhow::Result<()> {
+        let dst_path = format!(
+            "{dst_dir}/{embed}",
+            embed = self
+                .path
+                .file_name()
+                .expect("Embeds have file names.")
+                .to_str()
+                .expect("Embed file names are utf-8 strings.")
+        );
+        dst_zip.start_file(dst_path, file_options)?;
+        let mut embed_reader = zstd::Decoder::new(self.contents)?;
+        io::copy(&mut embed_reader, dst_zip)?;
+        Ok(())
+    }
 }
 
 const EMBEDS_DIR: Dir<'static> = include_dir!("$EMBEDS_DIR");

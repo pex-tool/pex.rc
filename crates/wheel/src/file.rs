@@ -233,6 +233,7 @@ impl Clone for MetadataDirs {
     }
 }
 
+#[derive(Eq, PartialEq, Hash)]
 pub struct WheelFile<'a> {
     pub file_name: &'a str,
     pub raw_project_name: &'a str,

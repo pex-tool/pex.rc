@@ -15,6 +15,7 @@ use indexmap::IndexSet;
 use log::debug;
 use pep440_rs::{Operator, Version, VersionSpecifier, VersionSpecifiers};
 use pep508_rs::{ExtraName, MarkerTree, PackageName, Requirement, VersionOrUrl};
+use python_platform::{CPythonImplementation, PythonImplementation};
 use url::Url;
 
 #[cfg(unix)]
@@ -48,7 +49,7 @@ impl InterpreterImplementation {
         }
     }
 
-    fn matches(&self, other: &InterpreterImplementation) -> bool {
+    fn matches(&self, other: InterpreterImplementation) -> bool {
         match self {
             InterpreterImplementation::CPython => matches!(
                 other,
@@ -57,13 +58,33 @@ impl InterpreterImplementation {
                     | InterpreterImplementation::CPythonGil
             ),
             InterpreterImplementation::CPythonFreeThreaded => {
-                *other == InterpreterImplementation::CPythonFreeThreaded
+                other == InterpreterImplementation::CPythonFreeThreaded
             }
             InterpreterImplementation::CPythonGil => matches!(
                 other,
                 InterpreterImplementation::CPython | InterpreterImplementation::CPythonGil
             ),
-            InterpreterImplementation::PyPy => *other == InterpreterImplementation::PyPy,
+            InterpreterImplementation::PyPy => other == InterpreterImplementation::PyPy,
+        }
+    }
+}
+
+impl From<PythonImplementation> for InterpreterImplementation {
+    fn from(value: PythonImplementation) -> Self {
+        match value {
+            PythonImplementation::CPython(CPythonImplementation { abi_info, .. }) => {
+                match abi_info.free_threaded {
+                    Some(free_threaded) => {
+                        if free_threaded {
+                            InterpreterImplementation::CPythonFreeThreaded
+                        } else {
+                            InterpreterImplementation::CPythonGil
+                        }
+                    }
+                    None => InterpreterImplementation::CPython,
+                }
+            }
+            PythonImplementation::PyPy(_) => InterpreterImplementation::PyPy,
         }
     }
 }
@@ -120,20 +141,13 @@ impl InterpreterConstraint {
         constraint.parse()
     }
 
-    fn contains(&self, interpreter: &Interpreter) -> bool {
-        if let Some(implementation) = self.implementation.as_ref() {
-            if let Some(other_implementation) = InterpreterImplementation::of(interpreter) {
-                if !implementation.matches(&other_implementation) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
+    fn contains(&self, python_implementation: PythonImplementation) -> bool {
+        if let Some(implementation) = self.implementation
+            && !implementation.matches(python_implementation.into())
+        {
+            return false;
         }
-        self.contains_version(
-            interpreter.details.version.major,
-            interpreter.details.version.minor,
-        )
+        self.contains_version(python_implementation.major, python_implementation.minor)
     }
 
     fn contains_version(&self, major: u8, minor: u8) -> bool {
@@ -282,12 +296,12 @@ impl InterpreterConstraints {
         self.0.as_slice()
     }
 
-    pub fn contains(&self, interpreter: &Interpreter) -> bool {
+    pub fn contains(&self, python_implementation: PythonImplementation) -> bool {
         self.0.is_empty()
             || self
                 .0
                 .iter()
-                .any(|constraint| constraint.contains(interpreter))
+                .any(|constraint| constraint.contains(python_implementation))
     }
 
     pub fn contains_version(&self, major: u8, minor: u8) -> bool {
@@ -330,19 +344,18 @@ struct PythonBinarySpec {
 fn calculate_compatible_binary_specs(
     constraints: &InterpreterConstraints,
     selection_strategy: SelectionStrategy,
-    preferred_interpreter: Option<&Interpreter>,
+    preferred_interpreter: Option<PythonImplementation>,
     include_pex_compatible: bool,
 ) -> IndexSet<PythonBinarySpec> {
     let mut binary_specs: IndexSet<PythonBinarySpec> = IndexSet::new();
     if let Some(interpreter) = preferred_interpreter
         && constraints.contains(interpreter)
     {
-        let implementation = InterpreterImplementation::of(interpreter);
         insert_specs(
             &mut binary_specs,
-            implementation.as_ref(),
-            interpreter.details.version.major,
-            interpreter.details.version.minor,
+            Some(InterpreterImplementation::from(interpreter)),
+            interpreter.major,
+            interpreter.minor,
         );
     }
     let constraints = constraints.as_slice();
@@ -356,12 +369,7 @@ fn calculate_compatible_binary_specs(
         } else {
             for constraint in constraints {
                 if constraint.contains_version(*major, *minor) {
-                    insert_specs(
-                        &mut binary_specs,
-                        constraint.implementation.as_ref(),
-                        *major,
-                        *minor,
-                    );
+                    insert_specs(&mut binary_specs, constraint.implementation, *major, *minor);
                 }
             }
         }
@@ -376,7 +384,7 @@ fn calculate_compatible_binary_specs(
 
 fn insert_specs(
     binary_specs: &mut IndexSet<PythonBinarySpec>,
-    implementation: Option<&InterpreterImplementation>,
+    implementation: Option<InterpreterImplementation>,
     major: u8,
     minor: u8,
 ) {

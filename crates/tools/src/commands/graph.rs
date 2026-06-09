@@ -189,8 +189,8 @@ pub(crate) struct GraphArgs {
     open: bool,
 }
 
-pub(crate) fn create(python: &Path, pex: Pex, args: GraphArgs) -> anyhow::Result<()> {
-    let pex_path = PexPath::from_pex_info(&pex.info, true);
+pub(crate) fn create(python: Option<&Path>, pex: Pex, args: GraphArgs) -> anyhow::Result<()> {
+    let pex_path = PexPath::from_pex_info(pex.info.raw(), true);
     let additional_pexes = pex_path.load_pexes()?;
     let (interpreter, wheels) = resolve(python, &pex, &additional_pexes)?;
 
@@ -202,7 +202,7 @@ pub(crate) fn create(python: &Path, pex: Pex, args: GraphArgs) -> anyhow::Result
     let graph_label = format!(
         "Dependency graph of {pex} for interpreter {python_binary} ({python_id})",
         pex = pex.path.display(),
-        python_binary = python.display(),
+        python_binary = interpreter.details.path.display(),
         python_id = InterpreterConstraint::exact_version(&interpreter)
     );
     graph.add_stmt(Stmt::GAttribute(GraphAttributes::Graph(vec![

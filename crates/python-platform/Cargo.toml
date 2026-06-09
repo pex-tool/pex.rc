@@ -1,3 +1,6 @@
+# Copyright 2026 Pex project contributors.
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "python-platform"
 edition = { workspace = true }

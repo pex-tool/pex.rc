@@ -81,7 +81,11 @@ impl List {
                 .into_par_iter()
                 .filter_map(
                     |python| match Interpreter::load(&python, &identification_script) {
-                        Ok(interpreter) if ics.contains(&interpreter) => Some(python),
+                        Ok(interpreter)
+                            if ics.contains(interpreter.details.python_implementation()) =>
+                        {
+                            Some(python)
+                        }
                         Err(err) => {
                             debug!("Failed to load {python}: {err}", python = python.display());
                             None

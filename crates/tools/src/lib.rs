@@ -67,7 +67,7 @@ fn parse_cli(pex: &Path, argv: Vec<String>) -> anyhow::Result<Cli> {
 }
 
 #[time("debug", "{}")]
-pub fn main(python: &Path, pex: &Path, argv: Vec<String>) -> anyhow::Result<()> {
+pub fn main(python: Option<&Path>, pex: &Path, argv: Vec<String>) -> anyhow::Result<()> {
     let cli = parse_cli(pex, argv)?;
     match cli.command {
         Commands::Extract { dest_dir } => extract::unzip(pex, &dest_dir),

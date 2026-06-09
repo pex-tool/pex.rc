@@ -18,7 +18,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use fs_err as fs;
 use indexmap::IndexSet;
-use interpreter::{Interpreter, InterpreterConstraints};
+use interpreter::{Interpreter, InterpreterConstraints, SearchPath, SelectionStrategy};
 use log::warn;
 use pex::{
     Layout,
@@ -72,7 +72,7 @@ pub(crate) struct ExtractArgs {
     timeout: f32,
 }
 
-pub(crate) fn extract(python: &Path, pex: Pex, args: ExtractArgs) -> anyhow::Result<()> {
+pub(crate) fn extract(python: Option<&Path>, pex: Pex, args: ExtractArgs) -> anyhow::Result<()> {
     let timestamp = if args.use_system_time {
         None
     } else {
@@ -84,7 +84,8 @@ pub(crate) fn extract(python: &Path, pex: Pex, args: ExtractArgs) -> anyhow::Res
     };
     let options = WheelOptions::new(CompressionMethod::Deflated, None, timestamp);
     repackage_wheels(&pex, &options, &args.dest_dir)?;
-    let pex_path = PexPath::from_pex_info(&pex.info, true);
+    let pex_info = pex.info.raw();
+    let pex_path = PexPath::from_pex_info(pex_info, true);
     for additional_pex in pex_path.load_pexes()? {
         repackage_wheels(&additional_pex, &options, &args.dest_dir)?;
     }
@@ -92,16 +93,28 @@ pub(crate) fn extract(python: &Path, pex: Pex, args: ExtractArgs) -> anyhow::Res
     if args.sources || args.serve {
         let mut scripts = pex.scripts()?;
         let identify_interpreter = IdentifyInterpreter::read(&mut scripts)?;
-        let interpreter = Interpreter::load(python, &identify_interpreter)?;
+        let interpreter = if let Some(python) = python {
+            Interpreter::load(python, &identify_interpreter)?
+        } else {
+            InterpreterConstraints::try_from(&pex_info.interpreter_constraints)?
+                .iter_possibly_compatible_python_exes(
+                    SelectionStrategy::Newest,
+                    SearchPath::from_env()?,
+                    true,
+                )?
+                .filter_map(|python_exe| Interpreter::load(&python_exe, &identify_interpreter).ok())
+                .next()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Failed to find a Python interpreter to serve the find links repo at \
+                        {path} with.",
+                        path = args.dest_dir.display()
+                    )
+                })?
+        };
         let pex_path = pex.path;
         if args.sources {
-            extract_sdist(
-                pex_path,
-                pex.layout,
-                pex.info.raw(),
-                &args.dest_dir,
-                timestamp,
-            )?;
+            extract_sdist(pex_path, pex.layout, pex_info, &args.dest_dir, timestamp)?;
         }
         if args.serve {
             serve(

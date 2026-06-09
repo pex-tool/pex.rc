@@ -22,7 +22,7 @@ pub(crate) enum Repository {
 }
 
 impl Repository {
-    pub(crate) fn execute_command(self, python: &Path, pex: Pex) -> anyhow::Result<()> {
+    pub(crate) fn execute_command(self, python: Option<&Path>, pex: Pex) -> anyhow::Result<()> {
         match self {
             Repository::Info(args) => repository::info(python, pex, args),
             Repository::Extract(args) => repository::extract(python, pex, args),

@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use interpreter::SearchPath;
 use itertools::Itertools;
 use log::{info, warn};
 use logging_timer::time;
-use pex::{InheritPath, Pex, PexPath};
+use pex::{InheritPath, Pex, PexPath, RawPexInfo};
 use python_proxy::ProxySource;
 use regex::bytes::Regex;
 use venv::{InstallScope, Linker, Provenance, Virtualenv, populate, populate_user_code_and_wheels};
@@ -86,22 +87,25 @@ impl<'a> Linker for PythonProxyLinker<'a> {
 }
 
 pub fn boot(
-    python: impl AsRef<Path>,
+    python: Option<&Path>,
     python_args: Vec<String>,
-    pex: impl AsRef<Path>,
+    pex: &Path,
     argv: Vec<String>,
+    init_logging: bool,
 ) -> anyhow::Result<i32> {
     #[cfg(feature = "tools")]
     if let Ok(tools) = env::var("PEX_TOOLS")
         && tools == "1"
     {
-        if let Err(err) = tools::main(python.as_ref(), pex.as_ref(), argv) {
+        if let Err(err) = tools::main(python, pex, argv) {
             eprintln!("{err}");
             std::process::exit(1);
         }
         std::process::exit(0);
     }
-    logging::init_default()?;
+    if init_logging {
+        logging::init_default()?;
+    }
     let lock = match cache::read_lock() {
         Ok(lock) => lock,
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
@@ -121,13 +125,13 @@ pub fn boot(
 }
 
 fn prepare_boot(
-    python: impl AsRef<Path>,
+    python: Option<&Path>,
     python_args: Vec<String>,
     pex: impl AsRef<Path>,
     argv: Vec<String>,
 ) -> anyhow::Result<Command> {
     let venv = prepare_venv(
-        python.as_ref(),
+        python,
         pex.as_ref(),
         #[cfg(unix)]
         env::var_os("_PEXRC_SH_BOOT_SEED_DIR").map(PathBuf::from),
@@ -137,7 +141,8 @@ fn prepare_boot(
         #[cfg(windows)]
         {
             let python_exe = {
-                if let Some(file_name) = python.as_ref().file_name().and_then(OsStr::to_str)
+                if let Some(python) = python
+                    && let Some(file_name) = python.file_name().and_then(OsStr::to_str)
                     // N.B.: This could be either pythonw.exe or pypyw.exe (or pypy<version>w.exe).
                     && file_name.ends_with("w.exe")
                 {
@@ -159,7 +164,7 @@ fn prepare_boot(
     Ok(command)
 }
 
-pub fn mount(python: impl AsRef<Path>, pex: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
+pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
     logging::init_default()?;
     match cache::read_lock() {
         Ok(lock) => {
@@ -172,8 +177,8 @@ pub fn mount(python: impl AsRef<Path>, pex: impl AsRef<Path>) -> anyhow::Result<
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
     };
     prepare_venv(
-        python.as_ref(),
-        pex.as_ref(),
+        Some(python),
+        pex,
         #[cfg(unix)]
         None,
     )
@@ -182,18 +187,24 @@ pub fn mount(python: impl AsRef<Path>, pex: impl AsRef<Path>) -> anyhow::Result<
 
 #[time("debug", "{}")]
 fn prepare_venv<'a>(
-    python: &Path,
+    python: Option<&Path>,
     pex: &Path,
     #[cfg(unix)] sh_boot_seed_dir: Option<PathBuf>,
 ) -> anyhow::Result<Virtualenv<'a>> {
     let pex = Pex::load(pex)?;
-    let pex_path = PexPath::from_pex_info(&pex.info, true);
     let pex_info = pex.info.raw();
+    let pex_path = PexPath::from_pex_info(pex_info, true);
     let additional_pexes = pex_path.load_pexes()?;
     let search_path = SearchPath::from_env()?;
-    let venv_dir = venv_dir(Some(python), &pex, &search_path, &additional_pexes)?;
+    let venv_dir = venv_dir(
+        python,
+        pex.path.display(),
+        pex_info,
+        &search_path,
+        &additional_pexes,
+    )?;
     if let Some(venv_interpreter) = atomic_dir(&venv_dir, |work_dir| {
-        let mut resolve = pex.resolve(Some(python), additional_pexes.iter(), search_path, None)?;
+        let mut resolve = pex.resolve(python, additional_pexes.iter(), search_path, None)?;
         let venv = Virtualenv::create(
             resolve.interpreter,
             Cow::Borrowed(work_dir),
@@ -291,12 +302,12 @@ const INTERPRETER_HASH_OPTIONS: HashOptions = HashOptions::new().path(true).mtim
 
 pub fn venv_dir(
     ambient_python: Option<&Path>,
-    pex: &Pex,
+    subject: impl Display,
+    pex_info: &RawPexInfo,
     search_path: &SearchPath,
     additional_pexes: &[Pex],
 ) -> anyhow::Result<PathBuf> {
     let mut key = Key::default();
-    let pex_info = pex.info.raw();
 
     // The primary PEX hash covers its user code contents, distributions and ICs.
     key.property("pex_hash", pex_info.pex_hash);
@@ -312,7 +323,7 @@ pub fn venv_dir(
                 .raw()
                 .distributions
                 .iter()
-                .map(|(file_name, fingerprint)| (file_name, fingerprint.as_ref())),
+                .map(|(file_name, fingerprint)| (file_name.as_ref(), fingerprint.as_ref())),
         );
     }
 
@@ -357,7 +368,7 @@ pub fn venv_dir(
         warn!(
             "\
             Using a venv selected by PEX_PYTHON={pex_python}\n\
-            for {pex_file}\n\
+            for {subject}\n\
             at {venv_dir}.\n\
             \n\
             If `{pex_python}` is upgraded or downgraded at some later date, this venv will still\n\
@@ -369,7 +380,6 @@ pub fn venv_dir(
             with `--no-emit-warnings` or re-run the PEX with PEX_EMIT_WARNINGS=False.\n\
             ",
             pex_python = pex_python.display(),
-            pex_file = pex.path.display(),
             venv_dir = venv_dir.display()
         )
     }
@@ -377,7 +387,7 @@ pub fn venv_dir(
         warn!(
             "\
             Using a venv restricted by PEX_PYTHON_PATH={ppp}\n\
-            for {pex_file}\n\
+            for {subject}\n\
             at {venv_dir}.\n\
             \n\
             If the contents of `{ppp}` changes at some later date, this venv and the interpreter\n\
@@ -389,7 +399,6 @@ pub fn venv_dir(
             with PEX_EMIT_WARNINGS=False.\n\
             ",
             ppp = pex_python_path.display(),
-            pex_file = pex.path.display(),
             venv_dir = venv_dir.display()
         )
     }

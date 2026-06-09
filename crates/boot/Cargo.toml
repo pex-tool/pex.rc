@@ -12,6 +12,7 @@ cache = { path = "../cache" }
 const_format = { workspace = true }
 fs-err = { workspace = true }
 interpreter = { path = "../interpreter" }
+python-platform = { path = "../python-platform" }
 itertools = { workspace = true }
 pex = { path = "../pex" }
 pexrs = { path = "../pexrs" }

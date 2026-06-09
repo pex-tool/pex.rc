@@ -4,6 +4,7 @@
 #![deny(clippy::all)]
 
 use std::borrow::Cow;
+use std::fmt::Display;
 use std::io::{ErrorKind, Read, Seek, Write};
 use std::path::Path;
 
@@ -13,7 +14,6 @@ use const_format::str_split;
 use fs_err as fs;
 use fs_err::File;
 use interpreter::{
-    Interpreter,
     InterpreterConstraints,
     SearchPath,
     SelectionStrategy,
@@ -21,9 +21,10 @@ use interpreter::{
     calculate_compatible_unix_binary_names,
 };
 use itertools::Itertools;
-use pex::{Pex, PexPath};
+use pex::{Pex, PexPath, RawPexInfo};
 use pexrs::venv_dir;
 use platform::PosixPath;
+use python_platform::PythonImplementation;
 use zip::ZipWriter;
 use zip::write::{FileOptionExtension, FileOptions};
 
@@ -34,7 +35,7 @@ pub fn sh_boot_shebang(
     pex: &Pex,
     hermetic: bool,
     escaped: bool,
-    preferred_interpreter: Option<&Interpreter>,
+    preferred_interpreter: Option<PythonImplementation>,
 ) -> anyhow::Result<Option<String>> {
     let mut sh_boot_shebang_buffer: [_; SH_BOOT_SHEBANG.len()] = [0; SH_BOOT_SHEBANG.len()];
     let mut pex_fp = File::open(pex.file())?;
@@ -50,17 +51,37 @@ pub fn sh_boot_shebang(
             pex = pex.path.display()
         ),
     };
-    let pex_path = PexPath::from_pex_info(&pex.info, false);
+    Ok(Some(create_sh_boot_shebang(
+        pex.path.display(),
+        pex.info.raw(),
+        hermetic,
+        escaped,
+        preferred_interpreter,
+    )?))
+}
+
+pub fn create_sh_boot_shebang(
+    subject: impl Display,
+    pex_info: &RawPexInfo,
+    hermetic: bool,
+    escaped: bool,
+    preferred_interpreter: Option<PythonImplementation>,
+) -> anyhow::Result<String> {
+    let pex_path = PexPath::from_pex_info(pex_info, false);
     let additional_pexes = pex_path.load_pexes()?;
 
-    let venv_dir = venv_dir(None, pex, &SearchPath::EMPTY, &additional_pexes)?;
+    let venv_dir = venv_dir(
+        None,
+        subject,
+        pex_info,
+        &SearchPath::EMPTY,
+        &additional_pexes,
+    )?;
     let venv_relpath = venv_dir.strip_prefix(CacheDir::root()?)?;
 
     let interpreter_constraints =
-        InterpreterConstraints::try_from(&pex.info.raw().interpreter_constraints)?;
-    let selection_strategy: SelectionStrategy = pex
-        .info
-        .raw()
+        InterpreterConstraints::try_from(pex_info.interpreter_constraints.as_slice())?;
+    let selection_strategy: SelectionStrategy = pex_info
         .interpreter_selection_strategy
         .unwrap_or(pex::InterpreterSelectionStrategy::Oldest)
         .into();
@@ -93,12 +114,12 @@ pub fn sh_boot_shebang(
     } else {
         ""
     };
-    let pexrc_root = if let Some(pex_root) = pex.info.raw().pex_root.as_deref() {
+    let pexrc_root = if let Some(pex_root) = pex_info.pex_root.as_deref() {
         Cow::Owned(PosixPath::try_from(pex_root)?.to_string())
     } else {
         Cow::Borrowed("")
     };
-    Ok(Some(format!(
+    Ok(format!(
         "{shebang}{start_escape}{header}{vars}{body}{end_escape}\n",
         shebang = SH_BOOT_PARTS[0], // N.B.: SH_BOOT_SHEBANG
         start_escape = if escaped { "'''': pshprs\n" } else { "" },
@@ -119,7 +140,7 @@ pub fn sh_boot_shebang(
             .replace("{python_args}", python_args),
         body = SH_BOOT_PARTS[3].trim_end(),
         end_escape = if escaped { "\n'''\n" } else { "\n" },
-    )))
+    ))
 }
 
 const PY_BOOT: &[u8] = include_bytes!("boot.py");

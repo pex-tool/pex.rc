@@ -4,9 +4,10 @@
 use std::ffi::OsString;
 
 use indexmap::IndexMap;
+use python_platform::PythonImplementation;
 
 use crate::constraints::calculate_compatible_binary_specs;
-use crate::{Interpreter, InterpreterConstraints, SelectionStrategy, VersionSpec};
+use crate::{InterpreterConstraints, SelectionStrategy, VersionSpec};
 
 #[cfg(unix)]
 pub(crate) fn iter_possibly_compatible_python_exes(
@@ -28,7 +29,7 @@ pub(crate) fn iter_possibly_compatible_python_exes(
 pub fn calculate_compatible_binary_names(
     constraints: &InterpreterConstraints,
     selection_strategy: SelectionStrategy,
-    preferred_interpreter: Option<&Interpreter>,
+    preferred_interpreter: Option<PythonImplementation>,
     include_pex_compatible: bool,
 ) -> IndexMap<OsString, Option<VersionSpec>> {
     let binary_specs = calculate_compatible_binary_specs(

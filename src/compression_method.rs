@@ -3,10 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use clap::{Args, ValueEnum};
+use repackage::WheelOptions;
 
-use crate::package::WheelOptions;
-
-#[derive(Clone, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum CompressionMethod {
     Deflated,
     Zstd,
@@ -21,12 +20,20 @@ impl From<CompressionMethod> for zip::CompressionMethod {
     }
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct CompressionArgs {
-    #[arg(short = 'Z', long, value_enum, default_value_t = CompressionMethod::Zstd)]
+    /// The compression method to use for wheels and other files stored in the PEX.
+    #[arg(
+        short = 'Z',
+        long,
+        value_enum,
+        default_value_t = CompressionMethod::Zstd,
+        help_heading = "Compression"
+    )]
     compression_method: CompressionMethod,
 
-    #[arg(long)]
+    /// The compression level to use.
+    #[arg(long, help_heading = "Compression")]
     compression_level: Option<i64>,
 }
 

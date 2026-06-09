@@ -180,6 +180,7 @@ dependencies = [
  "pex",
  "pexrs",
  "platform",
+ "python-platform",
  "zip",
 ]
 
@@ -2100,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.16.5"
+version = "0.17.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2127,6 +2128,7 @@ dependencies = [
  "owo-colors",
  "pep508_rs",
  "pex",
+ "pexrs",
  "platform",
  "python-platform",
  "python-proxy",
@@ -3905,7 +3907,6 @@ name = "wheel"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "chrono",
  "csv",
  "fs-err",
  "glob",

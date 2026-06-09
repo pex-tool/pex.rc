@@ -283,7 +283,9 @@ impl<'a> Pex<'a> {
                     }
                 },
             )
-            .filter(|interpreter| interpreter_constraints.contains(interpreter))
+            .filter(|interpreter| {
+                interpreter_constraints.contains(interpreter.details.python_implementation())
+            })
             .map(move |interpreter| {
                 match self.resolve_wheels(
                     &interpreter,
@@ -319,7 +321,7 @@ impl<'a> Pex<'a> {
         let mut errors = Vec::new();
         if let Some(python_exe) = python_exe
             && let Ok(interpreter) = Interpreter::load(python_exe, &identification_script)
-            && interpreter_constraints.contains(&interpreter)
+            && interpreter_constraints.contains(interpreter.details.python_implementation())
             && search_path.contains(python_exe)
         {
             match self.resolve_wheels(
@@ -680,7 +682,7 @@ mod tests {
     #[rstest]
     fn test_resolve_additional(requests_pex: PathBuf, python_exe: &Path) {
         let pex = Pex::load(&requests_pex).unwrap();
-        let pex_path = PexPath::from_pex_info(&pex.info, false);
+        let pex_path = PexPath::from_pex_info(pex.info.raw(), false);
         let additional_pexes = pex_path.load_pexes().unwrap();
         let search_path = SearchPath::known(indexset![python_exe.to_path_buf()]);
         let resolve = pex

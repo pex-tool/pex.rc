@@ -61,13 +61,14 @@ impl From<InterpreterSelectionStrategy> for SelectionStrategy {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RawPexInfo<'a> {
     pub bind_resource_paths: Option<IndexMap<&'a str, &'a str>>,
     pub build_properties: IndexMap<&'a str, Value>,
     pub code_hash: &'a str,
     pub deps_are_wheel_files: bool,
-    pub distributions: IndexMap<&'a str, Cow<'a, str>>,
+    #[serde(borrow)]
+    pub distributions: IndexMap<Cow<'a, str>, Cow<'a, str>>,
     pub emit_warnings: bool,
     pub entry_point: Option<&'a str>,
     pub excluded: Vec<&'a str>,
@@ -94,6 +95,12 @@ pub struct RawPexInfo<'a> {
     pub venv_bin_path: Option<BinPath>,
     pub venv_hermetic_scripts: bool,
     pub venv_system_site_packages: bool,
+}
+
+impl<'a> RawPexInfo<'a> {
+    pub fn write(&self, writer: impl Write) -> anyhow::Result<()> {
+        Ok(serde_json::to_writer(writer, self)?)
+    }
 }
 
 #[self_referencing]
@@ -127,12 +134,11 @@ impl PexInfo {
         self.borrow_info()
             .distributions
             .keys()
-            .copied()
-            .map(WheelFile::parse_file_name)
+            .map(|file_name| WheelFile::parse_file_name(file_name.as_ref()))
     }
 
     pub fn write(&self, writer: impl Write) -> anyhow::Result<()> {
-        Ok(serde_json::to_writer(writer, self.borrow_info())?)
+        self.borrow_info().write(writer)
     }
 
     #[inline]

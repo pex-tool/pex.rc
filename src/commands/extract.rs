@@ -9,9 +9,9 @@ use cache::Fingerprint;
 use clap::Args;
 use owo_colors::OwoColorize;
 use pex::Pex;
+use repackage::{WheelOptions, repackage_wheels};
 
 use crate::compression_method::CompressionArgs;
-use crate::package::{WheelOptions, repackage_wheels};
 use crate::source;
 
 #[derive(Args)]
