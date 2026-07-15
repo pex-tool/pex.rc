@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.16.2
+
+This release fixes `pexrc inject` target platform detection to handle wheels with compressed tag
+sets.
+
 ## 0.16.1
 
 This release fixes interpreter detection for `pyenv` shims on unix. Previously the cache of

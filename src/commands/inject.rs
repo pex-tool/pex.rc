@@ -158,16 +158,24 @@ impl<'a> RequiredTargets<'a> {
             targets_by_project_name
                 .entry(wheel.project_name)
                 .or_insert_with(HashSet::new)
-                .extend(
-                    wheel
+                .extend({
+                    let compatible = wheel
                         .tags
                         .iter()
-                        .map(|tag| {
+                        .filter_map(|tag| {
                             SimplifiedTarget::for_platform_tag(tag.platform)
                                 .map(|targets| targets.map(|targets| (wheel.file_name, targets)))
+                                .ok()
                         })
-                        .collect::<anyhow::Result<Vec<_>>>()?,
-                );
+                        .collect::<Vec<_>>();
+                    if compatible.is_empty() {
+                        bail!(
+                            "There are no pexrc binaries available that support {wheel}.",
+                            wheel = wheel.file_name
+                        )
+                    }
+                    compatible
+                });
         }
         let mut required_targets = IndexSet::new();
         for required in targets_by_project_name.values() {
