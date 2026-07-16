@@ -8,6 +8,7 @@ import subprocess
 
 import pytest
 from testing import IS_WINDOWS, IS_X86_64, pexrc_inject
+from testing.interpreter import ensure_python
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -29,4 +30,5 @@ def test_issue_135(tmpdir):
         args=["pex", "--platform", "win-amd64-cp-314-cp314", "pythonnet==3.1.0", "-o", pex]
     )
     injected_pex = pexrc_inject(pex)
-    subprocess.check_call(args=[injected_pex, "-c", "import pythonnet"])
+    python = ensure_python(version=(3, 14))
+    subprocess.check_call(args=[python, injected_pex, "-c", "import pythonnet"])
