@@ -502,20 +502,7 @@ mod tests {
     ) {
         assert!(
             Command::new(&venv_python_exe)
-                .args([
-                    "-m",
-                    "pip",
-                    "install",
-                    // N.B.: This commit includes two unreleased fixes:
-                    // + Fixed linux / manylinux tag ordering:
-                    //   * https://github.com/pypa/packaging/issues/160
-                    //   * https://github.com/pypa/packaging/commit/68cdb4d400823b401c1a40969964f509636a8094
-                    // + Fixed fat32 -> fat3 for macOS abi tags:
-                    //   * https://github.com/pypa/packaging/pull/1199
-                    // TODO: Revert to just "packaging" (latest) once these fixes are released in
-                    //  packaging 26.3.
-                    "packaging @ git+https://github.com/pypa/packaging@45d15309ac4a2411196e800378f2"
-                ])
+                .args(["-m", "pip", "install", "packaging"])
                 .spawn()
                 .unwrap()
                 .wait()
