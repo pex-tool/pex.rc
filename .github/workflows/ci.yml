@@ -112,8 +112,7 @@ jobs:
           - name: Mac aarch64
             os: macos-15
           - name: Mac x86_64
-            # N.B.: also macos-15, but self-hosted.
-            os: macos-x86_64
+            os: macos-15-intel
           - name: Windows aarch64
             os: windows-11-arm
           - name: Windows x86_64
