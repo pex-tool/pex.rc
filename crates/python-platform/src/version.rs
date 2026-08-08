@@ -40,7 +40,7 @@ impl FromStr for ReleaseLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "final" => Self::Final,
-            "rc" => Self::Rc,
+            "candidate" => Self::Rc,
             "beta" | "b" => Self::Beta,
             "alpha" | "a" => Self::Alpha,
             _ => bail!("Not a recognized CPython releaselevel: {s}"),

@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.16.3
+
+This release fixes Python release candidate handling.
+
 ## 0.16.2
 
 This release fixes `pexrc inject` target platform detection to handle wheels with compressed tag
