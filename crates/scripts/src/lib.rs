@@ -55,6 +55,7 @@ pub enum Scripts {
 const ZIP_REL_PATH: &str = "__pex__/.scripts";
 static HOST_REL_PATH: LazyLock<PathBuf> = LazyLock::new(|| ZIP_REL_PATH.split("/").collect());
 
+#[cfg(feature = "embedded")]
 const ACTIVATION_SCRIPTS_DIR: Dir<'static> = include_dir!("$ACTIVATION_SCRIPTS_DIR");
 
 pub struct ActivationScript {
