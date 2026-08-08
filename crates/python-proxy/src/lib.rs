@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![deny(clippy::all)]
-#![feature(string_from_utf8_lossy_owned)]
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
