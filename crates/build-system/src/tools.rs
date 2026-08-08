@@ -53,7 +53,7 @@ impl<'a> From<Build<'a>> for ToolBox<'a> {
 impl<'a> ToolBox<'a> {
     pub(crate) fn find_tools(self, install_dirs: InstallDirs) -> anyhow::Result<ToolInventory<'a>> {
         let mut missing: Vec<BinstallTool> = Vec::with_capacity(BinstallTool::COUNT);
-        let mut reinstall: Vec<BinstallTool> = Vec::with_capacity(BinstallTool::COUNT);
+        let mut upgrade: Vec<BinstallTool> = Vec::with_capacity(BinstallTool::COUNT);
         let search_path = install_dirs.search_path()?;
         let zig = if let Some(zig) = find_zig(
             &["zig", "python-zig"],
@@ -68,15 +68,12 @@ impl<'a> ToolBox<'a> {
             if let Ok(Some(exe)) = which_in_global(tool.binary_name(), Some(&search_path))
                 .map(|mut found| found.next())
             {
-                if tool.always_install() {
-                    reinstall.push(tool)
-                } else {
-                    eprintln!(
-                        "Found {tool} at {exe}",
-                        tool = tool.binary_name(),
-                        exe = exe.display()
-                    );
-                }
+                eprintln!(
+                    "Found {tool} at {exe}; will upgrade if needed.",
+                    tool = tool.binary_name(),
+                    exe = exe.display()
+                );
+                upgrade.push(tool)
             } else {
                 missing.push(tool)
             }
@@ -88,7 +85,7 @@ impl<'a> ToolBox<'a> {
             zig,
             glibc: self.glibc,
             missing,
-            reinstall,
+            upgrade,
             install_dirs,
         })
     }
@@ -108,13 +105,14 @@ pub fn find_zig(binary_names: &[&str], version: &str, search_path: &OsStr) -> Op
             for zig in zig_paths {
                 if let Some(zig_version) = get_zig_version(&zig) {
                     if zig_version == version {
+                        eprintln!("Found zig {zig_version} at {path}.", path = zig.display());
                         return Some(FoundTool {
                             env_var: ZIG_TOOL_ENV_VAR,
                             path: zig,
                         });
                     } else {
                         eprintln!(
-                            "Found zig at zig {zig_version} at {path} but want version {version}.",
+                            "Skipping zig {zig_version} at {path}: want version {version}.",
                             path = zig.display()
                         );
                     }
@@ -176,8 +174,6 @@ impl InstallDirs {
     }
 }
 
-const UV_MIN_VERSION: &str = "0.12.2";
-
 #[derive(EnumCount, EnumIter)]
 pub enum BinstallTool {
     CargoZigbuild,
@@ -192,15 +188,19 @@ impl BinstallTool {
         }
     }
 
-    pub fn spec(&self) -> Cow<'static, str> {
+    pub fn min_version(&self) -> &'static str {
         match *self {
-            BinstallTool::Uv => Cow::Owned(format!("uv@>={UV_MIN_VERSION}")),
-            _ => Cow::Borrowed(self.binary_name()),
+            BinstallTool::CargoZigbuild => "0.23.0",
+            BinstallTool::Uv => "0.12.2",
         }
     }
 
-    pub fn always_install(&self) -> bool {
-        matches!(*self, BinstallTool::Uv)
+    pub fn spec(&self) -> String {
+        format!(
+            "{name}@>={min_version}",
+            name = self.binary_name(),
+            min_version = self.min_version()
+        )
     }
 }
 
@@ -229,7 +229,7 @@ pub(crate) struct ToolInventory<'a> {
     zig: Zig<'a>,
     downloads: Vec<(&'static str, Download<'a>)>,
     missing: Vec<BinstallTool>,
-    reinstall: Vec<BinstallTool>,
+    upgrade: Vec<BinstallTool>,
     install_dirs: InstallDirs,
 }
 
@@ -275,16 +275,14 @@ impl<'a> ToolInventory<'a> {
         } else if let Zig::Found(zig) = self.zig {
             found_tools.push(zig)
         }
-        if !self.reinstall.is_empty() {
-            for tool in self.reinstall {
-                binstall(
-                    &self.binstall,
-                    &self.install_dirs,
-                    &tool_search_path,
-                    cargo,
-                    &tool.spec(),
-                )?;
-            }
+        for tool in self.upgrade {
+            binstall(
+                &self.binstall,
+                &self.install_dirs,
+                &tool_search_path,
+                cargo,
+                &tool.spec(),
+            )?;
         }
         for (env_var, download) in &self.downloads {
             let download_path = ensure_download(download, &self.install_dirs.download_dir)?;
