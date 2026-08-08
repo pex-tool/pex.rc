@@ -53,6 +53,7 @@ impl<'a> From<Build<'a>> for ToolBox<'a> {
 impl<'a> ToolBox<'a> {
     pub(crate) fn find_tools(self, install_dirs: InstallDirs) -> anyhow::Result<ToolInventory<'a>> {
         let mut missing: Vec<BinstallTool> = Vec::with_capacity(BinstallTool::COUNT);
+        let mut reinstall: Vec<BinstallTool> = Vec::with_capacity(BinstallTool::COUNT);
         let search_path = install_dirs.search_path()?;
         let zig = if let Some(zig) = find_zig(
             &["zig", "python-zig"],
@@ -67,11 +68,15 @@ impl<'a> ToolBox<'a> {
             if let Ok(Some(exe)) = which_in_global(tool.binary_name(), Some(&search_path))
                 .map(|mut found| found.next())
             {
-                eprintln!(
-                    "Found {tool} at {exe}",
-                    tool = tool.binary_name(),
-                    exe = exe.display()
-                );
+                if tool.always_install() {
+                    reinstall.push(tool)
+                } else {
+                    eprintln!(
+                        "Found {tool} at {exe}",
+                        tool = tool.binary_name(),
+                        exe = exe.display()
+                    );
+                }
             } else {
                 missing.push(tool)
             }
@@ -83,6 +88,7 @@ impl<'a> ToolBox<'a> {
             zig,
             glibc: self.glibc,
             missing,
+            reinstall,
             install_dirs,
         })
     }
@@ -170,6 +176,8 @@ impl InstallDirs {
     }
 }
 
+const UV_MIN_VERSION: &str = "0.12.2";
+
 #[derive(EnumCount, EnumIter)]
 pub enum BinstallTool {
     CargoZigbuild,
@@ -182,6 +190,17 @@ impl BinstallTool {
             BinstallTool::CargoZigbuild => "cargo-zigbuild",
             BinstallTool::Uv => "uv",
         }
+    }
+
+    pub fn spec(&self) -> Cow<'static, str> {
+        match *self {
+            BinstallTool::Uv => Cow::Owned(format!("uv@>={UV_MIN_VERSION}")),
+            _ => Cow::Borrowed(self.binary_name()),
+        }
+    }
+
+    pub fn always_install(&self) -> bool {
+        matches!(*self, BinstallTool::Uv)
     }
 }
 
@@ -210,6 +229,7 @@ pub(crate) struct ToolInventory<'a> {
     zig: Zig<'a>,
     downloads: Vec<(&'static str, Download<'a>)>,
     missing: Vec<BinstallTool>,
+    reinstall: Vec<BinstallTool>,
     install_dirs: InstallDirs,
 }
 
@@ -254,6 +274,17 @@ impl<'a> ToolInventory<'a> {
             }
         } else if let Zig::Found(zig) = self.zig {
             found_tools.push(zig)
+        }
+        if !self.reinstall.is_empty() {
+            for tool in self.reinstall {
+                binstall(
+                    &self.binstall,
+                    &self.install_dirs,
+                    &tool_search_path,
+                    cargo,
+                    &tool.spec(),
+                )?;
+            }
         }
         for (env_var, download) in &self.downloads {
             let download_path = ensure_download(download, &self.install_dirs.download_dir)?;
@@ -304,7 +335,7 @@ fn install_tools<'a>(
             install_dirs,
             search_path,
             cargo,
-            tool.binary_name(),
+            &tool.spec(),
         )?;
     }
 
