@@ -68,7 +68,6 @@ pub fn classify_targets<'a>(
 }
 
 pub fn ensure_tools_installed<'a>(
-    cargo: &Path,
     cargo_manifest_contents: &'a str,
     target_dir: &Path,
     is_build_script: bool,
@@ -92,7 +91,7 @@ pub fn ensure_tools_installed<'a>(
     let metadata: Metadata = parse_metadata(cargo_manifest_contents)?;
     let tool_box = ToolBox::from(metadata.build);
     let tool_inventory = tool_box.find_tools(install_dirs)?;
-    match tool_inventory.ensure_tools_installed(cargo, install_missing_tools)? {
+    match tool_inventory.ensure_tools_installed(install_missing_tools)? {
         ToolInstallation::Success(result) => Ok(result),
         ToolInstallation::Failure((zig, missing_binstall_tools, tool_search_path)) => {
             bail!(

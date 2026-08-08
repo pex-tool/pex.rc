@@ -51,8 +51,7 @@ fn main() -> anyhow::Result<()> {
         virtualenv_py = virtualenv_py.display()
     );
 
-    let cargo: PathBuf = env::var("CARGO")?.into();
-    ensure_tools_installed(&cargo, &cargo_manifest_contents, &target_dir, true)?;
+    ensure_tools_installed(&cargo_manifest_contents, &target_dir, true)?;
     let venv_activation_scripts_dir =
         prepare_venv_activation_scripts(&workspace_root, &install_dirs)?;
     println!(

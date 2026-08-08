@@ -241,7 +241,6 @@ pub enum ToolInstallation<'a> {
 impl<'a> ToolInventory<'a> {
     pub(crate) fn ensure_tools_installed(
         self,
-        cargo: &Path,
         install_missing_tools: bool,
     ) -> anyhow::Result<ToolInstallation<'a>> {
         let tool_search_path =
@@ -257,7 +256,6 @@ impl<'a> ToolInventory<'a> {
         if !self.missing.is_empty() || !self.zig.found() {
             if install_missing_tools {
                 let zig = install_tools(
-                    cargo,
                     &self.binstall,
                     self.missing.as_slice(),
                     &self.zig,
@@ -280,7 +278,6 @@ impl<'a> ToolInventory<'a> {
                 &self.binstall,
                 &self.install_dirs,
                 &tool_search_path,
-                cargo,
                 &tool.spec(),
             )?;
         }
@@ -320,7 +317,6 @@ fn zig_tool(version: &str, zig_candidate: PathBuf) -> ZigTool {
 }
 
 fn install_tools<'a>(
-    cargo: &Path,
     cargo_binstall: &CargoBinstall,
     tools: &[BinstallTool],
     zig: &'a Zig,
@@ -328,13 +324,7 @@ fn install_tools<'a>(
     search_path: &OsStr,
 ) -> anyhow::Result<Cow<'a, FoundTool>> {
     for tool in tools {
-        binstall(
-            cargo_binstall,
-            install_dirs,
-            search_path,
-            cargo,
-            &tool.spec(),
-        )?;
+        binstall(cargo_binstall, install_dirs, search_path, &tool.spec())?;
     }
 
     match zig {
@@ -389,7 +379,6 @@ fn binstall(
     cargo_binstall: &CargoBinstall,
     install_dirs: &InstallDirs,
     search_path: &OsStr,
-    cargo: &Path,
     spec: &str,
 ) -> anyhow::Result<()> {
     if let Ok(Some(exe)) =
@@ -412,8 +401,8 @@ fn binstall(
             fs::hard_link(&cargo_binstall, &dst)?;
         } else {
             let spec = format!("cargo-binstall@{version}", version = cargo_binstall.version);
-            let result = Command::new(cargo)
-                .args(["install", "+stable", "--locked", &spec])
+            let result = Command::new("cargo")
+                .args(["+stable", "install", "--locked", &spec])
                 .stderr(Stdio::piped())
                 .spawn()?
                 .wait_with_output()?;
@@ -426,7 +415,7 @@ fn binstall(
         }
     }
 
-    let result = Command::new(cargo)
+    let result = Command::new("cargo")
         .env("PATH", search_path)
         .args(["+stable", "binstall", "--no-confirm", spec])
         // N.B.: binstall logs to stdout :/; so we squelch.

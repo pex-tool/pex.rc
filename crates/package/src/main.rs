@@ -141,7 +141,7 @@ fn main() -> anyhow::Result<()> {
         cargo_manifest_dir.join("target")
     };
     let (_, glibc, found_tools) =
-        ensure_tools_installed(cargo, &cargo_manifest_contents, &target_dir, false)?;
+        ensure_tools_installed(&cargo_manifest_contents, &target_dir, false)?;
 
     let rust_toolchain_contents = fs::read_to_string(cargo_manifest_dir.join("rust-toolchain"))?;
     let classified_targets = classify_targets(&rust_toolchain_contents, &glibc)?;

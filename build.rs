@@ -108,7 +108,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let (mut embeds, glibc, found_tools) =
-        ensure_tools_installed(&cargo, &cargo_manifest_contents, &target_dir, true)?;
+        ensure_tools_installed(&cargo_manifest_contents, &target_dir, true)?;
     println!("cargo::rerun-if-env-changed=PROFILE");
     let profile = env::var("PROFILE")?;
     let embeds_configuration = embeds.configuration_for(&profile);
