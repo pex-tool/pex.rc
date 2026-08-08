@@ -413,7 +413,7 @@ fn binstall(
         } else {
             let spec = format!("cargo-binstall@{version}", version = cargo_binstall.version);
             let result = Command::new(cargo)
-                .args(["+stable", "install", "--locked", &spec])
+                .args(["install", "+stable", "--locked", &spec])
                 .stderr(Stdio::piped())
                 .spawn()?
                 .wait_with_output()?;
