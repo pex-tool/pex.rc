@@ -7,6 +7,7 @@ import os.path
 import subprocess
 import sys
 import time
+from textwrap import dedent
 
 import psutil
 import pytest
@@ -55,6 +56,30 @@ def test_gui_scripts(tmpdir):
         args=["pex", "--runtime-pex-root", pex_root, "psgdemos", "-c", "psgdemos", "-o", pex]
     )
     injected_pex = pexrc_inject(pex)
+    subprocess.check_call(
+        args=[
+            sys.executable,
+            injected_pex,
+            "-c",
+            dedent(
+                """\
+                import os
+                import sys
+
+                import PySimpleGUI as sg
+
+
+                settings = sg.user_settings_filename(filename="psgdemos.json")
+                if os.path.exists(settings):
+                    os.remove(settings)
+                    print(f"Removed settings at {settings}", file=sys.stderr)
+                else:
+                    print(f"Settings not present at {settings}", file=sys.stderr)
+                """
+            ),
+        ],
+        env={**os.environ, "PEX_INTERPRETER": "1"},
+    )
     process = subprocess.Popen(args=[sys.executable, injected_pex])
     time.sleep(
         # Windows is slow, at least in my vm. This allows time for the UI to come up before psutil
