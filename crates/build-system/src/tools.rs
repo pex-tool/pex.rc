@@ -5,9 +5,9 @@ use std::borrow::Cow;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bstr::ByteSlice;
 use const_format::concatcp;
 use fs_err as fs;
@@ -15,7 +15,7 @@ use fs_err::File;
 use strum::{EnumCount, IntoEnumIterator};
 use strum_macros::{EnumCount, EnumIter};
 use target_lexicon::HOST;
-use which::which_in_global;
+use which::{which_global, which_in_global};
 
 use crate::downloads::ensure_download;
 use crate::metadata::{Build, CargoBinstall, Download, Embeds, Glibc};
@@ -53,7 +53,6 @@ impl<'a> From<Build<'a>> for ToolBox<'a> {
 impl<'a> ToolBox<'a> {
     pub(crate) fn find_tools(self, install_dirs: InstallDirs) -> anyhow::Result<ToolInventory<'a>> {
         let mut missing: Vec<BinstallTool> = Vec::with_capacity(BinstallTool::COUNT);
-        let mut upgrade: Vec<BinstallTool> = Vec::with_capacity(BinstallTool::COUNT);
         let search_path = install_dirs.search_path()?;
         let zig = if let Some(zig) = find_zig(
             &["zig", "python-zig"],
@@ -67,13 +66,13 @@ impl<'a> ToolBox<'a> {
         for tool in self.binstall_tools {
             if let Ok(Some(exe)) = which_in_global(tool.binary_name(), Some(&search_path))
                 .map(|mut found| found.next())
+                && let Ok(version) = tool.check_version(&exe)
             {
                 eprintln!(
-                    "Found {tool} at {exe}; will upgrade if needed.",
+                    "Found {tool} {version} at {exe}.",
                     tool = tool.binary_name(),
                     exe = exe.display()
                 );
-                upgrade.push(tool)
             } else {
                 missing.push(tool)
             }
@@ -85,7 +84,6 @@ impl<'a> ToolBox<'a> {
             zig,
             glibc: self.glibc,
             missing,
-            upgrade,
             install_dirs,
         })
     }
@@ -165,12 +163,47 @@ impl InstallDirs {
     }
 
     fn search_path(&self) -> anyhow::Result<Cow<'_, OsStr>> {
-        if let Some(search_path) = env::var_os("PATH").as_deref().map(env::split_paths) {
+        let allow_system_path = env::var_os("PEXRC_INSTALL_TOOLS_ALLOW_SYSTEM_PATH")
+            .map(|value| value.as_encoded_bytes() == b"1")
+            .unwrap_or(true);
+        if allow_system_path
+            && let Some(search_path) = env::var_os("PATH").as_deref().map(env::split_paths)
+        {
             let search_path = env::join_paths(search_path.chain([self.bin_dir.clone()]))?;
             Ok(Cow::Owned(search_path))
         } else {
             Ok(Cow::Borrowed(self.bin_dir.as_os_str()))
         }
+    }
+}
+
+struct VersionCheck<P: Fn(Output) -> anyhow::Result<String>> {
+    args: &'static [&'static str],
+    parse: P,
+}
+
+impl<P: Fn(Output) -> anyhow::Result<String>> VersionCheck<P> {
+    fn get_version(&self, exe: &Path) -> anyhow::Result<semver::Version> {
+        let output = Command::new(exe)
+            .args(self.args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
+        if !output.status.success() {
+            bail!(
+                "Failed to collect version for {exe} (exited {exit_code}):\nSTDERR:\n{stderr}",
+                exe = exe.display(),
+                exit_code = output.status,
+                stderr = output.stderr.to_str_lossy()
+            )
+        }
+        let raw_version = (self.parse)(output)?;
+        semver::Version::parse(raw_version.trim()).map_err(|err| {
+            anyhow!(
+                "Failed to parse version for {exe} from {raw_version}: {err}",
+                exe = exe.display()
+            )
+        })
     }
 }
 
@@ -188,19 +221,48 @@ impl BinstallTool {
         }
     }
 
-    pub fn min_version(&self) -> &'static str {
+    fn min_version(&self) -> semver::Version {
         match *self {
-            BinstallTool::CargoZigbuild => "0.23.0",
-            BinstallTool::Uv => "0.12.2",
+            BinstallTool::CargoZigbuild => semver::Version::new(0, 23, 0),
+            BinstallTool::Uv => semver::Version::new(0, 12, 2),
         }
     }
 
-    pub fn spec(&self) -> String {
+    fn spec(&self) -> String {
         format!(
             "{name}@>={min_version}",
             name = self.binary_name(),
             min_version = self.min_version()
         )
+    }
+
+    fn check_version(&self, exe: &Path) -> anyhow::Result<semver::Version> {
+        let vc = VersionCheck {
+            args: &["-V"],
+            parse: |output| {
+                output
+                    .stdout
+                    .to_str_lossy()
+                    .split(" ")
+                    .nth(1)
+                    .map(ToString::to_string)
+                    .ok_or_else(|| {
+                        anyhow!("Failed to parse version for {exe}.", exe = exe.display())
+                    })
+            },
+        };
+        let version = vc.get_version(exe)?;
+        if version >= self.min_version() {
+            Ok(version)
+        } else {
+            bail!(
+                "The {name} at {exe} is version {version} but a minimum of {min_version} is \
+                required.",
+                name = self.binary_name(),
+                exe = exe.display(),
+                min_version = self.min_version()
+            )
+        }
     }
 }
 
@@ -229,7 +291,6 @@ pub(crate) struct ToolInventory<'a> {
     zig: Zig<'a>,
     downloads: Vec<(&'static str, Download<'a>)>,
     missing: Vec<BinstallTool>,
-    upgrade: Vec<BinstallTool>,
     install_dirs: InstallDirs,
 }
 
@@ -243,15 +304,7 @@ impl<'a> ToolInventory<'a> {
         self,
         install_missing_tools: bool,
     ) -> anyhow::Result<ToolInstallation<'a>> {
-        let tool_search_path =
-            if let Some(search_path) = env::var_os("PATH").as_deref().map(env::split_paths) {
-                let search_path =
-                    env::join_paths(search_path.chain([self.install_dirs.bin_dir.clone()]))?;
-                Cow::Owned(search_path)
-            } else {
-                Cow::Borrowed(self.install_dirs.bin_dir.as_os_str())
-            };
-
+        let tool_search_path = self.install_dirs.search_path()?;
         let mut found_tools = Vec::new();
         if !self.missing.is_empty() || !self.zig.found() {
             if install_missing_tools {
@@ -272,14 +325,6 @@ impl<'a> ToolInventory<'a> {
             }
         } else if let Zig::Found(zig) = self.zig {
             found_tools.push(zig)
-        }
-        for tool in self.upgrade {
-            binstall(
-                &self.binstall,
-                &self.install_dirs,
-                &tool_search_path,
-                &tool.spec(),
-            )?;
         }
         for (env_var, download) in &self.downloads {
             let download_path = ensure_download(download, &self.install_dirs.download_dir)?;
@@ -381,6 +426,8 @@ fn binstall(
     search_path: &OsStr,
     spec: &str,
 ) -> anyhow::Result<()> {
+    let cargo = which_global("cargo")?;
+
     if let Ok(Some(exe)) =
         which_in_global("cargo-binstall", Some(search_path)).map(|mut matches| matches.next())
     {
@@ -401,7 +448,7 @@ fn binstall(
             fs::hard_link(&cargo_binstall, &dst)?;
         } else {
             let spec = format!("cargo-binstall@{version}", version = cargo_binstall.version);
-            let result = Command::new("cargo")
+            let result = Command::new(&cargo)
                 .args(["+stable", "install", "--locked", &spec])
                 .stderr(Stdio::piped())
                 .spawn()?
@@ -415,7 +462,7 @@ fn binstall(
         }
     }
 
-    let result = Command::new("cargo")
+    let result = Command::new(&cargo)
         .env("PATH", search_path)
         // N.B.: Ensures that binstall sub-processes that fall back to building when no download is
         // available use the stable toolchain for the build.

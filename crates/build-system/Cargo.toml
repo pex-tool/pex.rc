@@ -20,6 +20,7 @@ platform = { path = "../platform" }
 request = { path = "../request" }
 serde = { workspace = true }
 sha2 = { workspace = true }
+semver = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 tar = { workspace = true }
