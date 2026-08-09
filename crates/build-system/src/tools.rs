@@ -417,7 +417,10 @@ fn binstall(
 
     let result = Command::new("cargo")
         .env("PATH", search_path)
-        .args(["+stable", "binstall", "--no-confirm", spec])
+        // N.B.: Ensures that binstall sub-processes that fall back to building when no download is
+        // available use the stable toolchain for the build.
+        .env("RUSTUP_TOOLCHAIN", "stable")
+        .args(["binstall", "--no-confirm", spec])
         // N.B.: binstall logs to stdout :/; so we squelch.
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
