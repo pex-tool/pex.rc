@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.16.4
+
+This release fixes handling of macOS Python Framework builds.
+
 ## 0.16.3
 
 This release fixes Python release candidate handling.

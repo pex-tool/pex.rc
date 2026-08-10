@@ -154,6 +154,20 @@ impl<'a> Virtualenv<'a> {
             )?
         };
 
+        // N.B.: Self::host_interpreter used above to pre-calculate venv interpreter details fails
+        // for macOS Python framework builds. As such, for exactly those builds, we run the
+        // interpreter identification script in the context of the venv Python to get accurate
+        // details.
+        //
+        // See: https://github.com/pex-tool/pex.rc/issues/134
+        #[cfg(target_os = "macos")]
+        let venv_interpreter = if venv_interpreter.details.is_framework {
+            let identify_interpreter = IdentifyInterpreter::read(scripts)?;
+            Interpreter::load(&venv_interpreter.details.path, &identify_interpreter)?
+        } else {
+            venv_interpreter
+        };
+
         Ok(Self {
             interpreter: venv_interpreter,
             bin_dir_relpath: SCRIPTS_DIR,

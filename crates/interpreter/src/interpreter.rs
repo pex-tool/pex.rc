@@ -39,6 +39,7 @@ pub struct InterpreterDetails {
     pub cpython_abi_info: Option<CPythonAbiInfo>,
     pub paths: BTreeMap<String, PathBuf>,
     pub has_ensurepip: bool,
+    pub is_framework: bool,
 }
 
 impl InterpreterDetails {

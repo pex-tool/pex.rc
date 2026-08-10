@@ -77,6 +77,8 @@ def identify(sys_config_vars):
     except ImportError:
         has_ensurepip = False
 
+    is_framework = bool(sys_config_vars.get("PYTHONFRAMEWORK"))
+
     pypy_version = cast(
         "Optional[Tuple[int, int, int]]",
         tuple(getattr(sys, "pypy_version_info", ())[:3]) or None,
@@ -101,6 +103,7 @@ def identify(sys_config_vars):
         "cpython_abi_info": abi_info,
         "paths": sysconfig.get_paths(),
         "has_ensurepip": has_ensurepip,
+        "is_framework": is_framework,
     }
 
 
