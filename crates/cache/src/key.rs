@@ -64,6 +64,11 @@ impl<D: Digest> Key<D> {
         self
     }
 
+    pub fn data(&mut self, value: impl AsRef<[u8]>) -> &mut Self {
+        self.digest.update(value);
+        self
+    }
+
     pub fn fingerprint(self) -> Fingerprint {
         Fingerprint::new(self.digest)
     }

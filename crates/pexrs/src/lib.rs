@@ -310,7 +310,7 @@ pub fn venv_dir(
     let mut key = Key::default();
 
     // The primary PEX hash covers its user code contents, distributions and ICs.
-    key.property("pex_hash", pex_info.pex_hash);
+    key.property("pex_hash", pex_info.pex_hash.as_ref());
 
     // We hash just the distributions of additional PEXes since those are the only items used from
     // PEX_PATH adjoined PEX files; i.e.: neither the entry_point nor any other PEX file data or

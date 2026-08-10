@@ -6,12 +6,14 @@ use std::io::{BufReader, Read, Write};
 use std::path::Path;
 
 use anyhow::anyhow;
+use cache::Fingerprint;
 use indexmap::IndexMap;
 use interpreter::SelectionStrategy;
 use logging_timer::time;
 use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use wheel::WheelFile;
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
@@ -80,7 +82,8 @@ pub struct RawPexInfo<'a> {
     pub interpreter_constraints: Vec<&'a str>,
     pub interpreter_selection_strategy: Option<InterpreterSelectionStrategy>,
     pub overridden: Vec<&'a str>,
-    pub pex_hash: &'a str,
+    #[serde(borrow)]
+    pub pex_hash: Cow<'a, str>,
     #[serde(borrow)]
     pub pex_path: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -98,6 +101,26 @@ pub struct RawPexInfo<'a> {
 }
 
 impl<'a> RawPexInfo<'a> {
+    pub fn finalize_pex_hash(&mut self) -> anyhow::Result<&'_ str> {
+        self.pex_hash = Cow::Borrowed("");
+        // N.B.: If this PEX-INFO is from an injected PEX, the Pex version used to create that PEX
+        // should not perturb the hash of the injected PEX since we do not use the Pex runtime code.
+        let pex_version = self.build_properties.insert("pex_version", json!("0.0.0"));
+
+        let bytes = serde_json::to_vec(&self)?;
+        let mut digest = Sha256::new();
+        digest.update(&bytes);
+
+        self.pex_hash = Cow::Owned(Fingerprint::new(digest).hex_digest());
+        if let Some(pex_version) = pex_version {
+            self.build_properties.insert("pex_version", pex_version);
+        } else {
+            self.build_properties.shift_remove("pex_version");
+        }
+
+        Ok(&self.pex_hash)
+    }
+
     pub fn write(&self, writer: impl Write) -> anyhow::Result<()> {
         Ok(serde_json::to_writer(writer, self)?)
     }

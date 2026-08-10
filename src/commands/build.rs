@@ -202,16 +202,16 @@ impl Build {
             })
         } else {
             let mut pex_info = RawPexInfo {
+                build_properties: indexmap! {
+                    "pex_version" => json!(concatcp!("rc ", VERSION)),
+                    "pexrc_version" => json!(VERSION),
+                },
                 requirements: self
                     .requirements
                     .iter()
                     .map(ToString::to_string)
                     .map(Cow::Owned)
                     .collect(),
-                build_properties: indexmap! {
-                    "pex_version" => json!(concatcp!("rc ", VERSION)),
-                    "pexrc_version" => json!(VERSION),
-                },
                 ..Default::default()
             };
             build_pex(
@@ -596,6 +596,7 @@ fn create_zipapp(
         proxy.embed_in_zip(&mut dst_zip, "__pex__/.proxies", file_options)?;
     }
 
+    pex_info.finalize_pex_hash()?;
     dst_zip.start_file("PEX-INFO", deflated_file_options)?;
     pex_info.write(&mut dst_zip)?;
 
