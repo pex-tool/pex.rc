@@ -443,9 +443,10 @@ fn create_pex(
         .map(WheelFile::parse_file_name)
         .collect::<anyhow::Result<Vec<_>>>()?;
     let required_targets = RequiredTargets::for_wheel_files(subject, wheel_files.iter())?;
-    let targets = required_targets.unique_targets();
+    let mut targets = required_targets.unique_targets();
     let all_targets = SimplifiedTarget::all();
     if targets.is_empty() && *AVAILABLE_TARGETS != all_targets {
+        targets |= *AVAILABLE_TARGETS;
         warn!(
             "The {subject} has no platform specific wheels but this pexrc binary only has support \
             for the following platforms:\n\
@@ -461,7 +462,7 @@ fn create_pex(
             subject = required_targets.subject,
             available_targets = *AVAILABLE_TARGETS,
             missing_targets = all_targets - *AVAILABLE_TARGETS
-        )
+        );
     }
 
     let clibs = targets
