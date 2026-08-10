@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use anyhow::anyhow;
+use enumset::EnumSet;
 use include_dir::{Dir, include_dir};
 use indexmap::IndexMap;
 use target::SimplifiedTarget;
@@ -73,6 +74,9 @@ pub static CLIB_BY_TARGET: LazyLock<IndexMap<SimplifiedTarget, Binary<'static>>>
             })
             .collect()
     });
+
+pub static AVAILABLE_TARGETS: LazyLock<EnumSet<SimplifiedTarget>> =
+    LazyLock::new(|| CLIB_BY_TARGET.keys().collect());
 
 pub(crate) static PROXIES_DIR: LazyLock<&'static Dir> = LazyLock::new(|| {
     EMBEDS_DIR

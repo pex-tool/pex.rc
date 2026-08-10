@@ -11,10 +11,12 @@ use anyhow::{anyhow, bail};
 use boot::{create_sh_boot_shebang, inject_boot};
 use cache::{DigestingReader, default_digest};
 use clap::{ArgAction, Args};
+use const_format::concatcp;
 use fs_err as fs;
 use fs_err::File;
-use indexmap::IndexSet;
+use indexmap::{IndexSet, indexmap};
 use interpreter::Interpreter;
+use log::warn;
 use pep508_rs::Requirement;
 use pex::{PexInfo, RawPexInfo};
 use platform::mark_executable;
@@ -24,14 +26,17 @@ use repackage::{WheelOptions, recompress_zipped_whl};
 use resolver::dependency_configuration::DependencyConfiguration;
 use resolver::resolve_wheels;
 use scripts::{IdentifyInterpreter, Scripts};
+use serde_json::json;
+use target::SimplifiedTarget;
 use tempfile::NamedTempFile;
 use url::Url;
 use wheel::{MetadataDirs, MetadataReader, WheelFile};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::VERSION;
 use crate::compression_method::CompressionArgs;
-use crate::embeds::{Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
+use crate::embeds::{AVAILABLE_TARGETS, Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
 use crate::target::{PYTHON_PLATFORM_LONG_HELP, PythonPlatform, RequiredTargets};
 
 #[derive(Args, Debug)]
@@ -159,45 +164,42 @@ impl Build {
         if let Some(pex_info) = self.pex_info {
             let pex_info_file = File::open(&pex_info)?;
             let size = pex_info_file.metadata()?.len();
-            let pex_info = PexInfo::parse(
+            let mut pex_info = PexInfo::parse(
                 BufReader::new(pex_info_file),
                 size,
                 Some(|| Cow::Owned(pex_info.display().to_string())),
             )?;
-            let (mut raw_pex_info, requirements) = if self.requirements.is_empty() {
-                (
-                    Cow::Borrowed(pex_info.raw()),
-                    pex_info
-                        .raw()
+            pex_info.with_raw_mut(|pi| pi.build_properties.insert("pexrc_version", json!(VERSION)));
+            let requirements = if self.requirements.is_empty() {
+                pex_info
+                    .raw()
+                    .requirements
+                    .iter()
+                    .map(|requirement| Ok(requirement.parse::<Requirement<Url>>()?))
+                    .collect::<anyhow::Result<Vec<_>>>()?
+            } else {
+                pex_info.with_raw_mut(|pi| {
+                    pi.requirements = self
                         .requirements
                         .iter()
-                        .map(|requirement| Ok(requirement.parse::<Requirement<Url>>()?))
-                        .collect::<anyhow::Result<Vec<_>>>()?,
-                )
-            } else {
-                (
-                    Cow::Owned(RawPexInfo {
-                        requirements: self
-                            .requirements
-                            .iter()
-                            .map(ToString::to_string)
-                            .map(Cow::Owned)
-                            .collect(),
-                        ..Default::default()
-                    }),
-                    self.requirements,
-                )
+                        .map(ToString::to_string)
+                        .map(Cow::Owned)
+                        .collect()
+                });
+                self.requirements
             };
-            build_pex(
-                self.targets,
-                requirements,
-                wheels,
-                wheel_options,
-                raw_pex_info.to_mut(),
-                self.packed,
-                self.sh_boot,
-                self.output,
-            )
+            pex_info.with_raw_mut(|raw_pex_info| {
+                build_pex(
+                    self.targets,
+                    requirements,
+                    wheels,
+                    wheel_options,
+                    raw_pex_info,
+                    self.packed,
+                    self.sh_boot,
+                    self.output,
+                )
+            })
         } else {
             let mut pex_info = RawPexInfo {
                 requirements: self
@@ -206,6 +208,10 @@ impl Build {
                     .map(ToString::to_string)
                     .map(Cow::Owned)
                     .collect(),
+                build_properties: indexmap! {
+                    "pex_version" => json!(concatcp!("rc ", VERSION)),
+                    "pexrc_version" => json!(VERSION),
+                },
                 ..Default::default()
             };
             build_pex(
@@ -259,7 +265,12 @@ fn build_pex(
         for target in &targets {
             let resolved_wheels = match target {
                 PythonPlatform::Spec(spec) => {
-                    let platform = python_platform::parse(spec, None, None)?;
+                    let platform = python_platform::parse(spec, None, None).map_err(|err| {
+                        anyhow!(
+                            "Failed to parse --target {spec}: {err}\n\
+                            {PYTHON_PLATFORM_LONG_HELP}"
+                        )
+                    })?;
                     resolve_wheels(
                         &platform,
                         requirements.clone(),
@@ -433,6 +444,26 @@ fn create_pex(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let required_targets = RequiredTargets::for_wheel_files(subject, wheel_files.iter())?;
     let targets = required_targets.unique_targets();
+    let all_targets = SimplifiedTarget::all();
+    if targets.is_empty() && *AVAILABLE_TARGETS != all_targets {
+        warn!(
+            "The {subject} has no platform specific wheels but this pexrc binary only has support \
+            for the following platforms:\n\
+            {available_targets}\n\
+            \n\
+            The {subject} will not run on the following platforms:\n\
+            {missing_targets}\n\
+            \n\
+            If the {subject} needs to run on the missing platforms, use a pexrc binary built with \
+            support for all platforms.\n\
+            One place to find these is in the official releases here:\n\
+            https://github.com/pex-tool/pex.rc/releases/tag/v{VERSION}",
+            subject = required_targets.subject,
+            available_targets = *AVAILABLE_TARGETS,
+            missing_targets = all_targets - *AVAILABLE_TARGETS
+        )
+    }
+
     let clibs = targets
         .iter()
         .map(|target| {
@@ -512,7 +543,7 @@ fn create_zipapp(
         dst_zip_fp.write_all(sh_boot_shebang.as_bytes())?;
     } else {
         // TODO: XXX: shebang option + if not set default selection.
-        dst_zip_fp.write_all(b"#!/usr/bin/env python")?;
+        dst_zip_fp.write_all(b"#!/usr/bin/env python\n")?;
     }
     let mut dst_zip = ZipWriter::new(&dst_zip_fp);
 

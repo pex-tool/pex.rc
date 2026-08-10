@@ -239,6 +239,7 @@ clap = { workspace = true }
 clap-verbosity-flag = { workspace = true }
 cli = { path = "crates/cli" }
 colorchoice-clap = { workspace = true }
+const_format = { workspace = true }
 digest = { workspace = true }
 enumset = { workspace = true }
 env_logger = { workspace = true }

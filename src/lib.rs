@@ -3,7 +3,8 @@
 
 #![deny(clippy::all)]
 
-mod build;
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod commands;
 pub mod compression_method;
 pub mod embeds;

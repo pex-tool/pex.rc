@@ -138,7 +138,7 @@ impl<'a> Display for RequiredTarget<'a> {
 }
 
 pub struct RequiredTargets<'a, S: Display> {
-    subject: S,
+    pub subject: S,
     required_targets: IndexSet<RequiredTarget<'a>>,
 }
 
@@ -176,8 +176,8 @@ impl<'a, S: Display> RequiredTargets<'a, S> {
         let mut required_targets = IndexSet::new();
         for required in targets_by_project_name.values() {
             if required.contains(&None) {
-                // If a project has an "-any" whl, we can always resolve that, potentially at the cost
-                // of perf; so we ignore these projects.
+                // If a project has an "-any" whl, we can always resolve that, potentially at the
+                // cost of perf; so we ignore these projects.
                 continue;
             }
             for required_target in required {
@@ -222,14 +222,9 @@ impl<'a, S: Display> RequiredTargets<'a, S> {
     }
 
     pub fn unique_targets(&self) -> EnumSet<SimplifiedTarget> {
-        if self.required_targets.is_empty() {
-            EnumSet::all()
-        } else {
-            let mut targets = EnumSet::empty();
-            for target in &self.required_targets {
-                targets |= target.targets;
-            }
-            targets
-        }
+        self.required_targets
+            .iter()
+            .flat_map(|target| target.targets)
+            .collect()
     }
 }

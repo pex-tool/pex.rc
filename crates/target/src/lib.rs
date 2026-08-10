@@ -5,10 +5,12 @@
 
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
+use std::iter::Iterator;
 use std::sync::LazyLock;
 
 use anyhow::bail;
 use enumset::{EnumSet, EnumSetType, enum_set};
+use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use target_lexicon::HOST;
 
@@ -130,6 +132,10 @@ pub enum SimplifiedTarget {
 }
 
 impl SimplifiedTarget {
+    pub fn all() -> EnumSet<Self> {
+        Self::iter().collect()
+    }
+
     pub fn try_from(value: impl AsRef<str>) -> anyhow::Result<Self> {
         Ok(match value.as_ref() {
             "aarch64-linux-gnu" => Self::Arm64LinuxGnu,
