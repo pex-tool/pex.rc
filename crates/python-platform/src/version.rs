@@ -40,7 +40,7 @@ impl FromStr for ReleaseLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "final" => Self::Final,
-            "candidate" => Self::Rc,
+            "candidate" | "rc" => Self::Rc,
             "beta" | "b" => Self::Beta,
             "alpha" | "a" => Self::Alpha,
             _ => bail!("Not a recognized CPython releaselevel: {s}"),
@@ -52,9 +52,9 @@ impl Display for ReleaseLevel {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             ReleaseLevel::Final => "final",
-            ReleaseLevel::Rc => "rc",
-            ReleaseLevel::Beta => "b",
-            ReleaseLevel::Alpha => "a",
+            ReleaseLevel::Rc => "candidate",
+            ReleaseLevel::Beta => "beta",
+            ReleaseLevel::Alpha => "alpha",
         })
     }
 }
