@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.17.0
+
+This release adds the `-X` flag to `pexrc` to enable experimental sub-commands for use at your
+own risk. The `pexrc build` subcommand is the first such experiment.
+
 ## 0.16.5
 
 This release fixes another bug in Python release candidate handling that the 0.16.3 release missed.
