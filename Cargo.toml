@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.17.0"
+version = "0.16.4"
 edition = { workspace = true }
 publish = false
 
@@ -153,6 +153,7 @@ chrono = "0.4"
 clap = {  version = "4.6", features = ["color", "derive", "string"] }
 clap-verbosity-flag = "3.0"
 colorchoice-clap = "1.0"
+color-print = "0.3"
 const_format = { version = "0.2", features = ["rust_1_64"] }
 csv = "1.4"
 dtor = "1.0"
@@ -239,6 +240,7 @@ clap = { workspace = true }
 clap-verbosity-flag = { workspace = true }
 cli = { path = "crates/cli" }
 colorchoice-clap = { workspace = true }
+color-print = { workspace = true }
 const_format = { workspace = true }
 digest = { workspace = true }
 enumset = { workspace = true }

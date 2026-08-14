@@ -13,7 +13,7 @@ use const_format::concatcp;
 use fs_err as fs;
 use fs_err::File;
 use strum::{EnumCount, IntoEnumIterator};
-use strum_macros::{EnumCount, EnumIter};
+use strum_macros::EnumIter;
 use target_lexicon::HOST;
 use which::{which_global, which_in_global};
 
@@ -207,7 +207,7 @@ impl<P: Fn(Output) -> anyhow::Result<String>> VersionCheck<P> {
     }
 }
 
-#[derive(EnumCount, EnumIter)]
+#[derive(strum_macros::EnumCount, EnumIter)]
 pub enum BinstallTool {
     CargoZigbuild,
     Uv,
