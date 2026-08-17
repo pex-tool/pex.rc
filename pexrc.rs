@@ -60,6 +60,31 @@ enum Commands {
     Script(Script),
 }
 
+impl Commands {
+    fn execute(self) -> anyhow::Result<()> {
+        match self {
+            Commands::Extract { jobs, extract } => {
+                jobs.configure()?;
+                extract.execute()
+            }
+            Commands::Inject { jobs, inject } => {
+                jobs.configure()?;
+                inject.execute()
+            }
+            Commands::Info => info::display(),
+            Commands::Platform(platform) => match platform {
+                Platform::List(list) => list.execute(),
+                Platform::Python(python) => python.execute(),
+            },
+            Commands::Python(python) => match python {
+                Python::Inspect(inspect) => inspect.execute(),
+                Python::List(list) => list.execute(),
+            },
+            Commands::Script(script) => script.execute(),
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum ExperimentalCommands {
     /// Build a PEX from source files and requirements.
@@ -70,6 +95,17 @@ enum ExperimentalCommands {
         #[command(flatten)]
         build: Build,
     },
+}
+
+impl ExperimentalCommands {
+    fn execute(self) -> anyhow::Result<()> {
+        match self {
+            ExperimentalCommands::Build { jobs, build } => {
+                jobs.configure()?;
+                build.execute()
+            }
+        }
+    }
 }
 
 #[derive(Args)]
@@ -109,9 +145,9 @@ fn main() -> anyhow::Result<()> {
                         let header = cstr!("<yellow>WARNING: Experimental</yellow>");
                         let footer = cstr!(
                             "<yellow>\
-                        WARNING: This command is experimental and may change or be removed going \
-                        forward.\
-                        </yellow>"
+                            WARNING: This command is experimental and may change or be removed \
+                            going forward.\
+                            </yellow>"
                         );
                         cmd.name(visible_name)
                             .alias(invisible_alias)
@@ -139,33 +175,9 @@ fn main() -> anyhow::Result<()> {
     match matches.subcommand() {
         Some((subcommand, _)) => {
             if experiments_activated && ExperimentalCommands::has_subcommand(subcommand) {
-                match ExperimentalCommands::from_arg_matches(&matches)? {
-                    ExperimentalCommands::Build { jobs, build } => {
-                        jobs.configure()?;
-                        build.execute()
-                    }
-                }
+                ExperimentalCommands::from_arg_matches(&matches)?.execute()
             } else {
-                match Commands::from_arg_matches(&matches)? {
-                    Commands::Extract { jobs, extract } => {
-                        jobs.configure()?;
-                        extract.execute()
-                    }
-                    Commands::Inject { jobs, inject } => {
-                        jobs.configure()?;
-                        inject.execute()
-                    }
-                    Commands::Info => info::display(),
-                    Commands::Platform(platform) => match platform {
-                        Platform::List(list) => list.execute(),
-                        Platform::Python(python) => python.execute(),
-                    },
-                    Commands::Python(python) => match python {
-                        Python::Inspect(inspect) => inspect.execute(),
-                        Python::List(list) => list.execute(),
-                    },
-                    Commands::Script(script) => script.execute(),
-                }
+                Commands::from_arg_matches(&matches)?.execute()
             }
         }
         None => {
