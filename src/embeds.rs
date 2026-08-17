@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 
 use anyhow::anyhow;
 use enumset::EnumSet;
+use fs_err::File;
 use include_dir::{Dir, include_dir};
 use indexmap::IndexMap;
 use target::SimplifiedTarget;
@@ -23,6 +24,17 @@ pub struct Binary<'a> {
 }
 
 impl<'a> Binary<'a> {
+    pub fn embed_in_dir(&self, dst_dir: &Path, mark_executable: bool) -> anyhow::Result<()> {
+        let dst_path = dst_dir.join(self.path.file_name().expect("Embeds have file names."));
+        let mut dst_file = File::create_new(dst_path)?;
+        let mut embed_reader = zstd::Decoder::new(self.contents)?;
+        io::copy(&mut embed_reader, &mut dst_file)?;
+        if mark_executable {
+            platform::mark_executable(dst_file.file_mut())?;
+        }
+        Ok(())
+    }
+
     pub fn embed_in_zip(
         &self,
         dst_zip: &mut ZipWriter<impl Write + Seek>,

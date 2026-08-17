@@ -16,7 +16,6 @@ use fs_err::File;
 use indexmap::IndexSet;
 use interpreter::Interpreter;
 use log::info;
-use owo_colors::OwoColorize;
 use pex::{Layout, Pex};
 use platform::mark_executable;
 use python_platform::PythonImplementation;
@@ -237,13 +236,13 @@ fn inject_pex_dir(
     fs::create_dir_all(&clib_dir)?;
     info!("Embedded clibs:");
     for clib in clibs {
-        embed_in_dir(clib.path, clib.contents, &clib_dir, false)?;
+        clib.embed_in_dir(&clib_dir, false)?;
     }
     let scripts_dir = pex_dir.join(".proxies");
     fs::create_dir_all(&scripts_dir)?;
     info!("Embedded proxies:");
     for proxy in proxies {
-        embed_in_dir(proxy.path, proxy.contents, &scripts_dir, true)?;
+        proxy.embed_in_dir(&scripts_dir, true)?;
     }
 
     pex.info
@@ -258,29 +257,6 @@ fn inject_pex_dir(
     }
     fs::rename(dest_pex.path(), dst)?;
     dest_pex.disable_cleanup(true);
-    Ok(())
-}
-
-fn embed_in_dir(
-    path: &Path,
-    contents: &[u8],
-    dst_dir: &Path,
-    mark_executable: bool,
-) -> anyhow::Result<()> {
-    let dst_path = dst_dir.join(path.file_name().expect("Embeds have file names."));
-    anstream::eprint!(
-        "Writing {entry} {size} bytes to {dst_path}...",
-        entry = path.display().blue(),
-        size = contents.len(),
-        dst_path = dst_path.display(),
-    );
-    let mut dst_file = File::create_new(dst_path)?;
-    let mut embed_reader = zstd::Decoder::new(contents)?;
-    io::copy(&mut embed_reader, &mut dst_file)?;
-    if mark_executable {
-        platform::mark_executable(dst_file.file_mut())?;
-    }
-    anstream::eprintln!("{}.", "done".green());
     Ok(())
 }
 

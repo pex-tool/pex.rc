@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::{io, process};
 
 use anyhow::{anyhow, bail};
-use boot::{create_sh_boot_shebang, inject_boot};
+use boot::{create_sh_boot_shebang, inject_boot, write_boot};
 use cache::{DigestingReader, default_digest};
 use clap::{ArgAction, Args};
 use const_format::concatcp;
@@ -510,15 +510,96 @@ fn create_pex(
 }
 
 fn create_packed_pex(
-    _wheels: Vec<PathBuf>,
-    _wheel_options: WheelOptions,
-    _pex_info: &RawPexInfo,
-    _clibs: Vec<&Binary>,
-    _proxies: Vec<&Binary>,
-    _sh_boot: bool,
-    _path: &Path,
+    wheels: Vec<PathBuf>,
+    wheel_options: WheelOptions,
+    pex_info: &mut RawPexInfo,
+    clibs: Vec<&Binary>,
+    proxies: Vec<&Binary>,
+    sh_boot: bool,
+    path: &Path,
 ) -> anyhow::Result<()> {
-    todo!("XXX")
+    let mut dest_dir = if let Some(parent_dir) = path.parent() {
+        tempfile::tempdir_in(parent_dir)
+    } else {
+        tempfile::tempdir()
+    }?;
+
+    let shebang = if sh_boot {
+        // TODO: XXX hermetic option.
+        let hermetic = true;
+        // TODO: Derive the preferred Python.
+        let _preferred_python: Option<PythonImplementation> = None;
+        Cow::Owned(create_sh_boot_shebang(
+            "<subject>",
+            pex_info,
+            hermetic,
+            false,
+            None,
+        )?)
+    } else {
+        // TODO: XXX: shebang option + if not set default selection.
+        Cow::Borrowed("#!/usr/bin/env python\n")
+    };
+
+    let deps_dir = tempfile::tempdir()?;
+    let zips = wheels
+        .into_par_iter()
+        .map(|wheel| {
+            let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
+            let whl_file = WheelFile::parse_file_name(
+                wheel
+                    .file_name()
+                    .ok_or_else(|| anyhow!("XXX"))?
+                    .to_str()
+                    .ok_or_else(|| anyhow!("YYY"))?,
+            )?;
+            recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
+                .map(|file| (whl_file.file_name.to_string(), file))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let deps_dir = dest_dir.path().join(".deps");
+    fs::create_dir(&deps_dir)?;
+    for (file_name, zip) in zips {
+        let mut src = DigestingReader::new(default_digest(), zip);
+        let mut dst_zip = File::create_new(deps_dir.join(&file_name))?;
+        io::copy(&mut src, &mut dst_zip)?;
+        pex_info.distributions.insert(
+            Cow::Owned(file_name),
+            Cow::Owned(src.into_fingerprint().hex_digest()),
+        );
+    }
+    pex_info.deps_are_wheel_files = true;
+
+    Scripts::Embedded.write(dest_dir.path())?;
+
+    let pex_dir = dest_dir.path().join("__pex__");
+    let _deflate_options =
+        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let clibs_dir = pex_dir.join(".clibs");
+    fs::create_dir_all(&clibs_dir)?;
+    for clib in clibs {
+        clib.embed_in_dir(&clibs_dir, false)?;
+    }
+    let proxies_dir = pex_dir.join(".proxies");
+    fs::create_dir(&proxies_dir)?;
+    for proxy in proxies {
+        proxy.embed_in_dir(&proxies_dir, true)?;
+    }
+
+    pex_info.finalize_pex_hash()?;
+    let mut pex_info_fp = File::create_new(dest_dir.path().join("PEX-INFO"))?;
+    pex_info.write(&mut pex_info_fp)?;
+
+    write_boot(dest_dir.path(), shebang.as_ref())?;
+
+    if path.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
+    fs::rename(&dest_dir, path)?;
+    dest_dir.disable_cleanup(true);
+    Ok(())
 }
 
 fn create_zipapp(

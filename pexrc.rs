@@ -139,9 +139,6 @@ fn main() -> anyhow::Result<()> {
                     if standard_commands.contains(cmd.get_name()) {
                         cmd
                     } else {
-                        let visible_name =
-                            format!(cstr!("<yellow>{name}</yellow>"), name = cmd.get_name());
-                        let invisible_alias = cmd.get_name().to_owned();
                         let header = cstr!("<yellow>WARNING: Experimental</yellow>");
                         let footer = cstr!(
                             "<yellow>\
@@ -149,9 +146,7 @@ fn main() -> anyhow::Result<()> {
                             going forward.\
                             </yellow>"
                         );
-                        cmd.name(visible_name)
-                            .alias(invisible_alias)
-                            .before_help(header)
+                        cmd.before_help(header)
                             .before_long_help(header)
                             .after_help(footer)
                             .after_long_help(footer)
