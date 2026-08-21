@@ -3,10 +3,11 @@
 
 #![deny(clippy::all)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use anyhow::bail;
+use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_verbosity_flag::{ErrorLevel, Verbosity};
 use color_print::cstr;
 use colorchoice_clap::Color;
@@ -22,8 +23,15 @@ struct Cli {
     #[command(flatten)]
     color: Color,
 
-    /// Enable experimental commands.
-    #[arg(short = 'X', long, default_value_t = false)]
+    #[arg(
+        short = 'X',
+        long,
+        default_value_t = false,
+        help = cstr!(
+            "Enable experimental commands (displayed in dim yellow; e.g.: \
+            <dim><y>example-cmd</y></dim>)"
+        )
+    )]
     experiments: bool,
 
     #[command(subcommand)]
@@ -98,6 +106,16 @@ enum ExperimentalCommands {
 }
 
 impl ExperimentalCommands {
+    fn from_subcommand_matches(subcommand: &str, arg_matches: &ArgMatches) -> anyhow::Result<Self> {
+        match subcommand {
+            "build" => Ok(ExperimentalCommands::Build {
+                jobs: Jobs::from_arg_matches(arg_matches)?,
+                build: Build::from_arg_matches(arg_matches)?,
+            }),
+            _ => bail!("The subcommand {subcommand} is not a registered experimental subcommand."),
+        }
+    }
+
     fn execute(self) -> anyhow::Result<()> {
         match self {
             ExperimentalCommands::Build { jobs, build } => {
@@ -127,37 +145,46 @@ impl Jobs {
 }
 
 fn main() -> anyhow::Result<()> {
-    let (cli_command, experiments_activated) =
+    let (mut cli_command, experimental_commands) =
         if env::args_os().any(|arg| arg == "-X" || arg == "--experiment") {
             let cli_command = Cli::command();
             let standard_commands = cli_command
                 .get_subcommands()
                 .map(|cmd| cmd.get_name())
                 .collect::<HashSet<_>>();
+            let mut experimental_commands = HashMap::new();
             let cli_command = ExperimentalCommands::augment_subcommands(Cli::command())
                 .mut_subcommands(|cmd| {
                     if standard_commands.contains(cmd.get_name()) {
                         cmd
                     } else {
-                        let header = cstr!("<yellow>WARNING: Experimental</yellow>");
+                        let header = cstr!("<y!>WARNING: Experimental</y!>");
                         let footer = cstr!(
-                            "<yellow>\
+                            "<y!>\
                             WARNING: This command is experimental and may change or be removed \
                             going forward.\
-                            </yellow>"
+                            </y!>"
                         );
-                        cmd.before_help(header)
+                        let original_name = cmd.get_name().to_owned();
+                        let name = format!(
+                            cstr!("<dim><y>{original_name}</y></dim>"),
+                            original_name = original_name
+                        );
+                        experimental_commands.insert(name.clone(), original_name.clone());
+                        cmd.name(name)
+                            .alias(original_name)
+                            .before_help(header)
                             .before_long_help(header)
                             .after_help(footer)
                             .after_long_help(footer)
                     }
                 });
-            (cli_command, true)
+            (cli_command, Some(experimental_commands))
         } else {
-            (Cli::command(), false)
+            (Cli::command(), None)
         };
 
-    let matches = cli_command.clone().get_matches();
+    let matches = cli_command.get_matches_mut();
     logging::init(
         Verbosity::<ErrorLevel>::from_arg_matches(&matches)
             .ok()
@@ -168,9 +195,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     match matches.subcommand() {
-        Some((subcommand, _)) => {
-            if experiments_activated && ExperimentalCommands::has_subcommand(subcommand) {
-                ExperimentalCommands::from_arg_matches(&matches)?.execute()
+        Some((subcommand, arg_matches)) => {
+            if let Some(experimental_commands) = experimental_commands
+                && let Some(subcommand) = experimental_commands.get(subcommand)
+            {
+                ExperimentalCommands::from_subcommand_matches(subcommand, arg_matches)?.execute()
             } else {
                 Commands::from_arg_matches(&matches)?.execute()
             }
