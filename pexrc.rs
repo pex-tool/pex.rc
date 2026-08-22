@@ -144,6 +144,13 @@ impl Jobs {
     }
 }
 
+const EXPERIMENTAL_COMMAND_WARNING: &str = cstr!(
+    "<y!>\
+    WARNING: This command is experimental and may change or be removed \
+    going forward.\
+    </y!>"
+);
+
 fn main() -> anyhow::Result<()> {
     let (mut cli_command, experimental_commands) =
         if env::args_os().any(|arg| arg == "-X" || arg == "--experiment") {
@@ -159,12 +166,6 @@ fn main() -> anyhow::Result<()> {
                         cmd
                     } else {
                         let header = cstr!("<y!>WARNING: Experimental</y!>");
-                        let footer = cstr!(
-                            "<y!>\
-                            WARNING: This command is experimental and may change or be removed \
-                            going forward.\
-                            </y!>"
-                        );
                         let original_name = cmd.get_name().to_owned();
                         let name = format!(
                             cstr!("<dim><y>{original_name}</y></dim>"),
@@ -175,8 +176,8 @@ fn main() -> anyhow::Result<()> {
                             .alias(original_name)
                             .before_help(header)
                             .before_long_help(header)
-                            .after_help(footer)
-                            .after_long_help(footer)
+                            .after_help(EXPERIMENTAL_COMMAND_WARNING)
+                            .after_long_help(EXPERIMENTAL_COMMAND_WARNING)
                     }
                 });
             (cli_command, Some(experimental_commands))
@@ -199,7 +200,10 @@ fn main() -> anyhow::Result<()> {
             if let Some(experimental_commands) = experimental_commands
                 && let Some(subcommand) = experimental_commands.get(subcommand)
             {
-                ExperimentalCommands::from_subcommand_matches(subcommand, arg_matches)?.execute()
+                let experimental_command =
+                    ExperimentalCommands::from_subcommand_matches(subcommand, arg_matches)?;
+                eprintln!("{EXPERIMENTAL_COMMAND_WARNING}");
+                experimental_command.execute()
             } else {
                 Commands::from_arg_matches(&matches)?.execute()
             }
