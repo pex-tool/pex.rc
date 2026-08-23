@@ -17,5 +17,7 @@ pub(crate) struct InfoArgs {
 
 #[time("debug", "{}")]
 pub(crate) fn display(pex: Pex, args: InfoArgs) -> anyhow::Result<()> {
+    args.output.configure()?;
+
     args.json.serialize(args.output.writer()?, &pex.info.raw())
 }

@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 
 use cache::Fingerprint;
 use clap::Args;
+use cli::Output;
 use owo_colors::OwoColorize;
 use pex::Pex;
+use platform::path_for_terminal_output;
 use repackage::{WheelOptions, repackage_wheels};
 
 use crate::compression_method::CompressionArgs;
@@ -19,6 +21,9 @@ use crate::source;
 pub struct Extract {
     #[command(flatten)]
     compression_args: CompressionArgs,
+
+    #[command(flatten)]
+    output: Output,
 
     /// The directory to extract the wheels to.
     #[arg(short = 'd', long)]
@@ -31,6 +36,8 @@ pub struct Extract {
 
 impl Extract {
     pub fn execute(self) -> anyhow::Result<()> {
+        self.output.configure()?;
+
         let pex = source::to_path(self.pex, Some(&self.dest_dir))?;
         let pex = Pex::load(&pex)?;
         let options = self.compression_args.into_wheel_options(None);
@@ -45,7 +52,7 @@ fn to_dir(dest_dir: &Path, pex: Pex, options: &WheelOptions) -> anyhow::Result<(
     let mut wheel_info = Vec::with_capacity(count);
     let mut max_width = 0;
     for wheel in wheels {
-        let path = wheel.path().display().to_string();
+        let path = path_for_terminal_output(wheel.path()).to_string();
         max_width = cmp::max(max_width, path.len());
         wheel_info.push((
             path,

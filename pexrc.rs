@@ -9,6 +9,7 @@ use std::env;
 use anyhow::bail;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
+use cli::Output;
 use color_print::cstr;
 use colorchoice_clap::Color;
 use pexrc::commands::{Build, Extract, Inject, Platform, Python, Script, info};
@@ -57,7 +58,7 @@ enum Commands {
         inject: Inject,
     },
     /// Provide information about the supported target runtimes.
-    Info,
+    Info(Output),
     /// Work with supported platforms.
     #[command(subcommand)]
     Platform(Platform),
@@ -79,7 +80,10 @@ impl Commands {
                 jobs.configure()?;
                 inject.execute()
             }
-            Commands::Info => info::display(),
+            Commands::Info(output) => {
+                output.configure()?;
+                info::display()
+            }
             Commands::Platform(platform) => match platform {
                 Platform::List(list) => list.execute(),
                 Platform::Python(python) => python.execute(),

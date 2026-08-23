@@ -14,6 +14,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use clap::Args;
+use cli::Output;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use fs_err as fs;
@@ -28,6 +29,7 @@ use pex::{
     collect_loose_user_source,
     collect_zipped_user_source_indexes,
 };
+use platform::path_for_terminal_output;
 use repackage::{WheelOptions, repackage_wheels};
 use scripts::IdentifyInterpreter;
 use tar::Header;
@@ -70,9 +72,14 @@ pub(crate) struct ExtractArgs {
     /// waiting indefinitely. The wait is indefinite by default.
     #[arg(long, default_value_t = 0.0, verbatim_doc_comment)]
     timeout: f32,
+
+    #[command(flatten)]
+    output: Output,
 }
 
 pub(crate) fn extract(python: Option<&Path>, pex: Pex, args: ExtractArgs) -> anyhow::Result<()> {
+    args.output.configure()?;
+
     let timestamp = if args.use_system_time {
         None
     } else {
@@ -545,7 +552,7 @@ fn serve(
     eprintln!(
         "Serving find-links repo of {pex} via {find_links} at http://localhost:{port}",
         pex = pex_path.display(),
-        find_links = root_dir.display(),
+        find_links = path_for_terminal_output(root_dir),
     );
 
     if let Some(pid_file) = pid_file {

@@ -7,6 +7,7 @@ use cache::Fingerprint;
 use digest::Digest;
 use include_dir::File;
 use owo_colors::OwoColorize;
+use platform::path_for_terminal_output;
 use sha2::Sha256;
 
 use crate::embeds::{CLIBS_DIR, PROXIES_DIR};
@@ -19,7 +20,7 @@ pub fn display() -> anyhow::Result<()> {
     let mut paths = Vec::new();
     let mut max_width = 0;
     for embed in iter_embeds() {
-        let path = embed.path().display().to_string();
+        let path = path_for_terminal_output(embed.path()).to_string();
         max_width = cmp::max(max_width, path.len());
         paths.push(path);
     }

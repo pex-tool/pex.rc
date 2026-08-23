@@ -25,6 +25,8 @@ pub(crate) struct InfoArgs {
 }
 
 pub(crate) fn display(python: Option<&Path>, pex: Pex, args: InfoArgs) -> anyhow::Result<()> {
+    args.output.configure()?;
+
     let pex_path = PexPath::from_pex_info(pex.info.raw(), true);
     let additional_pexes = pex_path.load_pexes()?;
     let (_, wheels) = resolve(python, &pex, &additional_pexes)?;

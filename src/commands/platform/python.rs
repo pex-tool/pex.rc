@@ -24,6 +24,8 @@ pub struct Python {
 
 impl Python {
     pub fn execute(&self) -> anyhow::Result<()> {
+        self.output.configure()?;
+
         let mut out = self.output.writer()?;
         match &self.python_platform {
             PythonPlatform::Spec(spec) => {

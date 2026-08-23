@@ -23,6 +23,8 @@ pub struct List {
 
 impl List {
     pub fn execute(&self) -> anyhow::Result<()> {
+        self.output.configure()?;
+
         let mut out = self.output.writer()?;
         if self.json {
             self.json_serializer.serialize(

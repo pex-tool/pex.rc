@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
+use std::fmt::Display;
 use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -97,4 +98,8 @@ pub fn exec(command: &mut Command, files_to_keep_open: &[File]) -> io::Result<i3
         fcntl_setfl(file, flags)?;
     }
     Err(command.exec())
+}
+
+pub fn path_for_terminal_output(path: &Path) -> impl Display {
+    path.display()
 }

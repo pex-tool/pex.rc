@@ -190,6 +190,8 @@ pub(crate) struct GraphArgs {
 }
 
 pub(crate) fn create(python: Option<&Path>, pex: Pex, args: GraphArgs) -> anyhow::Result<()> {
+    args.output.configure()?;
+
     let pex_path = PexPath::from_pex_info(pex.info.raw(), true);
     let additional_pexes = pex_path.load_pexes()?;
     let (interpreter, wheels) = resolve(python, &pex, &additional_pexes)?;

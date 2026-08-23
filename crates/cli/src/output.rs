@@ -2,18 +2,45 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::OsStr;
+use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 use fs_err::File;
+
+#[derive(Clone, ValueEnum)]
+enum PathOutputStyle {
+    Auto,
+    Posix,
+    Windows,
+}
+
+impl Display for PathOutputStyle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            PathOutputStyle::Auto => "auto",
+            PathOutputStyle::Posix => "posix",
+            PathOutputStyle::Windows => "windows",
+        };
+        f.write_str(value)
+    }
+}
 
 #[derive(Args)]
 pub struct Output {
     /// A file to send output to; STDOUT by default.
     #[arg(short = 'o', long, help_heading = "Output")]
     output: Option<PathBuf>,
+
+    /// Set the style file-system paths are output in.
+    ///
+    /// By default, the style is auto-detected by examining the environment for clues from
+    /// `TERM`, `SHELL`, etc.
+    #[cfg(windows)]
+    #[arg(long, help_heading = "Output", default_value_t = PathOutputStyle::Auto)]
+    path_style: PathOutputStyle,
 }
 
 impl Output {
@@ -41,6 +68,45 @@ impl Output {
             };
             let (file, path) = temp.keep()?;
             Ok(File::from_parts(file, path))
+        }
+    }
+
+    pub fn configure(&self) -> anyhow::Result<()> {
+        if let Some(output) = self.output.as_deref() {
+            let out = File::options().create(true).write(true).open(output)?;
+            let mut stdout = io::stdout().lock();
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::StdioExt;
+                stdout.set_fd(out)?;
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::StdioExt;
+                stdout.set_handle(Some(out))?;
+            }
+        }
+
+        #[cfg(windows)]
+        self.configure_posix_paths();
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub fn configure_posix_paths(&self) {
+        if let Some(terminal_uses_posix_paths) = match self.path_style {
+            PathOutputStyle::Auto => None,
+            PathOutputStyle::Posix => Some(true),
+            PathOutputStyle::Windows => Some(false),
+        } {
+            if let Some(previous_value) =
+                platform::windows::set_terminal_uses_posix_paths(terminal_uses_posix_paths)
+            {
+                panic!(
+                    "Use of Posix paths was unexpectedly already configured to: {previous_value}"
+                )
+            }
         }
     }
 }

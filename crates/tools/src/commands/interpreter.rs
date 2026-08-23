@@ -46,6 +46,8 @@ pub(crate) fn display(
     pex: Pex,
     args: InterpreterArgs,
 ) -> anyhow::Result<()> {
+    args.output.configure()?;
+
     let mut out = args.output.writer()?;
     for interpreter in compatible_interpreters(python, &pex, args.all)? {
         match args.verbose {

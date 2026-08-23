@@ -26,6 +26,8 @@ pub struct PlatformsArgs {
 }
 
 pub(crate) fn list(pex: Pex, args: PlatformsArgs) -> anyhow::Result<()> {
+    args.output.configure()?;
+
     let platforms = match pex.layout {
         Layout::Loose | Layout::Packed => calculate_supported_platforms(
             pex.path

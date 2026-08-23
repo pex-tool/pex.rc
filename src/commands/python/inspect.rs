@@ -27,6 +27,8 @@ pub struct Inspect {
 
 impl Inspect {
     pub fn execute(self) -> anyhow::Result<()> {
+        self.output.configure()?;
+
         let identification_script = IdentifyInterpreter::read(&mut Embedded)?;
         let interpreter = self
             .python

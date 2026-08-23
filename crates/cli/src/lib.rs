@@ -4,6 +4,7 @@
 #![deny(clippy::all)]
 #![feature(const_convert)]
 #![feature(const_trait_impl)]
+#![feature(stdio_swap)]
 
 mod json;
 mod output;

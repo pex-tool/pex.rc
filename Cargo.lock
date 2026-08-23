@@ -389,6 +389,7 @@ dependencies = [
  "anyhow",
  "clap",
  "fs-err",
+ "platform",
  "serde",
  "serde_json",
  "tempfile",
@@ -2140,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anstream",
  "anyhow",

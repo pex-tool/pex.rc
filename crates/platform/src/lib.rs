@@ -6,12 +6,13 @@
 // handle ensuring useful errors manually in this crate.
 
 #![deny(clippy::all)]
+#![cfg_attr(windows, feature(once_cell_try_insert))]
 
 #[cfg(unix)]
 pub mod unix;
 
 #[cfg(windows)]
-mod windows;
+pub mod windows;
 
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter, Write};
@@ -30,6 +31,7 @@ pub use unix::{
     is_executable,
     mark_executable,
     path_as_bytes,
+    path_for_terminal_output,
     set_permissions,
     symlink_or_link_or_copy,
 };
@@ -39,6 +41,7 @@ pub use windows::{
     is_executable,
     mark_executable,
     path_as_bytes,
+    path_for_terminal_output,
     set_permissions,
     symlink_or_link_or_copy,
 };

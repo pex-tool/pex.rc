@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.19.0
+
+This release fixes Windows `pexrc` and Windows `PEX_TOOLS` to output paths Posix-style when running
+in a Posix shell like git bash. A new `--path-style {auto,posix,windows}` option is added to the
+relevant commands on Windows to override the path output style auto-detection.
+
 ## 0.18.0
 
 This release adds support for the `platforms` `PEX_TOOL` for listing the platforms the PEX is able

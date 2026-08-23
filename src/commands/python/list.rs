@@ -12,6 +12,7 @@ use interpreter::{
 };
 use log::debug;
 use owo_colors::OwoColorize;
+use platform::path_for_terminal_output;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scripts::{IdentifyInterpreter, Scripts};
 
@@ -66,6 +67,8 @@ pub struct List {
 
 impl List {
     pub fn execute(self) -> anyhow::Result<()> {
+        self.output.configure()?;
+
         let ics = InterpreterConstraints::from(self.constraints);
         let mut pythons = ics
             .iter_possibly_compatible_python_exes(
@@ -101,7 +104,7 @@ impl List {
             self.json_serializer.serialize(&mut out, &pythons)?;
         } else {
             for python in pythons {
-                anstream::println!("{}", python.display().blue())
+                anstream::println!("{}", path_for_terminal_output(&python).blue())
             }
         }
         Ok(())
