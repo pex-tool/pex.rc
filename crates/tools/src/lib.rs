@@ -15,9 +15,10 @@ use pex::Pex;
 use crate::commands::graph::GraphArgs;
 use crate::commands::info::InfoArgs;
 use crate::commands::interpreter::InterpreterArgs;
+use crate::commands::platforms::PlatformsArgs;
 use crate::commands::repository::Repository;
 use crate::commands::venv::VenvArgs;
-use crate::commands::{extract, graph, info, interpreter, venv};
+use crate::commands::{extract, graph, info, interpreter, platforms, venv};
 
 /// Pex Tools.
 #[derive(Parser)]
@@ -47,6 +48,8 @@ enum Commands {
     Interpreter(InterpreterArgs),
     /// Generates a dot graph of the dependencies contained in a PEX.
     Graph(GraphArgs),
+    /// List the platforms this PEX can run on.
+    Platforms(PlatformsArgs),
     /// Interact with the Python distribution repository contained in a PEX.
     #[command(subcommand)]
     Repository(Repository),
@@ -74,6 +77,7 @@ pub fn main(python: Option<&Path>, pex: &Path, argv: Vec<String>) -> anyhow::Res
         Commands::Graph(args) => graph::create(python, Pex::load(pex)?, args),
         Commands::Info(args) => info::display(Pex::load(pex)?, args),
         Commands::Interpreter(args) => interpreter::display(python, Pex::load(pex)?, args),
+        Commands::Platforms(args) => platforms::list(Pex::load(pex)?, args),
         Commands::Repository(repository) => repository.execute_command(python, Pex::load(pex)?),
         Commands::Venv(args) => venv::create(python, Pex::load(pex)?, args),
     }

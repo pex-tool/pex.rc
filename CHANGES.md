@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.18.0
+
+This release adds support for the `platforms` `PEX_TOOL` for listing the platforms the PEX is able
+to run on.
+
 ## 0.17.0
 
 This release adds the `-X` flag to `pexrc` to enable experimental sub-commands for use at your

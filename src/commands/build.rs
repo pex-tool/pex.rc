@@ -445,24 +445,26 @@ fn create_pex(
     let required_targets = RequiredTargets::for_wheel_files(subject, wheel_files.iter())?;
     let mut targets = required_targets.unique_targets();
     let all_targets = SimplifiedTarget::all();
-    if targets.is_empty() && *AVAILABLE_TARGETS != all_targets {
+    if targets.is_empty() {
         targets |= *AVAILABLE_TARGETS;
-        warn!(
-            "The {subject} has no platform specific wheels but this pexrc binary only has support \
-            for the following platforms:\n\
-            {available_targets}\n\
-            \n\
-            The {subject} will not run on the following platforms:\n\
-            {missing_targets}\n\
-            \n\
-            If the {subject} needs to run on the missing platforms, use a pexrc binary built with \
-            support for all platforms.\n\
-            One place to find these is in the official releases here:\n\
-            https://github.com/pex-tool/pex.rc/releases/tag/v{VERSION}",
-            subject = required_targets.subject,
-            available_targets = *AVAILABLE_TARGETS,
-            missing_targets = all_targets - *AVAILABLE_TARGETS
-        );
+        if *AVAILABLE_TARGETS != all_targets {
+            warn!(
+                "The {subject} has no platform specific wheels but this pexrc binary only has support \
+                for the following platforms:\n\
+                {available_targets}\n\
+                \n\
+                The {subject} will not run on the following platforms:\n\
+                {missing_targets}\n\
+                \n\
+                If the {subject} needs to run on the missing platforms, use a pexrc binary built with \
+                support for all platforms.\n\
+                One place to find these is in the official releases here:\n\
+                https://github.com/pex-tool/pex.rc/releases/tag/v{VERSION}",
+                subject = required_targets.subject,
+                available_targets = *AVAILABLE_TARGETS,
+                missing_targets = all_targets - *AVAILABLE_TARGETS
+            );
+        }
     }
 
     let clibs = targets

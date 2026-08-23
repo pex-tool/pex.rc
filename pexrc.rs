@@ -8,7 +8,7 @@ use std::env;
 
 use anyhow::bail;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use clap_verbosity_flag::{ErrorLevel, Verbosity};
+use clap_verbosity_flag::{Verbosity, WarnLevel};
 use color_print::cstr;
 use colorchoice_clap::Color;
 use pexrc::commands::{Build, Extract, Inject, Platform, Python, Script, info};
@@ -187,7 +187,7 @@ fn main() -> anyhow::Result<()> {
 
     let matches = cli_command.get_matches_mut();
     logging::init(
-        Verbosity::<ErrorLevel>::from_arg_matches(&matches)
+        Verbosity::<WarnLevel>::from_arg_matches(&matches)
             .ok()
             .map(|verbosity| verbosity.log_level_filter()),
     )?;

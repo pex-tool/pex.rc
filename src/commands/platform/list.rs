@@ -10,7 +10,7 @@ use target::SimplifiedTarget;
 #[derive(Args)]
 #[group(skip)]
 pub struct List {
-    /// Output target list in JSON.
+    /// Output platform list in JSON.
     #[arg(long, default_value_t = false)]
     json: bool,
 

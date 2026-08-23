@@ -5,5 +5,6 @@ pub(crate) mod extract;
 pub(crate) mod graph;
 pub(crate) mod info;
 pub(crate) mod interpreter;
+pub(crate) mod platforms;
 pub(crate) mod repository;
 pub(crate) mod venv;

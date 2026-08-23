@@ -41,6 +41,7 @@ shell-quote = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tar = { workspace = true }
+target = { path = "../target" }
 tempfile = { workspace = true }
 textwrap = { workspace = true }
 venv = { path = "../venv" }
