@@ -4,7 +4,7 @@
 #![deny(clippy::all)]
 
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -15,6 +15,7 @@ use pex::{Layout, Pex};
 use target::Target;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip_ext::ZipArchiveExt;
 
 pub const SHEBANG_PREFIX: &str = "\n#!";
 const SHEBANG_SUFFIX: &str = "\n";
@@ -97,15 +98,15 @@ pub fn read_proxy(proxy: PathBuf) -> io::Result<PythonProxy> {
 
 pub enum ProxySource<'a> {
     Pex(&'a Pex<'a>),
-    Read(Box<dyn Read + 'a>),
+    Embedded(&'a [u8]),
 }
 
 #[cfg(windows)]
 pub fn create(
-    proxy_source: ProxySource,
+    proxy_source: &ProxySource,
     interpreter: &Path,
     target_python: File,
-    script: Option<String>,
+    script: Option<impl AsRef<[u8]>>,
     is_gui: bool,
 ) -> anyhow::Result<()> {
     use std::borrow::Cow;
@@ -125,20 +126,20 @@ pub fn create(
 
 #[cfg(unix)]
 pub fn create(
-    proxy_source: ProxySource,
+    proxy_source: &ProxySource,
     interpreter: &Path,
     target_python: File,
-    script: Option<String>,
+    script: Option<impl AsRef<[u8]>>,
     is_gui: bool,
 ) -> anyhow::Result<()> {
     create_proxy(proxy_source, interpreter, target_python, script, is_gui)
 }
 
 fn create_proxy(
-    proxy_source: ProxySource,
+    proxy_source: &ProxySource,
     interpreter: &Path,
     mut target_python: File,
-    script: Option<String>,
+    script: Option<impl AsRef<[u8]>>,
     is_gui: bool,
 ) -> anyhow::Result<()> {
     match proxy_source {
@@ -153,8 +154,9 @@ fn create_proxy(
                 io::copy(&mut python_proxy, &mut target_python)?;
             }
         },
-        ProxySource::Read(mut bytes) => {
-            io::copy(&mut bytes, &mut target_python)?;
+        ProxySource::Embedded(bytes) => {
+            let mut python_proxy = Cursor::new(bytes);
+            io::copy(&mut python_proxy, &mut target_python)?;
         }
     }
     let shebang_python = interpreter.as_os_str();
@@ -164,7 +166,7 @@ fn create_proxy(
             "__main__.py",
             SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
         )?;
-        script_zip.write_all(script.as_bytes())?;
+        script_zip.write_all(script.as_ref())?;
         script_zip.set_comment(format!(
             "{SHEBANG_PREFIX}{shebang_python}{SHEBANG_SUFFIX}",
             shebang_python = shebang_python.to_str().ok_or_else(|| anyhow!(
@@ -218,8 +220,8 @@ fn read_python_proxy_from_zip(
     pex_zip: &mut ZipArchive<impl Read + Seek>,
     is_gui: bool,
 ) -> anyhow::Result<impl Read> {
-    Ok(pex_zip.by_name(&format!(
+    pex_zip.by_name_ex(&format!(
         "__pex__/.proxies/{python_proxy_name}",
         python_proxy_name = python_proxy_file_name(is_gui)?
-    ))?)
+    ))
 }

@@ -56,15 +56,24 @@ impl<R: Read> TryFrom<BufReader<R>> for Fingerprint {
 pub struct DigestingReader<D: Digest, R: Read> {
     digest: D,
     reader: R,
+    size: u64,
 }
 
 impl<D: Digest, R: Read> DigestingReader<D, R> {
     pub fn new(digest: D, reader: R) -> Self {
-        Self { digest, reader }
+        Self {
+            digest,
+            reader,
+            size: 0,
+        }
     }
 
     pub fn into_fingerprint(self) -> Fingerprint {
         Fingerprint::new(self.digest)
+    }
+
+    pub fn into_fingerprint_and_size(self) -> (Fingerprint, u64) {
+        (Fingerprint::new(self.digest), self.size)
     }
 }
 
@@ -72,6 +81,7 @@ impl<D: Digest, R: Read> Read for DigestingReader<D, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let amount = self.reader.read(buf)?;
         self.digest.update(&buf[0..amount]);
+        self.size += amount as u64;
         Ok(amount)
     }
 }

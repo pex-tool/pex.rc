@@ -27,6 +27,7 @@ use zip::read::ZipArchiveMetadata;
 use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip_ext::ZipArchiveExt;
 
 use crate::original_wheel_info::{OriginalWheelInfo, ZipFileName};
 
@@ -42,7 +43,7 @@ enum DirPexDepType {
 pub struct WheelOptions {
     compression_method: CompressionMethod,
     compression_level: Option<i64>,
-    timestamp: Option<DateTime<Utc>>,
+    pub timestamp: Option<DateTime<Utc>>,
 }
 
 impl WheelOptions {
@@ -260,7 +261,7 @@ fn recompress_zipped_whl_chroot(
     let dist_info_dir = metadata_dirs.dist_info_dir();
     let record_name = format!("{prefix}{dist_info_dir}/RECORD");
     let record = Record::read(Cursor::new(io::read_to_string(
-        zipped_wheel_chroot.by_name(&record_name)?,
+        zipped_wheel_chroot.by_name_ex(&record_name)?,
     )?))?;
 
     let (stash_dir, legacy_bin_dir) = 'result: {
@@ -272,12 +273,15 @@ fn recompress_zipped_whl_chroot(
         } else {
             Cow::Borrowed(WheelLayout::file_name())
         };
-        match zipped_wheel_chroot.by_name(layout_json_name.as_ref()) {
+        match zipped_wheel_chroot.by_name_ex(layout_json_name.as_ref()) {
             Ok(zip_file) => {
                 let layout = WheelLayout::read(zip_file)?;
                 break 'result (Some(layout.stash_dir), false);
             }
-            Err(ZipError::FileNotFound) => {}
+            Err(err)
+                if let Some(source) = err.source()
+                    && let Some(zip_error) = source.downcast_ref::<ZipError>()
+                    && matches!(zip_error, ZipError::FileNotFound) => {}
             Err(err) => bail!("{err}"),
         }
         let legacy_bin_dir_name = if prefixed {
@@ -287,7 +291,7 @@ fn recompress_zipped_whl_chroot(
         };
         let has_legacy_bin_dir = !record.wheel_has_bin_dir()
             && zipped_wheel_chroot
-                .by_name(legacy_bin_dir_name.as_ref())
+                .by_name_ex(legacy_bin_dir_name.as_ref())
                 .ok()
                 .map(|entry| entry.is_dir())
                 .unwrap_or_default();
@@ -300,7 +304,7 @@ fn recompress_zipped_whl_chroot(
         file_name = OriginalWheelInfo::file_name()
     );
 
-    let wheel_info = if let Ok(wheel_info) = zipped_wheel_chroot.by_name(&original_wheel_info) {
+    let wheel_info = if let Ok(wheel_info) = zipped_wheel_chroot.by_name_ex(&original_wheel_info) {
         let size = wheel_info.size();
         Some(OriginalWheelInfo::read(wheel_info, size)?)
     } else {
@@ -354,7 +358,7 @@ fn recompress_zipped_whl_chroot(
                 }
                 format!("{prefix}{zip_file_name}")
             };
-            let mut src = match zip_finder.by_name(&name) {
+            let mut src = match zip_finder.by_name_ex(&name) {
                 Ok(src) => src,
                 Err(_) if zip_file_name.ends_with("/") => {
                     // N.B.: Pex can omit original directory entries when those directories are
@@ -432,7 +436,7 @@ fn recompress_zipped_whl_chroot(
                     rel_path = PosixPath::relpath(dst_rel_path)?
                 )
             };
-            let mut src = zip_finder.by_name(&name)?;
+            let mut src = zip_finder.by_name_ex(&name)?;
             compressed_whl.start_file_from_path(dst_rel_path, file_options)?;
             io::copy(&mut src, &mut compressed_whl)?;
         }

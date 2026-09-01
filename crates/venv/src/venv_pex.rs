@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::io::{BufReader, Cursor, ErrorKind, Read, Seek, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{env, io};
@@ -26,6 +27,7 @@ use pex::{
 };
 use platform::{Perms, mark_executable, path_as_bytes, path_as_str, symlink_or_link_or_copy};
 use python_platform::PythonVersion;
+use python_proxy::ProxySource;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use resolver::ResolvedWheel;
 use scripts::{
@@ -39,8 +41,10 @@ use scripts::{
 use serde_json::Value;
 use wheel::{EntryPoint, EntryPoints, MetadataDirs, Record, WheelDir, WheelLayout};
 use zip::ZipArchive;
+use zip_ext::ZipArchiveExt;
 
 use crate::Provenance;
+use crate::script::PythonScript;
 use crate::virtualenv::Virtualenv;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -60,11 +64,14 @@ impl InstallScope {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn populate_from_loose_pex<'a>(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     loose_pex: &'a Pex<'a>,
     resolved_wheels: &IndexMap<&'a str, ResolvedWheel<'a>>,
     populate_pex_info: bool,
+    proxy_source: &ProxySource,
     scope: InstallScope,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
@@ -84,7 +91,14 @@ fn populate_from_loose_pex<'a>(
                     layout,
                     record.wheel_has_bin_dir(),
                 );
-                populate_wheel_dir(venv, &wheel_paths.path, &wheel_details, provenance.clone())
+                populate_wheel_dir(
+                    venv,
+                    shebang_interpreter,
+                    &wheel_paths.path,
+                    &wheel_details,
+                    proxy_source,
+                    provenance.clone(),
+                )
             })?;
     }
     if matches!(scope, InstallScope::All | InstallScope::Srcs) {
@@ -123,36 +137,12 @@ fn collect_wheels_from_directory_pex<'a>(
     Ok(wheels)
 }
 
-fn spread(
-    pex: &Pex,
-    wheel: ResolvedWheel,
-    virtualenv: &Virtualenv,
-    shebang_interpreter: &Path,
-    shebang_arg: Option<&str>,
-    provenance: Arc<Provenance>,
-) -> anyhow::Result<()> {
-    let entry_points = virtualenv
-        .site_packages_path(wheel.dist_info_dir().as_path())
-        .join("entry_points.txt");
-    if entry_points.exists() {
-        install_scripts(
-            pex,
-            &entry_points,
-            virtualenv,
-            shebang_interpreter,
-            shebang_arg,
-            provenance,
-        )?;
-    }
-    Ok(())
-}
-
 fn install_scripts(
-    pex: &Pex,
     entry_points_txt: &Path,
     virtualenv: &Virtualenv,
     shebang_interpreter: &Path,
     shebang_arg: Option<&str>,
+    proxy_source: &ProxySource,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
     let entry_points = EntryPoints::load(File::open(entry_points_txt)?)?;
@@ -169,9 +159,7 @@ fn install_scripts(
                 .map(|(name, entry_point)| (name, entry_point, true)),
         )
     {
-        let script_path = virtualenv
-            .script_path(name)
-            .with_extension(env::consts::EXE_EXTENSION);
+        let script_path = virtualenv.script_path(name);
         let script_contents =
             create_script_contents(shebang_interpreter, shebang_arg, entry_point)?;
         let script_file = match File::create_new(&script_path) {
@@ -193,7 +181,7 @@ fn install_scripts(
             Err(err) => bail!("{err}"),
         };
         write_script(
-            pex,
+            proxy_source,
             shebang_interpreter,
             script_file,
             script_contents,
@@ -205,27 +193,27 @@ fn install_scripts(
 
 #[cfg(unix)]
 fn write_script(
-    _pex: &Pex,
+    _proxy_source: &ProxySource,
     _shebang_interpreter: &Path,
     mut script_file: File,
-    script_contents: String,
+    script_contents: impl AsRef<[u8]>,
     _is_gui: bool,
 ) -> anyhow::Result<()> {
-    script_file.write_all(script_contents.as_bytes())?;
+    script_file.write_all(script_contents.as_ref())?;
     mark_executable(script_file.file_mut())?;
     Ok(())
 }
 
 #[cfg(windows)]
 fn write_script(
-    pex: &Pex,
+    proxy_source: &ProxySource,
     shebang_interpreter: &Path,
     script_file: File,
-    script_contents: String,
+    script_contents: impl AsRef<[u8]>,
     is_gui: bool,
 ) -> anyhow::Result<()> {
     python_proxy::create(
-        python_proxy::ProxySource::Pex(pex),
+        proxy_source,
         shebang_interpreter,
         script_file.into_file(),
         Some(script_contents),
@@ -327,11 +315,40 @@ impl<'a> WheelDetails<'a> {
     }
 }
 
-fn calculate_spread_path(
+enum Spread {
+    Move(PathBuf),
+    Script(PathBuf),
+}
+
+impl From<Spread> for PathBuf {
+    fn from(value: Spread) -> Self {
+        match value {
+            Spread::Move(path) | Spread::Script(path) => path,
+        }
+    }
+}
+
+impl AsRef<Path> for Spread {
+    fn as_ref(&self) -> &Path {
+        match self {
+            Self::Move(path) | Self::Script(path) => path,
+        }
+    }
+}
+
+impl Deref for Spread {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+fn calculate_spread(
     venv: &Virtualenv,
     wheel_details: &WheelDetails,
     dst_rel_path: &Path,
-) -> anyhow::Result<Option<PathBuf>> {
+) -> anyhow::Result<Option<Spread>> {
     if let Ok(data_dir_relpath) = dst_rel_path.strip_prefix(wheel_details.data_dir.as_path()) {
         let mut components = data_dir_relpath.components();
         if let Some(paths_key) = components.next() {
@@ -352,7 +369,7 @@ fn calculate_spread_path(
                 // + https://discuss.python.org/t/deprecating-the-headers-wheel-data-key/23712
                 //
                 // Both discussions died out with no path resolved to clean up the mess.
-                Ok(Some(
+                Ok(Some(Spread::Move(
                     venv.prefix()
                         .join("include")
                         .join("site")
@@ -363,9 +380,21 @@ fn calculate_spread_path(
                         ))
                         .join(wheel_details.project_name)
                         .join(components.collect::<PathBuf>()),
-                ))
+                )))
             } else if let Some(spread_path) = venv.interpreter.details.paths.get(key) {
-                Ok(Some(spread_path.join(components.collect::<PathBuf>())))
+                if key == "scripts" {
+                    Ok(Some(Spread::Script(
+                        spread_path.join(
+                            components
+                                .collect::<PathBuf>()
+                                .with_extension(env::consts::EXE_EXTENSION),
+                        ),
+                    )))
+                } else {
+                    Ok(Some(Spread::Move(
+                        spread_path.join(components.collect::<PathBuf>()),
+                    )))
+                }
             } else {
                 bail!(
                     "Wheel for {project_name} has unknown .data dir entry {key}: \
@@ -391,16 +420,30 @@ fn calculate_spread_path(
                 )
             })?;
             if ["bin", "Scripts"].into_iter().any(|dir| key == dir) {
-                Ok(Some(venv.script_path(components.collect::<PathBuf>())))
+                Ok(Some(Spread::Script(
+                    venv.script_path(components.collect::<PathBuf>()),
+                )))
             } else if key == "include" {
-                Ok(Some(
+                Ok(Some(Spread::Move(
                     venv.prefix()
                         .components()
                         .chain(stash_rel_path.components())
                         .collect(),
-                ))
+                )))
             } else if let Some(spread_path) = venv.interpreter.details.paths.get(key) {
-                Ok(Some(spread_path.components().chain(components).collect()))
+                if key == "scripts" {
+                    Ok(Some(Spread::Script(
+                        spread_path
+                            .components()
+                            .chain(components)
+                            .collect::<PathBuf>()
+                            .with_extension(env::consts::EXE_EXTENSION),
+                    )))
+                } else {
+                    Ok(Some(Spread::Move(
+                        spread_path.components().chain(components).collect(),
+                    )))
+                }
             } else {
                 bail!(
                     "Wheel for {project_name} has unknown {stash_dir} dir entry {key}: \
@@ -425,16 +468,18 @@ fn calculate_spread_path(
     } else if wheel_details.legacy_bin_dir
         && let Ok(script) = dst_rel_path.strip_prefix("bin")
     {
-        Ok(Some(venv.script_path(script)))
+        Ok(Some(Spread::Script(venv.script_path(script))))
     } else {
-        Ok(Some(venv.site_packages_path(dst_rel_path)))
+        Ok(Some(Spread::Move(venv.site_packages_path(dst_rel_path))))
     }
 }
 
 fn populate_wheel_dir(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     wheel: &Path,
     wheel_details: &WheelDetails,
+    proxy_source: &ProxySource,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
     let wheel_contents = walkdir::WalkDir::new(wheel)
@@ -448,7 +493,7 @@ fn populate_wheel_dir(
                     );
                     // TODO: Experiment with creating parent dirs as needed here in this synchronous loop
                     //  just 1x to save on syscall overhead in the parallel loop over contained files below.
-                    match calculate_spread_path(venv, wheel_details, dst_rel_path) {
+                    match calculate_spread(venv, wheel_details, dst_rel_path) {
                         Ok(dst) => dst.map(|dst| Ok((entry, dst))),
                         Err(err) => Some(Err(err)),
                     }
@@ -464,19 +509,54 @@ fn populate_wheel_dir(
             if let Some(parent_dir) = dst.parent() {
                 fs::create_dir_all(parent_dir)?;
             }
-            match File::create_new(&dst) {
+            match File::create_new(dst.as_ref()) {
                 Ok(mut dst_file) => {
-                    provenance.record(src.path().display(), dst);
+                    let python_version = venv.interpreter.details.version;
+                    let source = src.path().display();
                     let mut src = File::open(src.path())?;
-                    io::copy(&mut src, &mut dst_file)?;
-                    platform::set_permissions(
-                        dst_file.file_mut(),
-                        Perms::Perms(src.metadata()?.permissions()),
-                    )?;
+                    let metadata = src.metadata()?;
+                    let perms = Some(Perms::Perms(metadata.permissions()));
+                    let size = metadata.len();
+                    match dst {
+                        Spread::Move(dst) => {
+                            provenance.record(source, dst);
+                            io::copy(&mut src, &mut dst_file)?;
+                            if let Some(perms) = perms {
+                                platform::set_permissions(dst_file.file_mut(), perms)?;
+                            }
+                        }
+                        Spread::Script(dst) => {
+                            provenance.record(source, dst);
+                            if let Some(python_script) =
+                                PythonScript::detect(&mut src, size, python_version)?
+                            {
+                                let reified_script = python_script
+                                    .reified_contents(shebang_interpreter, &mut src)?;
+                                write_script(
+                                    proxy_source,
+                                    shebang_interpreter,
+                                    dst_file,
+                                    reified_script,
+                                    python_script.is_windowed,
+                                )?;
+                            } else {
+                                src.rewind()?;
+                                io::copy(&mut src, &mut dst_file)?;
+                                if let Some(perms) = perms {
+                                    platform::set_permissions(dst_file.file_mut(), perms)?;
+                                }
+                            }
+                        }
+                    };
                 }
                 Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                     let (size, fingerprint) = fingerprint_file(src.path(), default_digest())?;
-                    provenance.record_collision(src.path().display(), fingerprint, size, dst);
+                    provenance.record_collision(
+                        src.path().display(),
+                        fingerprint,
+                        size,
+                        dst.into(),
+                    );
                 }
                 Err(err) => bail!("{err}"),
             }
@@ -485,11 +565,14 @@ fn populate_wheel_dir(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn populate_from_packed_pex<'a>(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     packed_pex: &'a Pex<'a>,
     resolved_wheels: &IndexMap<&'a str, ResolvedWheel<'a>>,
     populate_pex_info: bool,
+    proxy_source: &ProxySource,
     scope: InstallScope,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
@@ -499,9 +582,11 @@ fn populate_from_packed_pex<'a>(
             .try_for_each(|(project_name, wheel_paths)| {
                 populate_whl_zip(
                     venv,
+                    shebang_interpreter,
                     &wheel_paths.path,
                     project_name,
                     wheel_paths.metadata_dirs,
+                    proxy_source,
                     provenance.clone(),
                 )
             })?;
@@ -514,14 +599,16 @@ fn populate_from_packed_pex<'a>(
 
 fn populate_whl_zip(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     wheel: &Path,
     project_name: &str,
     metadata_dirs: &MetadataDirs,
+    proxy_source: &ProxySource,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
     let mut whl_zip = ZipArchive::new(File::open(wheel)?.into_file())?;
     let metadata = whl_zip.metadata();
-    let layout = if let Ok(layout_file) = whl_zip.by_name(WheelLayout::file_name()) {
+    let layout = if let Ok(layout_file) = whl_zip.by_name_ex(WheelLayout::file_name()) {
         Some(WheelLayout::read(layout_file)?)
     } else {
         None
@@ -531,7 +618,7 @@ fn populate_whl_zip(
         dist_info_dir = metadata_dirs.dist_info_dir()
     );
     let record = Record::read(Cursor::new(io::read_to_string(
-        whl_zip.by_name(&record_name)?,
+        whl_zip.by_name_ex(&record_name)?,
     )?))?;
     let wheel_details = WheelDetails::new(
         project_name,
@@ -544,9 +631,11 @@ fn populate_whl_zip(
         let mut zip = unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
         extract_whl_idx(
             venv,
+            shebang_interpreter,
             &wheel_details,
             index,
             &mut zip,
+            proxy_source,
             wheel.display(),
             provenance.clone(),
         )
@@ -599,11 +688,14 @@ fn populate_user_code_from_directory_pex<'a>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn populate_from_zip_app_with_whl_deps<'a>(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     zip_app_pex: &'a Pex<'a>,
     resolved_wheels: &IndexMap<&'a str, ResolvedWheel<'a>>,
     populate_pex_info: bool,
+    proxy_source: &ProxySource,
     scope: InstallScope,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
@@ -621,7 +713,7 @@ fn populate_from_zip_app_with_whl_deps<'a>(
                 let whl_file = zip.by_name_seek(&whl_name)?;
                 let mut whl_zip = ZipArchive::new(whl_file)?;
                 let whl_zip_metadata = whl_zip.metadata();
-                let layout = if let Ok(layout_file) = whl_zip.by_name(WheelLayout::file_name()) {
+                let layout = if let Ok(layout_file) = whl_zip.by_name_ex(WheelLayout::file_name()) {
                     Some(WheelLayout::read(layout_file)?)
                 } else {
                     None
@@ -631,7 +723,7 @@ fn populate_from_zip_app_with_whl_deps<'a>(
                     dist_info_dir = wheel.dist_info_dir()
                 );
                 let record = Record::read(Cursor::new(io::read_to_string(
-                    whl_zip.by_name(&record_name)?,
+                    whl_zip.by_name_ex(&record_name)?,
                 )?))?;
                 let wheel_details = WheelDetails::new(
                     wheel.project_name,
@@ -649,9 +741,11 @@ fn populate_from_zip_app_with_whl_deps<'a>(
                     };
                     extract_whl_idx(
                         venv,
+                        shebang_interpreter,
                         &wheel_details,
                         index,
                         &mut whl_zip,
+                        proxy_source,
                         format!("{zip}/{whl_name}", zip = zip_app_pex.path.display()),
                         provenance.clone(),
                     )
@@ -668,9 +762,11 @@ fn populate_from_zip_app_with_whl_deps<'a>(
                     unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
                 extract_idx(
                     venv,
+                    shebang_interpreter,
                     index,
                     None,
                     &mut zip,
+                    proxy_source,
                     zip_app_pex.path.display(),
                     provenance.clone(),
                 )?;
@@ -678,7 +774,7 @@ fn populate_from_zip_app_with_whl_deps<'a>(
             })?;
         if populate_pex_info {
             let mut pex_zip = ZipArchive::new(File::open(zip_app_pex.path)?)?;
-            let mut pex_info_src_fp = pex_zip.by_name("PEX-INFO")?;
+            let mut pex_info_src_fp = pex_zip.by_name_ex("PEX-INFO")?;
             let mut pex_info_dst_fp = File::create_new(venv.prefix().join("PEX-INFO"))?;
             io::copy(&mut pex_info_src_fp, &mut pex_info_dst_fp)?;
         }
@@ -701,11 +797,14 @@ impl<'a> DepFilter<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn populate_from_zip_app<'a>(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     zip_app_pex: &'a Pex<'a>,
     resolved_wheels: &IndexMap<&'a str, ResolvedWheel<'a>>,
     populate_pex_info: bool,
+    proxy_source: &ProxySource,
     scope: InstallScope,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
@@ -717,7 +816,7 @@ fn populate_from_zip_app<'a>(
             .iter()
             .map(|(file_name, wheel)| {
                 let layout: Option<WheelLayout> = if let Ok(layout_file) =
-                    pex_zip.by_name(&format!(
+                    pex_zip.by_name_ex(&format!(
                         ".deps/{file_name}/{layout_file}",
                         layout_file = WheelLayout::file_name()
                     )) {
@@ -730,7 +829,7 @@ fn populate_from_zip_app<'a>(
                     dist_info_dir = wheel.dist_info_dir()
                 );
                 let record = Record::read(Cursor::new(io::read_to_string(
-                    pex_zip.by_name(&record_name)?,
+                    pex_zip.by_name_ex(&record_name)?,
                 )?))?;
                 Ok((
                     *file_name,
@@ -762,9 +861,11 @@ fn populate_from_zip_app<'a>(
                     unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
                 extract_whl_idx(
                     venv,
+                    shebang_interpreter,
                     wheel_details,
                     index,
                     &mut zip,
+                    proxy_source,
                     zip_app_pex.path.display(),
                     provenance.clone(),
                 )?;
@@ -792,9 +893,11 @@ fn populate_from_zip_app<'a>(
                     unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
                 extract_idx(
                     venv,
+                    shebang_interpreter,
                     index,
                     None,
                     &mut zip,
+                    proxy_source,
                     zip_app_pex.path.display(),
                     provenance.clone(),
                 )?;
@@ -802,7 +905,7 @@ fn populate_from_zip_app<'a>(
             })?;
     }
     if populate_pex_info && matches!(scope, InstallScope::All | InstallScope::Srcs) {
-        let mut pex_info_src_fp = pex_zip.by_name("PEX-INFO")?;
+        let mut pex_info_src_fp = pex_zip.by_name_ex("PEX-INFO")?;
         let mut pex_info_dst_fp = File::create_new(venv.prefix().join("PEX-INFO"))?;
         io::copy(&mut pex_info_src_fp, &mut pex_info_dst_fp)?;
     }
@@ -818,23 +921,28 @@ pub fn populate_user_code_and_wheels<'a>(
     pex: &'a Pex<'a>,
     resolved_wheels: IndexMap<&'a str, ResolvedWheel<'a>>,
     populate_pex_info: bool,
+    proxy_source: &'a ProxySource<'a>,
     scope: InstallScope,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
     match pex.layout {
         Layout::Loose => populate_from_loose_pex(
             venv,
+            shebang_interpreter,
             pex,
             &resolved_wheels,
             populate_pex_info,
+            proxy_source,
             scope,
             provenance.clone(),
         )?,
         Layout::Packed => populate_from_packed_pex(
             venv,
+            shebang_interpreter,
             pex,
             &resolved_wheels,
             populate_pex_info,
+            proxy_source,
             scope,
             provenance.clone(),
         )?,
@@ -842,18 +950,22 @@ pub fn populate_user_code_and_wheels<'a>(
             if pex.info.raw().deps_are_wheel_files {
                 populate_from_zip_app_with_whl_deps(
                     venv,
+                    shebang_interpreter,
                     pex,
                     &resolved_wheels,
                     populate_pex_info,
+                    proxy_source,
                     scope,
                     provenance.clone(),
                 )?
             } else {
                 populate_from_zip_app(
                     venv,
+                    shebang_interpreter,
                     pex,
                     &resolved_wheels,
                     populate_pex_info,
+                    proxy_source,
                     scope,
                     provenance.clone(),
                 )?
@@ -866,14 +978,21 @@ pub fn populate_user_code_and_wheels<'a>(
             .collect::<Vec<_>>()
             .into_par_iter()
             .try_for_each(|resolved_wheel| {
-                spread(
-                    pex,
-                    resolved_wheel,
-                    venv,
-                    shebang_interpreter,
-                    shebang_arg,
-                    provenance.clone(),
-                )
+                let entry_points = venv
+                    .site_packages_path(resolved_wheel.dist_info_dir().as_path())
+                    .join("entry_points.txt");
+                if entry_points.exists() {
+                    install_scripts(
+                        &entry_points,
+                        venv,
+                        shebang_interpreter,
+                        shebang_arg,
+                        proxy_source,
+                        provenance.clone(),
+                    )
+                } else {
+                    Ok(())
+                }
             })?;
     }
     Ok(())
@@ -889,6 +1008,7 @@ pub fn populate<'a>(
     resolved_wheels: IndexMap<&'a str, ResolvedWheel<'a>>,
     scripts: &mut Scripts,
     bin_path_override: Option<BinPath>,
+    proxy_source: &'a ProxySource<'a>,
     scope: InstallScope,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
@@ -900,6 +1020,7 @@ pub fn populate<'a>(
         pex,
         resolved_wheels,
         true,
+        proxy_source,
         scope,
         provenance,
     )?;
@@ -926,11 +1047,14 @@ pub fn populate<'a>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_whl_idx<R>(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     wheel_details: &WheelDetails,
     index: usize,
     zip: &mut ZipArchive<R>,
+    proxy_source: &ProxySource,
     source: impl Display,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()>
@@ -949,20 +1073,32 @@ where
             }
             .split("/")
             .collect::<PathBuf>();
-        calculate_spread_path(venv, wheel_details, &dst_rel_path)?
+        calculate_spread(venv, wheel_details, &dst_rel_path)?
     };
     if dst_path.is_some() {
-        extract_idx(venv, index, dst_path, zip, source, provenance)
+        extract_idx(
+            venv,
+            shebang_interpreter,
+            index,
+            dst_path,
+            zip,
+            proxy_source,
+            source,
+            provenance,
+        )
     } else {
         Ok(())
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_idx<R>(
     venv: &Virtualenv,
+    shebang_interpreter: &Path,
     index: usize,
-    dst_path: Option<PathBuf>,
+    spread_dst: Option<Spread>,
     zip: &mut ZipArchive<R>,
+    proxy_source: &ProxySource,
     source: impl Display,
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()>
@@ -970,21 +1106,54 @@ where
     R: Read + Seek,
 {
     let mut zip_file = zip.by_index(index)?;
-    let dst_path = dst_path.unwrap_or_else(|| {
-        venv.site_packages_path(zip_file.name().split("/").collect::<PathBuf>())
+    let spread_dst = spread_dst.unwrap_or_else(|| {
+        Spread::Move(venv.site_packages_path(zip_file.name().split("/").collect::<PathBuf>()))
     });
     if zip_file.is_dir() {
-        fs::create_dir_all(dst_path)?;
+        fs::create_dir_all(spread_dst)?;
     } else {
-        if let Some(parent_dir) = dst_path.parent() {
+        if let Some(parent_dir) = spread_dst.parent() {
             fs::create_dir_all(parent_dir)?;
         }
-        match File::create_new(&dst_path) {
+        match File::create_new(spread_dst.as_ref()) {
             Ok(mut dst_file) => {
-                provenance.record(format!("{source}/{name}", name = zip_file.name()), dst_path);
-                io::copy(&mut zip_file, &mut dst_file)?;
-                if let Some(mode) = zip_file.unix_mode() {
-                    platform::set_permissions(dst_file.file_mut(), Perms::Mode(mode))?;
+                let source = format!("{source}/{name}", name = zip_file.name());
+                let perms = zip_file.unix_mode().map(Perms::Mode);
+                match spread_dst {
+                    Spread::Move(dst) => {
+                        provenance.record(source, dst);
+                        io::copy(&mut zip_file, &mut dst_file)?;
+                        if let Some(perms) = perms {
+                            platform::set_permissions(dst_file.file_mut(), perms)?;
+                        }
+                    }
+                    Spread::Script(dst) => {
+                        provenance.record(source, dst);
+                        let python_version = venv.interpreter.details.version;
+                        let size = zip_file.size();
+                        let mut script_contents = tempfile::spooled_tempfile(10 * 1_024);
+                        io::copy(&mut zip_file, &mut script_contents)?;
+                        script_contents.rewind()?;
+                        if let Some(python_script) =
+                            PythonScript::detect(&mut script_contents, size, python_version)?
+                        {
+                            let reified_script = python_script
+                                .reified_contents(shebang_interpreter, &mut script_contents)?;
+                            write_script(
+                                proxy_source,
+                                shebang_interpreter,
+                                dst_file,
+                                reified_script,
+                                python_script.is_windowed,
+                            )?;
+                        } else {
+                            script_contents.rewind()?;
+                            io::copy(&mut script_contents, &mut dst_file)?;
+                            if let Some(perms) = perms {
+                                platform::set_permissions(dst_file.file_mut(), perms)?;
+                            }
+                        }
+                    }
                 }
             }
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
@@ -995,7 +1164,7 @@ where
                     format!("{source}/{name}"),
                     fingerprint,
                     size,
-                    dst_path,
+                    spread_dst.into(),
                 );
             }
             Err(err) => bail!("{err}"),

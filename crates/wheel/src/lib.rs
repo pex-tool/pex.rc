@@ -7,12 +7,12 @@ mod entry_points;
 mod file;
 mod layout;
 mod metadata;
-mod record;
+pub mod record;
 mod tag;
 
 pub use entry_points::{EntryPoint, EntryPoints};
 pub use file::{MetadataDirs, WheelDir, WheelFile};
 pub use layout::WheelLayout;
-pub use metadata::{MetadataReader, WheelMetadata};
+pub use metadata::{MetadataReader, WHEEL, WheelMetadata};
 pub use record::Record;
 pub use tag::Tag;

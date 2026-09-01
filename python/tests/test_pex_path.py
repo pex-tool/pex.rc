@@ -11,6 +11,7 @@ from textwrap import dedent
 
 import colors  # type: ignore[import-untyped]
 from testing.compare import compare
+from testing.platform import script_path
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -101,6 +102,7 @@ def test_data_dirs(
     subprocess.check_call(
         args=[
             "pex",
+            "dill",
             "greenlet",
             "jupyterlab_pygments==0.3.0",
             "tritonclient==2.41.0",
@@ -124,16 +126,23 @@ def test_data_dirs(
                 import pkgutil
                 import sys
 
+                import dill
                 import greenlet
 
 
                 def locate_data():
+                    pickle = os.path.join(sys.prefix, "hello.pkl")
+                    with open(pickle, "wb") as fp:
+                        dill.dump(["hello", "world"], fp)
+
                     return {
                         "python": "python{major}.{minor}".format(
                             major=sys.version_info[0], minor=sys.version_info[1]
                         ),
                         "site-packages": os.path.dirname(os.path.dirname(greenlet.__file__)),
                         "sys-prefix": sys.prefix,
+                        "pickle": pickle,
+                        "bin-path": os.path.dirname(sys.executable),
                     }
 
 
@@ -198,3 +207,12 @@ def test_data_dirs(
             data["sys-prefix"], "include", "site", data["python"], "greenlet", "greenlet.h"
         )
     ), "Expected .data/headers to be spread to Pip's include/site/... dir."
+
+    bin_path = data["bin-path"]
+    pickle = data["pickle"]
+    assert (
+        b"['hello', 'world']"
+        == subprocess.check_output(
+            args=[script_path(os.path.join(bin_path, "undill")), pickle]
+        ).strip()
+    )

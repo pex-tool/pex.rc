@@ -33,6 +33,7 @@ use url::Url;
 use wheel::{MetadataDirs, MetadataReader, WheelFile};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip_ext::ZipArchiveExt;
 
 use crate::VERSION;
 use crate::compression_method::CompressionArgs;
@@ -424,7 +425,7 @@ impl<'a> MetadataReader for Wheels<'a> {
             .ok_or_else(|| anyhow!("XXX"))?;
         let dist_info_dir = metadata_dirs.dist_info_dir();
         Ok(io::read_to_string(
-            zip.by_name(&format!("{dist_info_dir}/{file_name}"))?,
+            zip.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
         )?)
     }
 }

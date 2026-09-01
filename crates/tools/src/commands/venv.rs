@@ -18,6 +18,7 @@ use interpreter::SearchPath;
 use log::warn;
 use pep508_rs::PackageName;
 use pex::{Layout, Pex, PexPath};
+use python_proxy::ProxySource;
 use resolver::CollectWheelMetadata;
 use shell_quote::Quote;
 use venv::virtualenv::FileSystemLinker;
@@ -356,6 +357,7 @@ pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow:
         "populating venv at {venv_dir} for {pex}",
         pex = pex.path.display()
     )));
+    let proxy_source = ProxySource::Pex(&pex);
     venv_pex::populate(
         &venv,
         venv.interpreter.details.path.as_ref(),
@@ -364,6 +366,7 @@ pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow:
         resolve.wheels,
         &mut scripts,
         args.bin_path.map(BinPath::into_inner),
+        &proxy_source,
         scope,
         provenance.clone(),
     )?;
@@ -375,6 +378,7 @@ pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow:
             pex,
             wheels,
             false,
+            &proxy_source,
             scope,
             provenance.clone(),
         )?;

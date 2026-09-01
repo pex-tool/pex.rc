@@ -2,15 +2,44 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
-use std::io::{BufRead, BufReader, Read, Seek};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::anyhow;
+use cache::Fingerprint;
 use csv::{StringRecord, Terminator};
 use fs_err::File;
 use ouroboros::self_referencing;
 
 use crate::file::MetadataDirs;
+
+pub struct Writer<W: Write>(csv::Writer<W>);
+
+impl<W: Write> Writer<W> {
+    pub fn write_entry(
+        &mut self,
+        path: impl AsRef<[u8]>,
+        details: Option<(&str, &Fingerprint, u64)>,
+    ) -> anyhow::Result<()> {
+        self.0.write_field(path)?;
+        if let Some((algorithm, hash, size)) = details {
+            self.0
+                .write_field(format!("{algorithm}={hash}", hash = hash.base64_digest()))?;
+            self.0.write_field(size.to_string())?;
+        } else {
+            self.0.write_field("")?;
+            self.0.write_field("")?;
+        }
+        self.0.write_record(None::<&[u8]>)?;
+        Ok(())
+    }
+
+    pub fn into_inner(self) -> anyhow::Result<W> {
+        self.0
+            .into_inner()
+            .map_err(|err| anyhow!("Failed to flush writes to inner writer: {err}"))
+    }
+}
 
 pub struct Entry<'a> {
     pub path: Cow<'a, Path>,
@@ -71,6 +100,16 @@ pub struct Record {
 }
 
 impl Record {
+    pub fn writer<W: Write>(sink: W) -> Writer<W> {
+        let csv_writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .quote(b'"')
+            .delimiter(b',')
+            .terminator(Terminator::CRLF)
+            .from_writer(sink);
+        Writer(csv_writer)
+    }
+
     pub fn parse(
         wheel_dir: &Path,
         metadata_dirs: &MetadataDirs,

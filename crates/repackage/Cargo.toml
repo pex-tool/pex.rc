@@ -20,3 +20,4 @@ serde_json = { workspace = true }
 walkdir = { workspace = true }
 wheel = { path = "../wheel" }
 zip = { workspace = true }
+zip-ext = { path = "../zip-ext" }

@@ -8,12 +8,14 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+cache = { path = "../cache" }
 csv = { workspace = true }
 fs-err = { workspace = true }
 mailparse = { workspace = true }
 ouroboros = { workspace = true }
 pep440_rs = { workspace = true }
 pep508_rs = { workspace = true }
+platform = { path = "../platform" }
 python-pkginfo = { workspace = true }
 regex = { workspace = true }
 rfc2047-decoder = { workspace = true }
@@ -27,3 +29,4 @@ zip = { workspace = true }
 glob = { workspace = true }
 rstest = { workspace = true }
 testing = { path = "../testing" }
+zip-ext = { path = "../zip-ext" }

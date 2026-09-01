@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::fs::FileType;
 use std::io::{Read, Seek};
 use std::ops::Range;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
@@ -25,7 +25,12 @@ pub struct WheelDir<'a> {
 
 impl<'a> WheelDir<'a> {
     pub fn contains(&self, path: &Path) -> bool {
-        if let Some(Component::Normal(start)) = path.components().next() {
+        self.strip_prefix(path).is_some()
+    }
+
+    pub fn strip_prefix<'p>(&self, path: &'p Path) -> Option<Components<'p>> {
+        let mut components = path.components();
+        if let Some(Component::Normal(start)) = components.next() {
             let start = start.as_encoded_bytes();
             if start.starts_with(self.project_name.as_bytes()) {
                 let start = &start[self.project_name.len()..];
@@ -35,13 +40,15 @@ impl<'a> WheelDir<'a> {
                         let start = &start[self.version.len()..];
                         if start.starts_with(b".") {
                             let start = &start[1..];
-                            return start == self.suffix.as_bytes();
+                            if start == self.suffix.as_bytes() {
+                                return Some(components);
+                            }
                         }
                     }
                 }
             }
         }
-        false
+        None
     }
 
     pub fn as_path(&self) -> PathBuf {
@@ -65,6 +72,34 @@ struct MetadataDir<'a> {
     dir_name: Cow<'a, str>,
     project_name_range: Range<usize>,
     version_range: Range<usize>,
+}
+
+impl<'a> MetadataDir<'a> {
+    fn new(dir_name: Cow<'a, str>) -> anyhow::Result<Self> {
+        let project_name_and_version = dir_name
+            .strip_suffix(".data")
+            .or_else(|| dir_name.strip_suffix(".dist-info"))
+            .ok_or_else(|| {
+                anyhow!(
+                    "Only *.data/ and *.dist-info/ metadata directories are supported; given: \
+                    {dir_name}"
+                )
+            })?;
+        let (project_name, version) =
+            project_name_and_version.split_once('-').ok_or_else(|| {
+                anyhow!("The metadata dir {dir_name} must begin with <project name>-<version>.")
+            })?;
+        if version.contains('-') {
+            bail!(
+                "The metadata dir {dir_name} has an invalid version component that contains a dash."
+            )
+        }
+        Ok(Self {
+            dir_name: dir_name.clone(),
+            project_name_range: 0..project_name.len(),
+            version_range: project_name.len() + 1..project_name_and_version.len(),
+        })
+    }
 }
 
 fn locate_metadata_dir<'a>(
@@ -121,12 +156,43 @@ fn locate_metadata_dir<'a>(
 pub struct MetadataDirs {
     dist_info_dir_name: String,
     #[borrows(dist_info_dir_name)]
-    project_name: &'this str,
+    pub project_name: &'this str,
     #[borrows(dist_info_dir_name)]
-    version: &'this str,
+    pub version: &'this str,
 }
 
 impl MetadataDirs {
+    pub fn from_dist_info_dir(dist_info_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let dist_info_dir_name = dist_info_dir
+            .as_ref()
+            .file_name()
+            .ok_or_else(|| {
+                anyhow!(
+                    "Invalid *.dist-info/ path: there is no file name in {path}",
+                    path = dist_info_dir.as_ref().display()
+                )
+            })?
+            .to_str()
+            .ok_or_else(|| {
+                anyhow!(
+                    "Invalid *.dist-info/ dir name content; must be comprised of ascii characters: \
+                    {path}",
+                    path = dist_info_dir.as_ref().display()
+                )
+            })?
+            .to_owned();
+
+        let metadata_dir = MetadataDir::new(Cow::Borrowed(&dist_info_dir_name))?;
+        let project_name_range = metadata_dir.project_name_range;
+        let version_range = metadata_dir.version_range;
+
+        Ok(Self::new(
+            dist_info_dir_name,
+            |dist_info_dir| &dist_info_dir[project_name_range],
+            |dist_info_dir| &dist_info_dir[version_range],
+        ))
+    }
+
     pub fn locate_in_dir(
         wheel_dir: &Path,
         project_name: &PackageName,

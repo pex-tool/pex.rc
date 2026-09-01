@@ -29,6 +29,7 @@ use url::Url;
 use walkdir::{DirEntry, WalkDir};
 use wheel::{MetadataDirs, MetadataReader, WheelFile};
 use zip::ZipArchive;
+use zip_ext::ZipArchiveExt;
 
 use crate::{InterpreterSelectionStrategy, PexInfo};
 
@@ -158,7 +159,7 @@ impl<'a> Pex<'a> {
                     let _timer = timer!(Level::Debug; "Open PEX zip", "{}", path.display());
                     ZipArchive::new(BufReader::new(zip_fp))?
                 };
-                let zip_file = zip.by_name("PEX-INFO")?;
+                let zip_file = zip.by_name_ex("PEX-INFO")?;
                 let size = zip_file.size();
                 let pex_info = PexInfo::parse(zip_file, size, Some(|| Cow::Borrowed("PEX-INFO")))?;
                 Ok(Self {
@@ -489,7 +490,7 @@ impl<'a> MetadataReader for ZipAppPexMetadataReader<'a> {
             let mut whl_zip = ZipArchive::new(whl)?;
             let dist_info_dir = metadata_dirs.dist_info_dir();
             Ok(io::read_to_string(
-                whl_zip.by_name(&format!("{dist_info_dir}/{file_name}"))?,
+                whl_zip.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
             )?)
         } else {
             let prefix = format!(
@@ -497,7 +498,7 @@ impl<'a> MetadataReader for ZipAppPexMetadataReader<'a> {
                 wheel_file_name = wheel_file.file_name
             );
             let dist_info_dir = metadata_dirs.dist_info_dir();
-            Ok(io::read_to_string(self.pex_zip.by_name(&format!(
+            Ok(io::read_to_string(self.pex_zip.by_name_ex(&format!(
                 "{prefix}{dist_info_dir}/{file_name}"
             ))?)?)
         }
@@ -543,7 +544,7 @@ impl<'a> MetadataReader for PackedPexMetadataReader<'a> {
         let mut zip = ZipArchive::new(File::open(&wheel_file_path)?)?;
         let dist_info_dir = metadata_dirs.dist_info_dir();
         Ok(io::read_to_string(
-            zip.by_name(&format!("{dist_info_dir}/{file_name}"))?,
+            zip.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
         )?)
     }
 }
