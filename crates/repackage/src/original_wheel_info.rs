@@ -39,6 +39,10 @@ impl<'a> ZipFileName<'a> {
         )))
     }
 
+    pub fn is_dir(&self) -> bool {
+        self.0.ends_with('/')
+    }
+
     #[cfg(unix)]
     pub fn as_path(&self) -> Cow<'_, Path> {
         Cow::Borrowed(Path::new(self.0.as_ref()))

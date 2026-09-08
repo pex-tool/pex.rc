@@ -22,6 +22,7 @@ pex = { path = "../pex" }
 platform = { path = "../platform" }
 target = { path = "../target" }
 zip = { workspace = true }
+zip-ext = { path = "../zip-ext" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging"] }

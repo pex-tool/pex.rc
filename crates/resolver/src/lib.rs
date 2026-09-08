@@ -113,6 +113,8 @@ pub fn resolve_wheels<'a>(
         requires_dists: Vec<Requirement<Url>>,
         requires_python: Option<VersionSpecifiers>,
         root_is_purelib: bool,
+        tags: Vec<String>,
+        build: Option<String>,
         rank: usize,
         metadata_dirs: MetadataDirs,
     }
@@ -131,6 +133,8 @@ pub fn resolve_wheels<'a>(
                 requires_dists: ranked_wheel.metadata.requires_dists,
                 requires_python: ranked_wheel.metadata.requires_python,
                 root_is_purelib: ranked_wheel.metadata.root_is_purelib,
+                tags: ranked_wheel.metadata.tags,
+                build: ranked_wheel.metadata.build,
                 rank: ranked_wheel.rank,
                 metadata_dirs: ranked_wheel.metadata.metadata_dirs,
             })
@@ -232,6 +236,8 @@ pub fn resolve_wheels<'a>(
             requires_dists,
             requires_python,
             root_is_purelib,
+            tags,
+            build,
             metadata_dirs,
             ..
         } in wheels
@@ -263,6 +269,8 @@ pub fn resolve_wheels<'a>(
                     requires_dists: requires_dists.clone(),
                     requires_python: requires_python.clone(),
                     root_is_purelib: *root_is_purelib,
+                    tags: tags.clone(),
+                    build: build.clone(),
                     metadata_dirs: metadata_dirs.clone(),
                 })
             }

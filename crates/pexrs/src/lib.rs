@@ -50,11 +50,12 @@ impl<'a> Linker for PythonProxyLinker<'a> {
             .join(fingerprint.base64_digest());
 
         cache::atomic_file(&python_proxy, |file| {
+            let proxy_source = ProxySource::Pex(self.0);
             python_proxy::create(
-                ProxySource::Pex(self.0),
+                &proxy_source,
                 venv_python_file_name.as_ref(),
                 file.into_file(),
-                None,
+                None::<&[u8]>,
                 is_gui,
             )
         })?;
@@ -75,12 +76,13 @@ impl<'a> Linker for PythonProxyLinker<'a> {
 
     #[cfg(windows)]
     fn link(&self, dest: &Path, interpreter: Option<&Path>, is_gui: bool) -> anyhow::Result<()> {
+        let proxy_source = ProxySource::Pex(self.0);
         python_proxy::create(
-            ProxySource::Pex(self.0),
+            &proxy_source,
             interpreter
                 .ok_or_else(|| anyhow!("Windows venvs require an interpreter to link to."))?,
             fs::File::create(dest)?.into_file(),
-            None,
+            None::<&[u8]>,
             is_gui,
         )
     }
@@ -233,6 +235,7 @@ fn prepare_venv<'a>(
             "populating venv for {pex}",
             pex = pex.path.display()
         )));
+        let proxy_source = ProxySource::Pex(&pex);
         populate(
             &venv,
             &shebang_interpreter,
@@ -241,6 +244,7 @@ fn prepare_venv<'a>(
             resolve.wheels,
             &mut resolve.scripts,
             None,
+            &proxy_source,
             InstallScope::All,
             provenance.clone(),
         )?;
@@ -252,6 +256,7 @@ fn prepare_venv<'a>(
                 additional_pex,
                 resolved_wheels,
                 false,
+                &proxy_source,
                 InstallScope::All,
                 provenance.clone(),
             )?;

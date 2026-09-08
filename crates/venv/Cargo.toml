@@ -10,28 +10,33 @@ publish = false
 anyhow = { workspace = true }
 cache = { path = "../cache" }
 dashmap = { workspace = true }
+digest = { workspace = true }
+either = { workspace = true }
 fs-err = { workspace = true }
 indexmap = { workspace = true }
 interpreter = { path = "../interpreter" }
 itertools = { workspace = true }
 log = { workspace = true }
 logging_timer = { workspace = true }
+pelite = { workspace = true }
 pex = { path = "../pex" }
 platform = { path = "../platform" }
+python-proxy = { path = "../python-proxy"}
 python-platform = { path = "../python-platform" }
 rayon = { workspace = true }
+regex = { workspace = true }
+repackage = { path = "../repackage" }
 resolver = { path = "../resolver" }
 rust-ini = { workspace = true }
 scripts = { path = "../scripts" }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 target-lexicon = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
 wheel = { path = "../wheel" }
 zip = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
-python-proxy = { path = "../python-proxy"}
+zip-ext = { path = "../zip-ext" }
 
 [dev-dependencies]
 interpreter = { path = "../interpreter" }

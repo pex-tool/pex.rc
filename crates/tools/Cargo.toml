@@ -32,6 +32,7 @@ pep508_rs = { workspace = true }
 pex = { path = "../pex" }
 platform = { path = "../platform" }
 python-platform = { path = "../python-platform" }
+python-proxy = { path = "../python-proxy" }
 rayon = { workspace = true }
 regex = { workspace = true }
 repackage = { path = "../repackage" }

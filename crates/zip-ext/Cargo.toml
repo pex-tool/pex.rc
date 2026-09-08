@@ -1,0 +1,8 @@
+[package]
+name = "zip-ext"
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+zip = { workspace = true }

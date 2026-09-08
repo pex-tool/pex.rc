@@ -3,7 +3,6 @@
 
 use std::str::FromStr;
 
-use anyhow::anyhow;
 use mailparse::MailHeaderMap;
 use pep440_rs::{Version, VersionSpecifiers};
 use pep508_rs::{PackageName, Requirement};
@@ -21,6 +20,8 @@ pub struct WheelMetadata<'a> {
     pub requires_dists: Vec<Requirement<Url>>,
     pub requires_python: Option<VersionSpecifiers>,
     pub root_is_purelib: bool,
+    pub tags: Vec<String>,
+    pub build: Option<String>,
     pub metadata_dirs: MetadataDirs,
 }
 
@@ -34,16 +35,46 @@ pub trait MetadataReader {
     ) -> anyhow::Result<String>;
 }
 
-fn parse_root_is_purelib_from_wheel(content: &[u8]) -> anyhow::Result<bool> {
-    let msg = mailparse::parse_mail(content)?;
-    let headers = msg.get_headers();
-    let header = headers
-        .get_first_header("Root-Is-Purelib")
-        .ok_or_else(|| anyhow!(""))?;
-    Ok(matches!(
-        rfc2047_decoder::decode(header.get_value_raw())?.as_str(),
-        "true" | "True"
-    ))
+pub struct WHEEL {
+    pub root_is_purelib: bool,
+    pub tags: Vec<String>,
+    pub build: Option<String>,
+}
+
+impl WHEEL {
+    pub fn parse(content: &[u8]) -> anyhow::Result<Self> {
+        let msg = mailparse::parse_mail(content)?;
+        let headers = msg.get_headers();
+        let root_is_purelib = if let Some(header) = headers.get_first_header("Root-Is-Purelib") {
+            matches!(
+                rfc2047_decoder::decode(header.get_value_raw())?.as_str(),
+                "true" | "True"
+            )
+        } else {
+            false
+        };
+        let mut tags = vec![];
+        for header in headers.get_all_headers("Tag") {
+            let value = rfc2047_decoder::decode(header.get_value_raw())?;
+            if value.contains('.') {
+                for tag in value.split('.') {
+                    tags.push(tag.to_owned())
+                }
+            } else {
+                tags.push(value)
+            }
+        }
+        let build = if let Some(header) = headers.get_first_header("Build") {
+            Some(rfc2047_decoder::decode(header.get_value_raw())?)
+        } else {
+            None
+        };
+        Ok(Self {
+            root_is_purelib,
+            tags,
+            build,
+        })
+    }
 }
 
 impl<'a> WheelMetadata<'a> {
@@ -68,7 +99,7 @@ impl<'a> WheelMetadata<'a> {
             None
         };
 
-        let root_is_purelib = parse_root_is_purelib_from_wheel(
+        let wheel = WHEEL::parse(
             metadata_reader
                 .read(&metadata_dirs, &wheel_file, "WHEEL")?
                 .as_bytes(),
@@ -82,7 +113,9 @@ impl<'a> WheelMetadata<'a> {
             version: wheel_file.version,
             requires_dists,
             requires_python,
-            root_is_purelib,
+            root_is_purelib: wheel.root_is_purelib,
+            tags: wheel.tags,
+            build: wheel.build,
             metadata_dirs,
         })
     }
@@ -103,6 +136,7 @@ mod tests {
     use rstest::*;
     use testing::{tmp_dir, venv_python_exe};
     use zip::ZipArchive;
+    use zip_ext::ZipArchiveExt;
 
     use crate::{MetadataDirs, MetadataReader, WheelFile, WheelMetadata};
 
@@ -158,7 +192,7 @@ mod tests {
             ) -> anyhow::Result<String> {
                 let dist_info_dir = metadata_dirs.dist_info_dir();
                 Ok(io::read_to_string(
-                    self.0.by_name(&format!("{dist_info_dir}/{file_name}"))?,
+                    self.0.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
                 )?)
             }
         }

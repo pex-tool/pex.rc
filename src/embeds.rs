@@ -137,7 +137,7 @@ pub static PROXY_BY_TARGET: LazyLock<IndexMap<SimplifiedTarget, Binary<'static>>
 pub static PROXYW_BY_TARGET: LazyLock<IndexMap<SimplifiedTarget, Binary<'static>>> =
     LazyLock::new(|| identify_proxy_files("proxyw"));
 
-pub fn read_proxy_content(target: SimplifiedTarget, is_gui: bool) -> anyhow::Result<impl Read> {
+pub fn read_proxy_content(target: SimplifiedTarget, is_gui: bool) -> anyhow::Result<Vec<u8>> {
     let proxy = if is_gui
         && matches!(
             target,
@@ -151,5 +151,8 @@ pub fn read_proxy_content(target: SimplifiedTarget, is_gui: bool) -> anyhow::Res
             .get(&target)
             .ok_or_else(|| anyhow!("There is no python-proxy for {target}"))
     }?;
-    Ok(zstd::Decoder::new(proxy.contents)?)
+    let mut decoder = zstd::Decoder::new(proxy.contents)?;
+    let mut content = Vec::new();
+    decoder.read_to_end(&mut content)?;
+    Ok(content)
 }

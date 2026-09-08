@@ -14,6 +14,7 @@ pub mod unix;
 #[cfg(windows)]
 pub mod windows;
 
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter, Write};
 use std::path::{Component, Path};
@@ -88,14 +89,14 @@ pub fn spawn(command: &mut Command) -> io::Result<i32> {
     })
 }
 
-pub struct PosixPath<'a>(&'a Path);
+pub struct PosixPath<'a>(Cow<'a, Path>);
 
 impl<'a> PosixPath<'a> {
     pub fn relpath(path: &'a Path) -> io::Result<Self> {
-        Self::new(path, false)
+        Self::new(Cow::Borrowed(path), false)
     }
 
-    pub fn new(path: &'a Path, absolute_allowed: bool) -> io::Result<Self> {
+    pub fn new(path: Cow<'a, Path>, absolute_allowed: bool) -> io::Result<Self> {
         if !absolute_allowed && !path.is_relative() {
             return Err(io::Error::other(format!(
                 "Path {path} cannot be represented as a Posix relative path, it is absolute.",
@@ -118,7 +119,7 @@ impl<'a> TryFrom<&'a str> for PosixPath<'a> {
     type Error = io::Error;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-        Self::new(Path::new(value), true)
+        Self::new(Cow::Borrowed(Path::new(value)), true)
     }
 }
 

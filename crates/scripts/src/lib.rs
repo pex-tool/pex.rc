@@ -19,6 +19,7 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use zip::write::{FileOptionExtension, FileOptions, SimpleFileOptions};
 use zip::{ZipArchive, ZipWriter};
+use zip_ext::ZipArchiveExt;
 
 #[derive(Copy, Clone, EnumIter)]
 pub enum Script {
@@ -89,7 +90,7 @@ impl Scripts {
             Scripts::Zipped(zip) => {
                 let resource_path =
                     format!("{ZIP_REL_PATH}/{file_name}", file_name = script.file_name());
-                let entry = zip.by_name(&resource_path)?;
+                let entry = zip.by_name_ex(&resource_path)?;
                 Ok(Cow::Owned(io::read_to_string(entry)?))
             }
         }
@@ -136,7 +137,7 @@ impl Scripts {
                 let mut activation_scripts =
                     Vec::with_capacity(activation_script_file_names.len() - 1);
                 for file_name in activation_script_file_names {
-                    let mut entry = zip.by_name(&file_name)?;
+                    let mut entry = zip.by_name_ex(&file_name)?;
                     if !entry.is_file() {
                         continue;
                     }

@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -228,12 +229,29 @@ impl BinstallTool {
         }
     }
 
+    fn max_version_exclusive(&self) -> Option<semver::Version> {
+        match *self {
+            // N.B.: We're affected by https://github.com/rust-cross/cargo-zigbuild/issues/479 which
+            // was introduced 0.23.4
+            BinstallTool::CargoZigbuild => Some(semver::Version::new(0, 23, 4)),
+            BinstallTool::Uv => None,
+        }
+    }
+
     fn spec(&self) -> String {
-        format!(
+        let mut spec = String::new();
+        write!(
+            &mut spec,
             "{name}@>={min_version}",
             name = self.binary_name(),
             min_version = self.min_version()
         )
+        .expect("A write to vec can only fail on OOM.");
+        if let Some(max_version_exclusive) = self.max_version_exclusive() {
+            write!(&mut spec, ",<{max_version_exclusive}")
+                .expect("A write to vec can only fail on OOM.");
+        }
+        spec
     }
 
     fn check_version(&self, exe: &Path) -> anyhow::Result<semver::Version> {

@@ -17,6 +17,7 @@ include_dir = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 zip = { workspace = true }
+zip-ext = { path = "../zip-ext" }
 
 [build-dependencies]
 anyhow = { workspace = true }

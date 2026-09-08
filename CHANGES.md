@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.20.0
+
+This release adds `pexrc extract` support for venvs. Previously wheels could only be extracted from
+PEXes.
+
 ## 0.19.0
 
 This release fixes Windows `pexrc` and Windows `PEX_TOOLS` to output paths Posix-style when running

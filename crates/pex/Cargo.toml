@@ -42,6 +42,7 @@ version-ranges = { workspace = true }
 walkdir = { workspace = true }
 wheel = { path = "../wheel" }
 zip = { workspace = true }
+zip-ext = { path = "../zip-ext" }
 
 [dev-dependencies]
 fs-err = { workspace = true }
