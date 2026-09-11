@@ -4,6 +4,7 @@
 #![deny(clippy::all)]
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
@@ -72,7 +73,7 @@ impl<'a> CollectWheelMetadata<'a> {
 pub fn resolve_wheels<'a>(
     target: &impl PythonPlatform<'a>,
     requirements: Vec<Requirement<Url>>,
-    wheel_files: impl Fn() -> anyhow::Result<Vec<WheelFile<'a>>>,
+    wheel_files: Vec<WheelFile<'a>>,
     metadata_reader: &mut impl MetadataReader,
     dependency_configuration: &DependencyConfiguration,
     collect_extra_metadata: Option<CollectWheelMetadata<'a>>,
@@ -84,7 +85,7 @@ pub fn resolve_wheels<'a>(
         .map(|(idx, tag)| Tag::parse(tag).map(|tag| (tag, idx)))
         .collect::<anyhow::Result<_>>()?;
 
-    let ranked_wheel_files = wheel_files()?
+    let ranked_wheel_files = wheel_files
         .into_iter()
         .filter_map(|wheel_file| {
             for tag in &wheel_file.tags {
@@ -191,15 +192,14 @@ pub fn resolve_wheels<'a>(
                 }
             })
             .ok_or_else(|| {
-                let inapplicable_wheels = wheel_files()
-                    .expect(
-                        "We already parsed wheel files once successfully and parsing is \
-                        deterministic.",
-                    )
-                    .into_iter()
-                    .filter_map(|wheel_file| {
-                        if wheel_file.project_name == requirement.name {
-                            Some(wheel_file.file_name)
+                let inapplicable_wheels = wheels_by_project_name
+                    .values()
+                    .flatten()
+                    .filter_map(|wheel_info| {
+                        if let Ok(project_name) = PackageName::from_str(wheel_info.raw_project_name)
+                            && project_name == requirement.name
+                        {
+                            Some(wheel_info.file_name)
                         } else {
                             None
                         }

@@ -14,6 +14,6 @@ pub mod venv_pex;
 pub mod virtualenv;
 
 pub use provenance::{Collision, CollisionReport, Provenance};
-pub use resolver::{InstallPaths, collect_installed_wheels};
+pub use resolver::{InstallPaths, InstalledWheel, collect_installed_wheels};
 pub use venv_pex::{InstallScope, populate, populate_user_code_and_wheels};
 pub use virtualenv::{Linker, Virtualenv};

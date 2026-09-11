@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter, Write as _};
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{Seek, Write};
 use std::path::{Component, Path, PathBuf};
@@ -111,6 +112,26 @@ pub struct InstalledWheel {
     metadata_dirs: MetadataDirs,
     root_is_purelib: bool,
     entry_points: EntryPoints,
+}
+
+impl PartialEq<Self> for InstalledWheel {
+    fn eq(&self, other: &Self) -> bool {
+        self.project_name == other.project_name
+            && self.version == other.version
+            && self.tags == other.tags
+            && self.build == other.build
+    }
+}
+
+impl Eq for InstalledWheel {}
+
+impl Hash for InstalledWheel {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.project_name.hash(state);
+        self.version.hash(state);
+        self.tags.hash(state);
+        self.build.hash(state);
+    }
 }
 
 impl InstalledWheel {
