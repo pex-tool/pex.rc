@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::{io, process};
@@ -16,11 +17,12 @@ use fs_err as fs;
 use fs_err::File;
 use indexmap::{IndexSet, indexmap};
 use interpreter::Interpreter;
+use itertools::Itertools;
 use log::warn;
 use pep508_rs::Requirement;
 use pex::{PexInfo, RawPexInfo};
 use platform::mark_executable;
-use python_platform::PythonImplementation;
+use python_platform::{PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use repackage::{WheelOptions, recompress_zipped_whl};
 use resolver::dependency_configuration::DependencyConfiguration;
@@ -30,6 +32,7 @@ use serde_json::json;
 use target::SimplifiedTarget;
 use tempfile::NamedTempFile;
 use url::Url;
+use venv::{InstallPaths, InstalledWheel, Virtualenv, collect_installed_wheels};
 use wheel::{MetadataDirs, MetadataReader, WheelFile};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -39,6 +42,11 @@ use crate::VERSION;
 use crate::compression_method::CompressionArgs;
 use crate::embeds::{AVAILABLE_TARGETS, Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
 use crate::target::{PYTHON_PLATFORM_LONG_HELP, PythonPlatform, RequiredTargets};
+
+enum InstalledDistributions {
+    Venvs(Vec<PathBuf>),
+    Wheels(Vec<PathBuf>),
+}
 
 #[derive(Args, Debug)]
 #[group(skip)]
@@ -53,6 +61,22 @@ pub struct Build {
     )]
     requirements: Vec<Requirement<Url>>,
 
+    /// Venvs containing distributions to include in the PEX.
+    ///
+    /// There must be at least one installed distribution satisfying each direct requirement. If
+    /// no targets are specified, the interpreter for each specified venv is considered a target. A
+    /// full transitive closure is confirmed for each target.
+    #[arg(
+            long,
+            visible_alias = "venv",
+            value_name = "PATH",
+            action = ArgAction::Append,
+            help_heading = "Contents",
+            conflicts_with = "wheels",
+            verbatim_doc_comment
+    )]
+    venvs: Vec<PathBuf>,
+
     /// Wheels (or directories containing wheels) to include in the PEX.
     ///
     /// There must be at least one wheel satisfying each direct requirement. If no targets are
@@ -64,6 +88,7 @@ pub struct Build {
         value_name = "PATH",
         action = ArgAction::Append,
         help_heading = "Contents",
+        conflicts_with = "venvs",
         verbatim_doc_comment
     )]
     wheels: Vec<PathBuf>,
@@ -146,22 +171,29 @@ pub struct Build {
 
 impl Build {
     pub fn execute(self) -> anyhow::Result<()> {
+        assert!(
+            self.venvs.is_empty() || self.wheels.is_empty(),
+            "We should never get here by arrangement of a mutex condition between venvs and wheels \
+            via clap `conflicts_with`."
+        );
+        let installed_distributions = if !self.venvs.is_empty() {
+            Some(InstalledDistributions::Venvs(self.venvs))
+        } else if !self.wheels.is_empty() {
+            Some(InstalledDistributions::Wheels(self.wheels))
+        } else {
+            None
+        };
+
         let wheel_options = self.compression_args.into_wheel_options(None);
-        let mut wheels = Vec::with_capacity(self.wheels.len());
-        for wheel in self.wheels {
-            if wheel.is_dir() {
-                for entry in wheel.read_dir()? {
-                    let entry = entry?;
-                    if entry.file_type()?.is_file()
-                        && entry.file_name().as_encoded_bytes().ends_with(b".whl")
-                    {
-                        wheels.push(entry.path())
-                    }
-                }
-            } else {
-                wheels.push(wheel)
-            }
-        }
+
+        let tmp_dest_dir = if let Some(output) = self.output.as_deref()
+            && let Some(parent) = output.parent()
+        {
+            tempfile::tempdir_in(parent)?
+        } else {
+            tempfile::tempdir()?
+        };
+
         if let Some(pex_info) = self.pex_info {
             let pex_info_file = File::open(&pex_info)?;
             let size = pex_info_file.metadata()?.len();
@@ -189,12 +221,19 @@ impl Build {
                 });
                 self.requirements
             };
+            let (wheels, wheels_need_recompress) = resolve_wheel_files(
+                self.targets,
+                &wheel_options,
+                installed_distributions,
+                requirements,
+                pex_info.raw(),
+                tmp_dest_dir.path(),
+            )?;
             pex_info.with_raw_mut(|raw_pex_info| {
                 build_pex(
-                    self.targets,
-                    requirements,
                     wheels,
                     wheel_options,
+                    wheels_need_recompress,
                     raw_pex_info,
                     self.packed,
                     self.sh_boot,
@@ -215,11 +254,18 @@ impl Build {
                     .collect(),
                 ..Default::default()
             };
-            build_pex(
+            let (wheels, wheels_need_recompress) = resolve_wheel_files(
                 self.targets,
+                &wheel_options,
+                installed_distributions,
                 self.requirements,
+                &pex_info,
+                tmp_dest_dir.path(),
+            )?;
+            build_pex(
                 wheels,
                 wheel_options,
+                wheels_need_recompress,
                 &mut pex_info,
                 self.packed,
                 self.sh_boot,
@@ -229,78 +275,334 @@ impl Build {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_pex(
+fn resolve_wheel_files(
+    targets: Vec<PythonPlatform>,
+    wheel_options: &WheelOptions,
+    installed_distributions: Option<InstalledDistributions>,
+    requirements: Vec<Requirement<Url>>,
+    pex_info: &RawPexInfo,
+    dest_dir: &Path,
+) -> anyhow::Result<(Vec<PathBuf>, bool)> {
+    if let Some(distributions) = installed_distributions {
+        match distributions {
+            InstalledDistributions::Venvs(venvs) => {
+                let wheels = resolve_wheels_from_venvs(
+                    targets,
+                    wheel_options,
+                    requirements,
+                    venvs
+                        .into_par_iter()
+                        .map(|path| Virtualenv::load(Cow::Owned(path), &mut Scripts::Embedded))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                    pex_info,
+                    dest_dir,
+                )?;
+                Ok((wheels, false))
+            }
+            InstalledDistributions::Wheels(installed_wheels) => {
+                let mut wheels = Vec::with_capacity(installed_wheels.len());
+                for wheel in installed_wheels {
+                    if wheel.is_dir() {
+                        for entry in wheel.read_dir()? {
+                            let entry = entry?;
+                            if entry.file_type()?.is_file()
+                                && entry.file_name().as_encoded_bytes().ends_with(b".whl")
+                            {
+                                wheels.push(entry.path())
+                            }
+                        }
+                    } else {
+                        wheels.push(wheel)
+                    }
+                }
+                let wheels = resolve_wheels_from_files(targets, requirements, wheels, pex_info)?;
+                Ok((wheels, true))
+            }
+        }
+    } else {
+        Ok((vec![], false))
+    }
+}
+
+#[derive(Hash, Eq, PartialEq)]
+enum Platform<'a> {
+    Details(PlatformDetails<'a>),
+    Interpreter(Cow<'a, Interpreter>),
+}
+
+struct VenvRepository(PathBuf);
+
+impl MetadataReader for VenvRepository {
+    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+        MetadataDirs::locate_in_dir(&self.0, &wheel_file.project_name, &wheel_file.version)
+    }
+
+    fn read(
+        &mut self,
+        metadata_dirs: &MetadataDirs,
+        _wheel_file: &WheelFile,
+        file_name: &str,
+    ) -> anyhow::Result<String> {
+        let mut metadata_file_path = self.0.join(metadata_dirs.dist_info_dir().as_path());
+        metadata_file_path.push(file_name);
+        Ok(fs::read_to_string(metadata_file_path)?)
+    }
+}
+
+fn resolve_wheels_from_venvs(
+    targets: Vec<PythonPlatform>,
+    wheel_options: &WheelOptions,
+    requirements: Vec<Requirement<Url>>,
+    venvs: Vec<Virtualenv>,
+    pex_info: &RawPexInfo,
+    dest_dir: &Path,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let (venvs, mut repositories) = {
+        let inventory = venvs
+            .into_par_iter()
+            .map(inventory_venv)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut venvs = HashMap::new();
+        let mut repositories = Vec::with_capacity(inventory.len());
+        for (venv, repository) in inventory {
+            venvs.insert(venv.prefix().join(&venv.site_packages_relpath), venv);
+            repositories.push(repository);
+        }
+        (venvs, repositories)
+    };
+
+    let platforms = if targets.is_empty() {
+        venvs
+            .values()
+            .map(|venv| Platform::Interpreter(Cow::Borrowed(&venv.interpreter)))
+            .collect()
+    } else {
+        targets
+            .iter()
+            .map(|target| match target {
+                PythonPlatform::Spec(spec) => python_platform::parse(spec, None, None)
+                    .map_err(|err| {
+                        anyhow!(
+                            "Failed to parse --target {spec}: {err}\n\
+                            {PYTHON_PLATFORM_LONG_HELP}"
+                        )
+                    })
+                    .map(Platform::Details),
+                PythonPlatform::Interpreter(path) => {
+                    IdentifyInterpreter::read(&mut Scripts::Embedded)
+                        .and_then(|identification_script| {
+                            Interpreter::load(path, &identification_script)
+                        })
+                        .map(|interpreter| Platform::Interpreter(Cow::Owned(interpreter)))
+                }
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
+
+    let dependency_configuration = DependencyConfiguration::parse(
+        pex_info.excluded.as_slice(),
+        pex_info.overridden.as_slice(),
+    )?;
+
+    let mut wheels = HashMap::new();
+    let mut errors_by_platform = HashMap::new();
+    for (installed_wheels, venv_repository) in &mut repositories {
+        for platform in &platforms {
+            if wheels.contains_key(platform) {
+                continue;
+            }
+            let requirements = requirements.clone();
+            let wheel_files = installed_wheels
+                .keys()
+                .map(|file_name| WheelFile::parse_file_name(file_name))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let result = match platform {
+                Platform::Details(platform) => resolve_wheels(
+                    platform,
+                    requirements,
+                    wheel_files,
+                    venv_repository,
+                    &dependency_configuration,
+                    None,
+                    pex_info.ignore_errors,
+                ),
+                Platform::Interpreter(interpreter) => resolve_wheels(
+                    interpreter.as_ref(),
+                    requirements,
+                    wheel_files,
+                    venv_repository,
+                    &dependency_configuration,
+                    None,
+                    pex_info.ignore_errors,
+                ),
+            };
+            match result {
+                Ok(resolved_wheels) => {
+                    for installed_wheel in resolved_wheels
+                        .keys()
+                        .map(|file_name| installed_wheels.get(*file_name))
+                    {
+                        wheels
+                            .entry(platform)
+                            .or_insert_with(|| {
+                                (
+                                    venvs.get(&venv_repository.0).expect(
+                                        "All venvs are indexed by their site-packages path.",
+                                    ),
+                                    IndexSet::new(),
+                                )
+                            })
+                            .1
+                            .insert(installed_wheel.expect(
+                                "Resolved wheel_files were derived from installed_wheels.",
+                            ));
+                    }
+                    break;
+                }
+                Err(err) => errors_by_platform
+                    .entry(platform)
+                    .or_insert_with(Vec::new)
+                    .push(err),
+            }
+        }
+    }
+    if !errors_by_platform.is_empty() {
+        // TODO: XXX: Better error message.
+        bail!(
+            "Failed to resolve wheels for {count} platforms:\n{errs}",
+            count = errors_by_platform.len(),
+            errs = errors_by_platform.values().flatten().join("\n")
+        )
+    }
+
+    let mut wheel_paths = vec![];
+    for (_, (venv, installed_wheels)) in wheels {
+        let install_paths = InstallPaths::for_venv(venv)?;
+        wheel_paths.append(
+            &mut installed_wheels
+                .into_par_iter()
+                .map(|installed_wheel| {
+                    pack_wheel(installed_wheel, &install_paths, wheel_options, dest_dir)
+                })
+                .collect::<anyhow::Result<Vec<PathBuf>>>()?,
+        );
+    }
+    Ok(wheel_paths)
+}
+
+fn pack_wheel(
+    wheel: &InstalledWheel,
+    install_paths: &InstallPaths,
+    wheel_options: &WheelOptions,
+    dest_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    let whl_path = dest_dir.join(wheel.file_name()?);
+    let mut whl_file = File::create_new(&whl_path)?;
+    wheel.pack(install_paths, wheel_options, &mut whl_file)?;
+    Ok(whl_path)
+}
+
+type Repository = (HashMap<String, InstalledWheel>, VenvRepository);
+
+fn inventory_venv(venv: Virtualenv) -> anyhow::Result<(Virtualenv, Repository)> {
+    let installed_wheels = collect_installed_wheels(&venv)?
+        .into_iter()
+        .map(|installed_wheel| {
+            installed_wheel
+                .file_name()
+                .map(|file_name| (file_name, installed_wheel))
+        })
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
+    let repository = VenvRepository(
+        venv.interpreter
+            .details
+            .prefix
+            .join(venv.site_packages_relpath.as_ref()),
+    );
+    Ok((venv, (installed_wheels, repository)))
+}
+
+fn resolve_wheels_from_files(
     targets: Vec<PythonPlatform>,
     requirements: Vec<Requirement<Url>>,
-    mut wheels: Vec<PathBuf>,
+    wheels: Vec<PathBuf>,
+    pex_info: &RawPexInfo,
+) -> anyhow::Result<Vec<PathBuf>> {
+    if targets.is_empty() {
+        return Ok(wheels);
+    }
+
+    let dependency_configuration = DependencyConfiguration::parse(
+        pex_info.excluded.as_slice(),
+        pex_info.overridden.as_slice(),
+    )?;
+
+    let file_names = file_names(wheels.iter().map(AsRef::as_ref))?
+        .into_iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut wheel_paths_by_file_name: HashMap<&str, PathBuf> = HashMap::with_capacity(wheels.len());
+    for (file_name, path) in file_names.iter().zip(wheels) {
+        wheel_paths_by_file_name.insert(file_name, path);
+    }
+    let mut wheel_repository = Wheels::new(wheel_paths_by_file_name);
+    let mut resolved_file_names: IndexSet<&str> = IndexSet::with_capacity(file_names.len());
+    for target in &targets {
+        let resolved_wheels = match target {
+            PythonPlatform::Spec(spec) => {
+                let platform = python_platform::parse(spec, None, None).map_err(|err| {
+                    anyhow!(
+                        "Failed to parse --target {spec}: {err}\n\
+                        {PYTHON_PLATFORM_LONG_HELP}"
+                    )
+                })?;
+                let wheel_files = file_names
+                    .iter()
+                    .map(|file_name| WheelFile::parse_file_name(file_name))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                resolve_wheels(
+                    &platform,
+                    requirements.clone(),
+                    wheel_files,
+                    &mut wheel_repository,
+                    &dependency_configuration,
+                    None,
+                    pex_info.ignore_errors,
+                )?
+            }
+            PythonPlatform::Interpreter(path) => {
+                let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
+                let interpreter = Interpreter::load(path, &identification_script)?;
+                let wheel_files = file_names
+                    .iter()
+                    .map(|file_name| WheelFile::parse_file_name(file_name))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                resolve_wheels(
+                    &interpreter,
+                    requirements.clone(),
+                    wheel_files,
+                    &mut wheel_repository,
+                    &dependency_configuration,
+                    None,
+                    pex_info.ignore_errors,
+                )?
+            }
+        };
+        resolved_file_names.extend(resolved_wheels.keys());
+    }
+    wheel_repository.select(resolved_file_names.into_iter())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_pex(
+    wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
+    wheels_need_recompress: bool,
     pex_info: &mut RawPexInfo,
     packed: bool,
     sh_boot: bool,
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    if !targets.is_empty() {
-        let dependency_configuration = DependencyConfiguration::parse(
-            pex_info.excluded.as_slice(),
-            pex_info.overridden.as_slice(),
-        )?;
-
-        let file_names = file_names(wheels.iter().map(AsRef::as_ref))?
-            .into_iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        let wheel_files = || {
-            file_names
-                .iter()
-                .map(|file_name| WheelFile::parse_file_name(file_name))
-                .collect::<anyhow::Result<Vec<_>>>()
-        };
-        let mut wheel_paths_by_file_name: HashMap<&str, PathBuf> =
-            HashMap::with_capacity(wheels.len());
-        for (file_name, path) in file_names.iter().zip(wheels) {
-            wheel_paths_by_file_name.insert(file_name, path);
-        }
-        let mut wheel_repository = Wheels::new(wheel_paths_by_file_name);
-        let mut resolved_file_names: IndexSet<&str> = IndexSet::with_capacity(file_names.len());
-        for target in &targets {
-            let resolved_wheels = match target {
-                PythonPlatform::Spec(spec) => {
-                    let platform = python_platform::parse(spec, None, None).map_err(|err| {
-                        anyhow!(
-                            "Failed to parse --target {spec}: {err}\n\
-                            {PYTHON_PLATFORM_LONG_HELP}"
-                        )
-                    })?;
-                    resolve_wheels(
-                        &platform,
-                        requirements.clone(),
-                        wheel_files,
-                        &mut wheel_repository,
-                        &dependency_configuration,
-                        None,
-                        pex_info.ignore_errors,
-                    )?
-                }
-                PythonPlatform::Interpreter(path) => {
-                    let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
-                    let interpreter = Interpreter::load(path, &identification_script)?;
-                    resolve_wheels(
-                        &interpreter,
-                        requirements.clone(),
-                        wheel_files,
-                        &mut wheel_repository,
-                        &dependency_configuration,
-                        None,
-                        pex_info.ignore_errors,
-                    )?
-                }
-            };
-            resolved_file_names.extend(resolved_wheels.keys());
-        }
-        wheels = wheel_repository.select(resolved_file_names.into_iter())?;
-    }
-
     match output {
         Some(path) => {
             let subject = Cow::Owned(format!("PEX at {path}", path = path.display()));
@@ -308,6 +610,7 @@ fn build_pex(
                 subject,
                 wheels,
                 wheel_options,
+                wheels_need_recompress,
                 pex_info,
                 packed,
                 sh_boot,
@@ -323,6 +626,7 @@ fn build_pex(
                     subject,
                     wheels,
                     wheel_options,
+                    wheels_need_recompress,
                     pex_info,
                     packed,
                     sh_boot,
@@ -336,6 +640,7 @@ fn build_pex(
                     subject,
                     wheels,
                     wheel_options,
+                    wheels_need_recompress,
                     pex_info,
                     packed,
                     sh_boot,
@@ -430,10 +735,12 @@ impl<'a> MetadataReader for Wheels<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_pex(
     subject: Cow<'_, str>,
     wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
+    wheels_need_recompress: bool,
     pex_info: &mut RawPexInfo,
     packed: bool,
     sh_boot: bool,
@@ -493,6 +800,7 @@ fn create_pex(
         create_packed_pex(
             wheels,
             wheel_options,
+            wheels_need_recompress,
             pex_info,
             clibs,
             proxies,
@@ -503,6 +811,7 @@ fn create_pex(
         create_zipapp(
             wheels,
             wheel_options,
+            wheels_need_recompress,
             pex_info,
             clibs,
             proxies,
@@ -512,9 +821,11 @@ fn create_pex(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_packed_pex(
     wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
+    wheels_need_recompress: bool,
     pex_info: &mut RawPexInfo,
     clibs: Vec<&Binary>,
     proxies: Vec<&Binary>,
@@ -543,22 +854,31 @@ fn create_packed_pex(
         Cow::Borrowed("#!/usr/bin/env python\n")
     };
 
-    let deps_dir = tempfile::tempdir()?;
     let zips = wheels
         .into_par_iter()
         .map(|wheel| {
-            let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
-            let whl_file = WheelFile::parse_file_name(
-                wheel
+            if wheels_need_recompress {
+                let deps_dir = tempfile::tempdir()?;
+                let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
+                let whl_file = WheelFile::parse_file_name(
+                    wheel
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .ok_or_else(|| anyhow!("XXX"))?,
+                )?;
+                recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
+                    .map(|file| (whl_file.file_name.to_string(), file))
+            } else {
+                let file_name = wheel
                     .file_name()
-                    .ok_or_else(|| anyhow!("XXX"))?
-                    .to_str()
-                    .ok_or_else(|| anyhow!("YYY"))?,
-            )?;
-            recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
-                .map(|file| (whl_file.file_name.to_string(), file))
+                    .and_then(OsStr::to_str)
+                    .ok_or_else(|| anyhow!("YYY"))?
+                    .to_owned();
+                Ok((file_name, File::open(wheel)?))
+            }
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+
     let deps_dir = dest_dir.path().join(".deps");
     fs::create_dir(&deps_dir)?;
     for (file_name, zip) in zips {
@@ -604,9 +924,11 @@ fn create_packed_pex(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_zipapp(
     wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
+    wheels_need_recompress: bool,
     pex_info: &mut RawPexInfo,
     clibs: Vec<&Binary>,
     proxies: Vec<&Binary>,
@@ -639,22 +961,31 @@ fn create_zipapp(
         SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
     // TODO: XXX: Extract this up earlier.
-    let deps_dir = tempfile::tempdir()?;
     let zips = wheels
         .into_par_iter()
         .map(|wheel| {
-            let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
-            let whl_file = WheelFile::parse_file_name(
-                wheel
+            if wheels_need_recompress {
+                let deps_dir = tempfile::tempdir()?;
+                let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
+                let whl_file = WheelFile::parse_file_name(
+                    wheel
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .ok_or_else(|| anyhow!("XXX"))?,
+                )?;
+                recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
+                    .map(|file| (whl_file.file_name.to_string(), file))
+            } else {
+                let file_name = wheel
                     .file_name()
-                    .ok_or_else(|| anyhow!("XXX"))?
-                    .to_str()
-                    .ok_or_else(|| anyhow!("YYY"))?,
-            )?;
-            recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
-                .map(|file| (whl_file.file_name.to_string(), file))
+                    .and_then(OsStr::to_str)
+                    .ok_or_else(|| anyhow!("YYY"))?
+                    .to_owned();
+                Ok((file_name, File::open(wheel)?))
+            }
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+
     for (file_name, zip) in zips {
         dst_zip.start_file(format!(".deps/{file_name}"), stored_file_options)?;
         let mut src = DigestingReader::new(default_digest(), zip);

@@ -69,6 +69,7 @@ impl Linker for FileSystemLinker {
     }
 }
 
+#[derive(Hash, Eq, PartialEq)]
 pub struct Virtualenv<'a> {
     pub interpreter: Interpreter,
     pub bin_dir_relpath: &'a str,

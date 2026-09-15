@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.21.0
+
+This release adds `pexrcs -X build` support for venvs. Now PEXes can be built using venvs as wheel
+repositories.
+
 ## 0.20.1
 
 This release fixes `--sh-boot` handling.

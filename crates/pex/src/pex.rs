@@ -206,11 +206,10 @@ impl<'a> Pex<'a> {
             .map(|requirement| Ok(requirement.as_ref().parse()?))
             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        let parse_wheel_files = || {
-            self.info
-                .parse_distributions()
-                .collect::<anyhow::Result<Vec<_>>>()
-        };
+        let wheel_files = self
+            .info
+            .parse_distributions()
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         let ignore_errors = self.info.raw().ignore_errors;
         match self.layout {
@@ -219,7 +218,7 @@ impl<'a> Pex<'a> {
             Layout::Loose => resolver::resolve_wheels(
                 target,
                 requirements,
-                parse_wheel_files,
+                wheel_files,
                 &mut LoosePexMetadataReader(self.path),
                 dependency_configuration,
                 collect_extra_metadata,
@@ -231,7 +230,7 @@ impl<'a> Pex<'a> {
             Layout::Packed => resolver::resolve_wheels(
                 target,
                 requirements,
-                parse_wheel_files,
+                wheel_files,
                 &mut PackedPexMetadataReader(self.path),
                 dependency_configuration,
                 collect_extra_metadata,
@@ -240,7 +239,7 @@ impl<'a> Pex<'a> {
             Layout::ZipApp => resolver::resolve_wheels(
                 target,
                 requirements,
-                parse_wheel_files,
+                wheel_files,
                 &mut ZipAppPexMetadataReader::new(self.path, self.info.raw().deps_are_wheel_files)?,
                 dependency_configuration,
                 collect_extra_metadata,
