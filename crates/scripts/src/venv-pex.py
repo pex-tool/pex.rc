@@ -113,7 +113,7 @@ def boot(
 ):
     # type: (...) -> None
 
-    venv_dir = os.path.abspath(os.path.dirname(__file__))
+    venv_dir = os.path.dirname(os.path.realpath(__file__))
     venv_bin_dir = os.path.join(venv_dir, venv_bin_dir)
     python = os.path.join(venv_bin_dir, os.path.basename(shebang_python))
     venv_pythons = [python, shebang_python]

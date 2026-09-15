@@ -34,7 +34,6 @@ const SH_BOOT_PARTS: [&str; 4] = str_split!(include_str!("boot.sh"), "# --- spli
 pub fn sh_boot_shebang(
     pex: &Pex,
     hermetic: bool,
-    escaped: bool,
     preferred_interpreter: Option<PythonImplementation>,
 ) -> anyhow::Result<Option<String>> {
     let mut sh_boot_shebang_buffer: [_; SH_BOOT_SHEBANG.len()] = [0; SH_BOOT_SHEBANG.len()];
@@ -55,7 +54,6 @@ pub fn sh_boot_shebang(
         pex.path.display(),
         pex.info.raw(),
         hermetic,
-        escaped,
         preferred_interpreter,
     )?))
 }
@@ -64,7 +62,6 @@ pub fn create_sh_boot_shebang(
     subject: impl Display,
     pex_info: &RawPexInfo,
     hermetic: bool,
-    escaped: bool,
     preferred_interpreter: Option<PythonImplementation>,
 ) -> anyhow::Result<String> {
     let pex_path = PexPath::from_pex_info(pex_info, false);
@@ -120,9 +117,8 @@ pub fn create_sh_boot_shebang(
         Cow::Borrowed("")
     };
     Ok(format!(
-        "{shebang}{start_escape}{header}{vars}{body}{end_escape}\n",
+        "{shebang}'''': pshprs\n{header}{vars}{body}\n'''\n\n",
         shebang = SH_BOOT_PARTS[0], // N.B.: SH_BOOT_SHEBANG
-        start_escape = if escaped { "'''': pshprs\n" } else { "" },
         header = SH_BOOT_PARTS[1],
         vars = SH_BOOT_PARTS[2]
             .replace("{pexrc_root}", pexrc_root.as_ref())
@@ -139,7 +135,6 @@ pub fn create_sh_boot_shebang(
             )
             .replace("{python_args}", python_args),
         body = SH_BOOT_PARTS[3].trim_end(),
-        end_escape = if escaped { "\n'''\n" } else { "\n" },
     ))
 }
 
