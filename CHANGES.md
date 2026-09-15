@@ -2,7 +2,7 @@
 
 ## 0.21.0
 
-This release add `pexrcs -X build` support for venvs. Now PEXes can be built using venvs as wheel
+This release adds `pexrcs -X build` support for venvs. Now PEXes can be built using venvs as wheel
 repositories.
 
 ## 0.20.1
