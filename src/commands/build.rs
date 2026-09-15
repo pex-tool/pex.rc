@@ -536,7 +536,6 @@ fn create_packed_pex(
             "<subject>",
             pex_info,
             hermetic,
-            false,
             None,
         )?)
     } else {
@@ -597,7 +596,7 @@ fn create_packed_pex(
 
     if path.is_dir() {
         fs::remove_dir_all(path)?;
-    } else {
+    } else if path.is_file() {
         fs::remove_file(path)?;
     }
     fs::rename(&dest_dir, path)?;
@@ -624,7 +623,7 @@ fn create_zipapp(
         let hermetic = true;
         // TODO: Derive the preferred Python.
         let _preferred_python: Option<PythonImplementation> = None;
-        let sh_boot_shebang = create_sh_boot_shebang("<subject>", pex_info, hermetic, false, None)?;
+        let sh_boot_shebang = create_sh_boot_shebang("<subject>", pex_info, hermetic, None)?;
         dst_zip_fp.write_all(sh_boot_shebang.as_bytes())?;
     } else {
         // TODO: XXX: shebang option + if not set default selection.

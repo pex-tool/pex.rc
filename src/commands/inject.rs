@@ -163,7 +163,6 @@ fn inject_pex_dir(
     let shebang = if let Some(sh_boot_shebang) = sh_boot_shebang(
         &pex,
         pex.info.raw().venv_hermetic_scripts,
-        true,
         preferred_interpreter,
     )? {
         sh_boot_shebang
@@ -270,12 +269,9 @@ fn inject_pex_zip(
     let pex_info = pex.info.raw();
     let zip_read_fp = File::open(pex.path)?;
     let mut src_zip = ZipArchive::new(&zip_read_fp)?;
-    let prefix = if let Some(sh_boot_shebang) = sh_boot_shebang(
-        &pex,
-        pex_info.venv_hermetic_scripts,
-        false,
-        preferred_interpreter,
-    )? {
+    let prefix = if let Some(sh_boot_shebang) =
+        sh_boot_shebang(&pex, pex_info.venv_hermetic_scripts, preferred_interpreter)?
+    {
         Some(sh_boot_shebang.into_bytes())
     } else {
         let first_entry = src_zip.by_index(0)?;

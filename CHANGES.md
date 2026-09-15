@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.20.1
+
+This release fixes `--sh-boot` handling.
+
 ## 0.20.0
 
 This release adds `pexrc extract` support for venvs. Previously wheels could only be extracted from
