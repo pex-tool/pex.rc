@@ -1314,8 +1314,8 @@ if __name__ == "__main__":
             bind_resource_paths = PythonListTupleStrStr(pex_info.bind_resource_paths.as_ref()),
             inject_env = PythonListTupleStrStr(pex_info.inject_env.as_ref()),
             inject_args = PythonListStr(&pex_info.inject_args),
-            entry_point = OptionalPythonStr(pex_info.entry_point),
-            script = OptionalPythonStr(pex_info.script),
+            entry_point = OptionalPythonStr(pex_info.entry_point.as_deref()),
+            script = OptionalPythonStr(pex_info.script.as_deref()),
             hermetic_re_exec = OptionalPythonStr(if pex_info.venv_hermetic_scripts {
                 Some(venv.interpreter.hermetic_args())
             } else {

@@ -132,6 +132,12 @@ pub enum SimplifiedTarget {
 }
 
 impl SimplifiedTarget {
+    pub fn current() -> anyhow::Result<SimplifiedTarget> {
+        Target::current()?.simplified_target_triple()
+    }
+}
+
+impl SimplifiedTarget {
     pub fn all() -> EnumSet<Self> {
         Self::iter().collect()
     }

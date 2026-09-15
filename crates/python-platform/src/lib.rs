@@ -23,8 +23,8 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
 use logging_timer::time;
-use pep508_rs::MarkerEnvironment;
 use pep508_rs::pep440_rs::Version;
+use pep508_rs::{MarkerEnvironment, MarkerValueVersion};
 use serde::{Deserialize, Serialize};
 
 pub use crate::arch::Arch;
@@ -83,6 +83,31 @@ pub struct PlatformDetails<'a> {
     source: Cow<'a, str>,
     marker_env: MarkerEnvironment,
     supported_tags: NonEmptyVec<Cow<'a, str>>,
+}
+
+impl<'a> PlatformDetails<'a> {
+    pub fn python_implementation(&self) -> anyhow::Result<PythonImplementation> {
+        let version = self
+            .marker_env
+            .get_version(&MarkerValueVersion::PythonFullVersion)
+            .try_into()?;
+        if self.marker_env.platform_python_implementation() == "PyPy" {
+            Ok(PythonImplementation::PyPy(PyPyImplementation {
+                version,
+                pypy_version: None,
+            }))
+        } else {
+            Ok(PythonImplementation::CPython(CPythonImplementation {
+                version,
+                abi_info: CPythonAbiInfo {
+                    free_threaded: None,
+                    debug: false,
+                    pymalloc: None,
+                    ucs4: None,
+                },
+            }))
+        }
+    }
 }
 
 impl<'a> PlatformDetails<'a> {

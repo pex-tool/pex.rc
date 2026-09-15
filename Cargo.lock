@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2314,6 +2314,7 @@ dependencies = [
  "scripts",
  "serde_json",
  "sha2",
+ "shlex",
  "strum",
  "target",
  "tempfile",

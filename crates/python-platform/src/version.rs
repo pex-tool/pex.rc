@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use anyhow::bail;
+use pep440_rs::Version;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
@@ -68,6 +69,21 @@ pub struct PythonVersion {
     pub serial: u8,
 }
 
+impl TryFrom<&Version> for PythonVersion {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &Version) -> anyhow::Result<Self> {
+        let release = value.release();
+        Ok(Self {
+            major: u8::try_from(release[0])?,
+            minor: u8::try_from(release[1])?,
+            micro: u8::try_from(release[2])?,
+            releaselevel: ReleaseLevel::Final,
+            serial: 0,
+        })
+    }
+}
+
 impl Display for PythonVersion {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -117,7 +133,7 @@ pub struct CPythonAbiInfo {
     pub ucs4: Option<bool>,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct CPythonImplementation {
     pub version: PythonVersion,
     pub abi_info: CPythonAbiInfo,
@@ -201,7 +217,7 @@ impl FromStr for PyPyVersion {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct PyPyImplementation {
     pub version: PythonVersion,
     pub pypy_version: Option<PyPyVersion>,
@@ -215,7 +231,7 @@ impl Deref for PyPyImplementation {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub enum PythonImplementation {
     CPython(CPythonImplementation),
     PyPy(PyPyImplementation),

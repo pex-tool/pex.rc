@@ -17,7 +17,7 @@ pub enum EntryPoint<'a> {
 }
 
 impl<'a> EntryPoint<'a> {
-    fn parse(value: &'a str) -> Self {
+    pub fn parse(value: &'a str) -> Self {
         let mut components = value.splitn(2, ":");
         let module = components
             .next()
@@ -80,6 +80,12 @@ impl EntryPoints {
     pub fn is_script(&self, name: impl AsRef<str>) -> bool {
         self.borrow_console_scripts().contains_key(name.as_ref())
             || self.borrow_gui_scripts().contains_key(name.as_ref())
+    }
+
+    pub fn script(&self, name: impl AsRef<str>) -> Option<&EntryPoint<'_>> {
+        self.borrow_console_scripts()
+            .get(name.as_ref())
+            .or_else(|| self.borrow_gui_scripts().get(name.as_ref()))
     }
 
     pub fn console_scripts(&self) -> impl Iterator<Item = (&str, &EntryPoint<'_>)> {

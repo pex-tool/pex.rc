@@ -1,8 +1,14 @@
 # Release Notes
 
+## 0.22.0
+
+This release adds `pexrc -X build` support for specifying an entry point (
+`-e`|`--entry-point`|`--module` or `-c`|`--script`|`--console-script`). It also adds support for
+pass through args when building and running an ephemeral PEX.
+
 ## 0.21.0
 
-This release adds `pexrcs -X build` support for venvs. Now PEXes can be built using venvs as wheel
+This release adds `pexrc -X build` support for venvs. Now PEXes can be built using venvs as wheel
 repositories.
 
 ## 0.20.1

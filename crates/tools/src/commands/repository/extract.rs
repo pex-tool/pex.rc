@@ -276,7 +276,7 @@ build-backend = "setuptools.build_meta"
     let install_requires = IniList("install_requires", pex_info.requirements.to_vec());
 
     let mut console_scripts = Vec::with_capacity(1);
-    if let Some(entry_point) = pex_info.entry_point
+    if let Some(entry_point) = pex_info.entry_point.as_deref()
         && entry_point.contains(":")
         && let Some(name) = project_name.to_str()
     {
