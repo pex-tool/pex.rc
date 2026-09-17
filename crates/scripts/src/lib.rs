@@ -14,7 +14,6 @@ use std::sync::LazyLock;
 use const_format::concatcp;
 use fs_err as fs;
 use fs_err::File;
-use include_dir::{Dir, include_dir};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use zip::write::{FileOptionExtension, FileOptions, SimpleFileOptions};
@@ -57,7 +56,8 @@ const ZIP_REL_PATH: &str = "__pex__/.scripts";
 static HOST_REL_PATH: LazyLock<PathBuf> = LazyLock::new(|| ZIP_REL_PATH.split("/").collect());
 
 #[cfg(feature = "embedded")]
-const ACTIVATION_SCRIPTS_DIR: Dir<'static> = include_dir!("$ACTIVATION_SCRIPTS_DIR");
+const ACTIVATION_SCRIPTS_DIR: include_dir::Dir<'static> =
+    include_dir::include_dir!("$ACTIVATION_SCRIPTS_DIR");
 
 pub struct ActivationScript {
     pub file_name: Cow<'static, OsStr>,
