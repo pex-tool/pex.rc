@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.21.0"
+version = "0.22.0"
 edition = { workspace = true }
 publish = false
 
@@ -204,6 +204,7 @@ serde_json = "1.0"
 serde_with = { version = "3.20", features = ["macros"]}
 sha2 = "0.11"
 shell-quote = "0.8"
+shlex = "2.0"
 strum = { version = "0.28", features = ["strum_macros"] }
 # N.B.: We let strum dictate the strum_macros version.
 strum_macros = "*"
@@ -270,6 +271,7 @@ resolver = { path = "crates/resolver" }
 scripts = { path = "crates/scripts", features = ["embedded"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+shlex = { workspace = true }
 strum = { workspace = true }
 target = { path = "crates/target" }
 tempfile = { workspace = true }

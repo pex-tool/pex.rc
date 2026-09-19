@@ -72,7 +72,8 @@ pub struct RawPexInfo<'a> {
     #[serde(borrow)]
     pub distributions: IndexMap<Cow<'a, str>, Cow<'a, str>>,
     pub emit_warnings: bool,
-    pub entry_point: Option<&'a str>,
+    #[serde(borrow)]
+    pub entry_point: Option<Cow<'a, str>>,
     pub excluded: Vec<&'a str>,
     pub ignore_errors: bool,
     pub inherit_path: Option<InheritPath>,
@@ -92,7 +93,8 @@ pub struct RawPexInfo<'a> {
     pub pex_root: Option<Cow<'a, str>>,
     #[serde(borrow)]
     pub requirements: Vec<Cow<'a, str>>,
-    pub script: Option<&'a str>,
+    #[serde(borrow)]
+    pub script: Option<Cow<'a, str>>,
     pub strip_pex_env: Option<bool>,
     pub venv: bool,
     pub venv_bin_path: Option<BinPath>,

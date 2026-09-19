@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::io::{BufReader, Write};
+use std::fmt::Write as _;
+use std::io::{BufReader, Write as _};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::{io, process};
 
 use anyhow::{anyhow, bail};
@@ -13,12 +14,14 @@ use boot::{create_sh_boot_shebang, inject_boot, write_boot};
 use cache::{DigestingReader, default_digest};
 use clap::{ArgAction, Args};
 use const_format::concatcp;
+use enumset::enum_set;
 use fs_err as fs;
 use fs_err::File;
-use indexmap::{IndexSet, indexmap};
+use indexmap::{IndexMap, IndexSet, indexmap, indexset};
 use interpreter::Interpreter;
 use itertools::Itertools;
-use log::warn;
+use log::{Level, warn};
+use logging_timer::{time, timer};
 use pep508_rs::Requirement;
 use pex::{PexInfo, RawPexInfo};
 use platform::mark_executable;
@@ -33,7 +36,8 @@ use target::SimplifiedTarget;
 use tempfile::NamedTempFile;
 use url::Url;
 use venv::{InstallPaths, InstalledWheel, Virtualenv, collect_installed_wheels};
-use wheel::{MetadataDirs, MetadataReader, WheelFile};
+use wheel::{EntryPoints, MetadataDirs, MetadataReader, WheelFile};
+use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use zip_ext::ZipArchiveExt;
@@ -46,6 +50,11 @@ use crate::target::{PYTHON_PLATFORM_LONG_HELP, PythonPlatform, RequiredTargets};
 enum InstalledDistributions {
     Venvs(Vec<PathBuf>),
     Wheels(Vec<PathBuf>),
+}
+
+enum PexEntryPoint {
+    EntryPoint(String),
+    Script(String),
 }
 
 #[derive(Args, Debug)]
@@ -93,6 +102,43 @@ pub struct Build {
     )]
     wheels: Vec<PathBuf>,
 
+    /// Existing PEX-INFO to use for the built PEX.
+    ///
+    /// If the PEX-INFO is from a traditional PEX it may be edited minimally to conform to the PEXrc
+    /// runtime and any specified requirements. If no PEX-INFO is supplied, it will be created from
+    /// the other given inputs.
+    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
+    pex_info: Option<PathBuf>,
+
+    /// Set the entry point to `module` or `module:symbol`.
+    ///
+    /// If just specifying `module`, Pex behaves like `python -m`, e.g. `python -m http.server`.
+    /// If specifying `module:symbol`, Pex assumes symbol is a 0-arg callable and imports that
+    /// symbol and invokes it as if via `sys.exit(symbol())`.
+    #[arg(
+        short = 'e',
+        visible_short_alias = 'm',
+        long,
+        help_heading = "Entry Point",
+        conflicts_with = "script",
+        verbatim_doc_comment
+    )]
+    entry_point: Option<String>,
+
+    /// Set the entry point to the given script.
+    ///
+    /// The script must be either a console script, gui script or data script found in one of the
+    /// distributions in the PEX. For example: `pexrc build -c cowsay --venv venv/ cowsay`.
+    #[arg(
+        short = 'c',
+        long,
+        visible_alias = "console-script",
+        help_heading = "Entry Point",
+        conflicts_with = "entry_point",
+        verbatim_doc_comment
+    )]
+    script: Option<String>,
+
     /// The Python platforms the built PEX will target at runtime.
     ///
     /// If specified, the targets will be used to resolve any specified requirements from the
@@ -106,14 +152,6 @@ pub struct Build {
         verbatim_doc_comment
     )]
     targets: Vec<PythonPlatform>,
-
-    /// Existing PEX-INFO to use for the built PEX.
-    ///
-    /// If the PEX-INFO is from a traditional PEX it may be edited minimally to conform to the PEXrc
-    /// runtime and any specified requirements. If no PEX-INFO is supplied, it will be created from
-    /// the other given inputs.
-    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
-    pex_info: Option<PathBuf>,
 
     #[command(flatten)]
     compression_args: CompressionArgs,
@@ -167,10 +205,24 @@ pub struct Build {
         verbatim_doc_comment
     )]
     output: Option<PathBuf>,
+
+    /// Pass through arguments for execution of ephemeral PEXes.
+    #[arg(allow_hyphen_values = true, last = true)]
+    extra_args: Vec<String>,
 }
 
 impl Build {
     pub fn execute(self) -> anyhow::Result<()> {
+        if !self.extra_args.is_empty()
+            && let Some(output) = self.output.as_deref()
+        {
+            bail!(
+                "Extra args ({extra_args}) are only applicable for ephemeral PEXes.\n\
+                This PEX would be generated to {path}.",
+                extra_args = shlex::try_join(self.extra_args.iter().map(String::as_str))?,
+                path = output.display()
+            );
+        }
         assert!(
             self.venvs.is_empty() || self.wheels.is_empty(),
             "We should never get here by arrangement of a mutex condition between venvs and wheels \
@@ -184,6 +236,10 @@ impl Build {
             None
         };
 
+        let entry_point = self
+            .entry_point
+            .map(PexEntryPoint::EntryPoint)
+            .or_else(|| self.script.map(PexEntryPoint::Script));
         let wheel_options = self.compression_args.into_wheel_options(None);
 
         let tmp_dest_dir = if let Some(output) = self.output.as_deref()
@@ -221,7 +277,7 @@ impl Build {
                 });
                 self.requirements
             };
-            let (wheels, wheels_need_recompress) = resolve_wheel_files(
+            let (pythons, wheels, wheels_need_recompress) = resolve_wheel_files(
                 self.targets,
                 &wheel_options,
                 installed_distributions,
@@ -230,7 +286,12 @@ impl Build {
                 tmp_dest_dir.path(),
             )?;
             pex_info.with_raw_mut(|raw_pex_info| {
+                adjust_requirements(raw_pex_info, &wheels)?;
+                if let Some(entry_point) = entry_point {
+                    resolve_entry_point(raw_pex_info, entry_point, &wheels)?;
+                }
                 build_pex(
+                    pythons,
                     wheels,
                     wheel_options,
                     wheels_need_recompress,
@@ -238,6 +299,7 @@ impl Build {
                     self.packed,
                     self.sh_boot,
                     self.output,
+                    self.extra_args,
                 )
             })
         } else {
@@ -254,7 +316,7 @@ impl Build {
                     .collect(),
                 ..Default::default()
             };
-            let (wheels, wheels_need_recompress) = resolve_wheel_files(
+            let (pythons, wheels, wheels_need_recompress) = resolve_wheel_files(
                 self.targets,
                 &wheel_options,
                 installed_distributions,
@@ -262,7 +324,12 @@ impl Build {
                 &pex_info,
                 tmp_dest_dir.path(),
             )?;
+            adjust_requirements(&mut pex_info, &wheels)?;
+            if let Some(entry_point) = entry_point {
+                resolve_entry_point(&mut pex_info, entry_point, &wheels)?;
+            }
             build_pex(
+                pythons,
                 wheels,
                 wheel_options,
                 wheels_need_recompress,
@@ -270,11 +337,117 @@ impl Build {
                 self.packed,
                 self.sh_boot,
                 self.output,
+                self.extra_args,
             )
         }
     }
 }
 
+#[time("debug", "{}")]
+fn resolve_entry_point(
+    pex_info: &mut RawPexInfo,
+    entry_point: PexEntryPoint,
+    wheels: &[PathBuf],
+) -> anyhow::Result<()> {
+    match entry_point {
+        PexEntryPoint::EntryPoint(ep) => pex_info.entry_point = Some(Cow::Owned(ep)),
+        PexEntryPoint::Script(script) => {
+            let matches = wheels
+                .into_par_iter()
+                .map(|wheel| {
+                    let wheel_file = wheel
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .ok_or_else(|| anyhow!("XXX"))
+                        .and_then(WheelFile::parse_file_name)?;
+                    let mut whl = ZipArchive::new(File::open(wheel)?)?;
+                    let metadata_dirs = MetadataDirs::locate_in_zip(
+                        &whl,
+                        "",
+                        None,
+                        &wheel_file.project_name,
+                        &wheel_file.version,
+                    )?;
+                    match whl.by_name(&format!(
+                        "{dist_info_dir}/entry_points.txt",
+                        dist_info_dir = metadata_dirs.dist_info_dir()
+                    )) {
+                        Ok(file) => {
+                            let entry_points = EntryPoints::load(file)?;
+                            if let Some(entry_point) = entry_points.script(&script) {
+                                Ok(Some((wheel, entry_point.to_string())))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        Err(ZipError::FileNotFound) => Ok(None),
+                        Err(err) => Err(anyhow!("{err}")),
+                    }
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                pex_info.script = Some(Cow::Owned(script))
+            } else {
+                let mut entry_points = IndexMap::with_capacity(matches.len());
+                for (wheel_path, entry_point) in matches {
+                    entry_points
+                        .entry(entry_point)
+                        .or_insert_with(IndexSet::new)
+                        .insert(wheel_path);
+                }
+                if entry_points.len() > 1 {
+                    let mut msg = format!(
+                        "Found {count} conflicting entry point definitions for script {script}:\n",
+                        count = entry_points.len()
+                    );
+                    for (index, (entry_point, wheel_paths)) in entry_points.iter().enumerate() {
+                        writeln!(&mut msg, "{index}. {entry_point}:")?;
+                        for wheel_path in wheel_paths {
+                            write!(
+                                &mut msg,
+                                "   {wheel}",
+                                wheel = wheel_path
+                                    .file_name()
+                                    .expect("We already parsed a wheel file name to get here.")
+                                    .display()
+                            )?;
+                        }
+                    }
+                    bail!(msg)
+                }
+                let (entry_point, _) = entry_points
+                    .into_iter()
+                    .next()
+                    .expect("We ensured there was element with the checks above.");
+                pex_info.entry_point = Some(Cow::Owned(entry_point))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn adjust_requirements(pex_info: &mut RawPexInfo, wheels: &[PathBuf]) -> anyhow::Result<()> {
+    if pex_info.requirements.is_empty() {
+        pex_info.requirements.extend(
+            wheels
+                .iter()
+                .map(|path| {
+                    path.file_name()
+                        .and_then(OsStr::to_str)
+                        .ok_or_else(|| anyhow!("XXX"))
+                        .and_then(WheelFile::parse_file_name)
+                        .map(|wheel_file| Cow::Owned(wheel_file.project_name.to_string()))
+                })
+                .collect::<anyhow::Result<IndexSet<_>>>()?,
+        );
+    }
+    Ok(())
+}
+
+#[time("debug", "{}")]
 fn resolve_wheel_files(
     targets: Vec<PythonPlatform>,
     wheel_options: &WheelOptions,
@@ -282,11 +455,11 @@ fn resolve_wheel_files(
     requirements: Vec<Requirement<Url>>,
     pex_info: &RawPexInfo,
     dest_dir: &Path,
-) -> anyhow::Result<(Vec<PathBuf>, bool)> {
+) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<PathBuf>, bool)> {
     if let Some(distributions) = installed_distributions {
         match distributions {
             InstalledDistributions::Venvs(venvs) => {
-                let wheels = resolve_wheels_from_venvs(
+                let (pythons, wheels) = resolve_wheels_from_venvs(
                     targets,
                     wheel_options,
                     requirements,
@@ -297,7 +470,7 @@ fn resolve_wheel_files(
                     pex_info,
                     dest_dir,
                 )?;
-                Ok((wheels, false))
+                Ok((pythons, wheels, false))
             }
             InstalledDistributions::Wheels(installed_wheels) => {
                 let mut wheels = Vec::with_capacity(installed_wheels.len());
@@ -315,12 +488,13 @@ fn resolve_wheel_files(
                         wheels.push(wheel)
                     }
                 }
-                let wheels = resolve_wheels_from_files(targets, requirements, wheels, pex_info)?;
-                Ok((wheels, true))
+                let (pythons, wheels) =
+                    resolve_wheels_from_files(targets, requirements, wheels, pex_info)?;
+                Ok((pythons, wheels, true))
             }
         }
     } else {
-        Ok((vec![], false))
+        Ok((indexset![], vec![], false))
     }
 }
 
@@ -356,13 +530,13 @@ fn resolve_wheels_from_venvs(
     venvs: Vec<Virtualenv>,
     pex_info: &RawPexInfo,
     dest_dir: &Path,
-) -> anyhow::Result<Vec<PathBuf>> {
+) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<PathBuf>)> {
     let (venvs, mut repositories) = {
         let inventory = venvs
             .into_par_iter()
             .map(inventory_venv)
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let mut venvs = HashMap::new();
+        let mut venvs = IndexMap::new();
         let mut repositories = Vec::with_capacity(inventory.len());
         for (venv, repository) in inventory {
             venvs.insert(venv.prefix().join(&venv.site_packages_relpath), venv);
@@ -404,18 +578,27 @@ fn resolve_wheels_from_venvs(
         pex_info.overridden.as_slice(),
     )?;
 
-    let mut wheels = HashMap::new();
-    let mut errors_by_platform = HashMap::new();
+    let mut wheels = IndexMap::new();
+    let mut pythons = IndexSet::new();
+    let mut errors_by_platform = IndexMap::new();
     for (installed_wheels, venv_repository) in &mut repositories {
         for platform in &platforms {
             if wheels.contains_key(platform) {
                 continue;
             }
-            let requirements = requirements.clone();
+            let mut requirements = requirements.clone();
             let wheel_files = installed_wheels
                 .keys()
                 .map(|file_name| WheelFile::parse_file_name(file_name))
                 .collect::<anyhow::Result<Vec<_>>>()?;
+            if requirements.is_empty() {
+                requirements.extend(
+                    wheel_files
+                        .iter()
+                        .map(|wheel_file| Ok(Requirement::from_str(wheel_file.raw_project_name)?))
+                        .collect::<anyhow::Result<IndexSet<_>>>()?,
+                )
+            }
             let result = match platform {
                 Platform::Details(platform) => resolve_wheels(
                     platform,
@@ -456,6 +639,12 @@ fn resolve_wheels_from_venvs(
                             .insert(installed_wheel.expect(
                                 "Resolved wheel_files were derived from installed_wheels.",
                             ));
+                        pythons.insert(match platform {
+                            Platform::Details(details) => details.python_implementation()?,
+                            Platform::Interpreter(interpreter) => {
+                                interpreter.details.python_implementation()
+                            }
+                        });
                     }
                     break;
                 }
@@ -487,7 +676,7 @@ fn resolve_wheels_from_venvs(
                 .collect::<anyhow::Result<Vec<PathBuf>>>()?,
         );
     }
-    Ok(wheel_paths)
+    Ok((pythons, wheel_paths))
 }
 
 fn pack_wheel(
@@ -496,13 +685,15 @@ fn pack_wheel(
     wheel_options: &WheelOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<PathBuf> {
-    let whl_path = dest_dir.join(wheel.file_name()?);
+    let wheel_file = wheel.file_name()?;
+    let _time_pack = timer!(Level::Debug; "pack_wheel", "{wheel_file}");
+    let whl_path = dest_dir.join(wheel_file);
     let mut whl_file = File::create_new(&whl_path)?;
     wheel.pack(install_paths, wheel_options, &mut whl_file)?;
     Ok(whl_path)
 }
 
-type Repository = (HashMap<String, InstalledWheel>, VenvRepository);
+type Repository = (IndexMap<String, InstalledWheel>, VenvRepository);
 
 fn inventory_venv(venv: Virtualenv) -> anyhow::Result<(Virtualenv, Repository)> {
     let installed_wheels = collect_installed_wheels(&venv)?
@@ -512,7 +703,7 @@ fn inventory_venv(venv: Virtualenv) -> anyhow::Result<(Virtualenv, Repository)> 
                 .file_name()
                 .map(|file_name| (file_name, installed_wheel))
         })
-        .collect::<anyhow::Result<HashMap<_, _>>>()?;
+        .collect::<anyhow::Result<IndexMap<_, _>>>()?;
     let repository = VenvRepository(
         venv.interpreter
             .details
@@ -527,9 +718,9 @@ fn resolve_wheels_from_files(
     requirements: Vec<Requirement<Url>>,
     wheels: Vec<PathBuf>,
     pex_info: &RawPexInfo,
-) -> anyhow::Result<Vec<PathBuf>> {
-    if targets.is_empty() {
-        return Ok(wheels);
+) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<PathBuf>)> {
+    if targets.is_empty() || requirements.is_empty() {
+        return Ok((indexset!(), wheels));
     }
 
     let dependency_configuration = DependencyConfiguration::parse(
@@ -541,11 +732,13 @@ fn resolve_wheels_from_files(
         .into_iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    let mut wheel_paths_by_file_name: HashMap<&str, PathBuf> = HashMap::with_capacity(wheels.len());
+    let mut wheel_paths_by_file_name: IndexMap<&str, PathBuf> =
+        IndexMap::with_capacity(wheels.len());
     for (file_name, path) in file_names.iter().zip(wheels) {
         wheel_paths_by_file_name.insert(file_name, path);
     }
     let mut wheel_repository = Wheels::new(wheel_paths_by_file_name);
+    let mut pythons = IndexSet::new();
     let mut resolved_file_names: IndexSet<&str> = IndexSet::with_capacity(file_names.len());
     for target in &targets {
         let resolved_wheels = match target {
@@ -556,6 +749,7 @@ fn resolve_wheels_from_files(
                         {PYTHON_PLATFORM_LONG_HELP}"
                     )
                 })?;
+                pythons.insert(platform.python_implementation()?);
                 let wheel_files = file_names
                     .iter()
                     .map(|file_name| WheelFile::parse_file_name(file_name))
@@ -573,6 +767,7 @@ fn resolve_wheels_from_files(
             PythonPlatform::Interpreter(path) => {
                 let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
                 let interpreter = Interpreter::load(path, &identification_script)?;
+                pythons.insert(interpreter.details.python_implementation());
                 let wheel_files = file_names
                     .iter()
                     .map(|file_name| WheelFile::parse_file_name(file_name))
@@ -590,11 +785,14 @@ fn resolve_wheels_from_files(
         };
         resolved_file_names.extend(resolved_wheels.keys());
     }
-    wheel_repository.select(resolved_file_names.into_iter())
+    let wheel_paths = wheel_repository.select(resolved_file_names.into_iter())?;
+    Ok((pythons, wheel_paths))
 }
 
 #[allow(clippy::too_many_arguments)]
+#[time("debug", "{}")]
 fn build_pex(
+    pythons: IndexSet<PythonImplementation>,
     wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
     wheels_need_recompress: bool,
@@ -602,12 +800,15 @@ fn build_pex(
     packed: bool,
     sh_boot: bool,
     output: Option<PathBuf>,
+    extra_args: Vec<String>,
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
             let subject = Cow::Owned(format!("PEX at {path}", path = path.display()));
             create_pex(
                 subject,
+                false,
+                pythons,
                 wheels,
                 wheel_options,
                 wheels_need_recompress,
@@ -624,6 +825,8 @@ fn build_pex(
                 let path = chroot.path();
                 create_pex(
                     subject,
+                    true,
+                    pythons,
                     wheels,
                     wheel_options,
                     wheels_need_recompress,
@@ -632,12 +835,14 @@ fn build_pex(
                     sh_boot,
                     path,
                 )?;
-                execute_pex(path)
+                execute_pex(path, extra_args)
             } else {
                 let pex = NamedTempFile::new()?;
                 let path = pex.path();
                 create_pex(
                     subject,
+                    true,
+                    pythons,
                     wheels,
                     wheel_options,
                     wheels_need_recompress,
@@ -646,7 +851,7 @@ fn build_pex(
                     sh_boot,
                     path,
                 )?;
-                execute_pex(path)
+                execute_pex(path, extra_args)
             }
         }
     }
@@ -670,13 +875,13 @@ fn file_names<'a>(paths: impl ExactSizeIterator<Item = &'a Path>) -> anyhow::Res
 }
 
 struct Wheels<'a> {
-    wheel_files: HashMap<&'a str, PathBuf>,
-    wheel_zips: HashMap<String, ZipArchive<File>>,
+    wheel_files: IndexMap<&'a str, PathBuf>,
+    wheel_zips: IndexMap<String, ZipArchive<File>>,
 }
 
 impl<'a> Wheels<'a> {
-    fn new(wheel_files: HashMap<&'a str, PathBuf>) -> Self {
-        let wheel_zips = HashMap::with_capacity(wheel_files.len());
+    fn new(wheel_files: IndexMap<&'a str, PathBuf>) -> Self {
+        let wheel_zips = IndexMap::with_capacity(wheel_files.len());
         Self {
             wheel_files,
             wheel_zips,
@@ -691,7 +896,7 @@ impl<'a> Wheels<'a> {
         for file_name in file_names {
             paths.push(
                 self.wheel_files
-                    .remove(file_name)
+                    .shift_remove(file_name)
                     .ok_or_else(|| anyhow!("XXX"))?,
             )
         }
@@ -738,6 +943,8 @@ impl<'a> MetadataReader for Wheels<'a> {
 #[allow(clippy::too_many_arguments)]
 fn create_pex(
     subject: Cow<'_, str>,
+    ephemeral: bool,
+    pythons: IndexSet<PythonImplementation>,
     wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
     wheels_need_recompress: bool,
@@ -752,26 +959,31 @@ fn create_pex(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let required_targets = RequiredTargets::for_wheel_files(subject, wheel_files.iter())?;
     let mut targets = required_targets.unique_targets();
-    let all_targets = SimplifiedTarget::all();
     if targets.is_empty() {
-        targets |= *AVAILABLE_TARGETS;
-        if *AVAILABLE_TARGETS != all_targets {
-            warn!(
-                "The {subject} has no platform specific wheels but this pexrc binary only has support \
-                for the following platforms:\n\
-                {available_targets}\n\
-                \n\
-                The {subject} will not run on the following platforms:\n\
-                {missing_targets}\n\
-                \n\
-                If the {subject} needs to run on the missing platforms, use a pexrc binary built with \
-                support for all platforms.\n\
-                One place to find these is in the official releases here:\n\
-                https://github.com/pex-tool/pex.rc/releases/tag/v{VERSION}",
-                subject = required_targets.subject,
-                available_targets = *AVAILABLE_TARGETS,
-                missing_targets = all_targets - *AVAILABLE_TARGETS
-            );
+        targets |= if ephemeral {
+            let current_target = SimplifiedTarget::current()?;
+            enum_set!(current_target)
+        } else {
+            let all_targets = SimplifiedTarget::all();
+            if *AVAILABLE_TARGETS != all_targets {
+                warn!(
+                    "The {subject} has no platform specific wheels but this pexrc binary only has support \
+                    for the following platforms:\n\
+                    {available_targets}\n\
+                    \n\
+                    The {subject} will not run on the following platforms:\n\
+                    {missing_targets}\n\
+                    \n\
+                    If the {subject} needs to run on the missing platforms, use a pexrc binary built with \
+                    support for all platforms.\n\
+                    One place to find these is in the official releases here:\n\
+                    https://github.com/pex-tool/pex.rc/releases/tag/v{VERSION}",
+                    subject = required_targets.subject,
+                    available_targets = *AVAILABLE_TARGETS,
+                    missing_targets = all_targets - *AVAILABLE_TARGETS
+                );
+            }
+            *AVAILABLE_TARGETS
         }
     }
 
@@ -798,6 +1010,7 @@ fn create_pex(
         .collect::<Vec<_>>();
     if packed {
         create_packed_pex(
+            pythons,
             wheels,
             wheel_options,
             wheels_need_recompress,
@@ -809,6 +1022,7 @@ fn create_pex(
         )
     } else {
         create_zipapp(
+            pythons,
             wheels,
             wheel_options,
             wheels_need_recompress,
@@ -823,6 +1037,7 @@ fn create_pex(
 
 #[allow(clippy::too_many_arguments)]
 fn create_packed_pex(
+    pythons: IndexSet<PythonImplementation>,
     wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
     wheels_need_recompress: bool,
@@ -838,19 +1053,36 @@ fn create_packed_pex(
         tempfile::tempdir()
     }?;
 
+    let preferred_python = if pythons.len() == 1 {
+        pythons.into_iter().next()
+    } else {
+        None
+    };
+
+    // TODO: XXX: shebang option.
     let shebang = if sh_boot {
         // TODO: XXX hermetic option.
         let hermetic = true;
-        // TODO: Derive the preferred Python.
-        let _preferred_python: Option<PythonImplementation> = None;
         Cow::Owned(create_sh_boot_shebang(
             "<subject>",
             pex_info,
             hermetic,
-            None,
+            preferred_python,
         )?)
+    } else if let Some(preferred_python) = preferred_python {
+        Cow::Owned(match preferred_python {
+            PythonImplementation::CPython(python) => format!(
+                "#!/usr/bin/env python{major}.{minor}\n",
+                major = python.major,
+                minor = python.minor
+            ),
+            PythonImplementation::PyPy(pypy) => format!(
+                "#!/usr/bin/env pypy{major}.{minor}\n",
+                major = pypy.major,
+                minor = pypy.minor
+            ),
+        })
     } else {
-        // TODO: XXX: shebang option + if not set default selection.
         Cow::Borrowed("#!/usr/bin/env python\n")
     };
 
@@ -926,6 +1158,7 @@ fn create_packed_pex(
 
 #[allow(clippy::too_many_arguments)]
 fn create_zipapp(
+    pythons: IndexSet<PythonImplementation>,
     wheels: Vec<PathBuf>,
     wheel_options: WheelOptions,
     wheels_need_recompress: bool,
@@ -935,32 +1168,6 @@ fn create_zipapp(
     sh_boot: bool,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
-        NamedTempFile::new_in(parent_dir)?
-    } else {
-        NamedTempFile::new()?
-    };
-    if sh_boot {
-        // TODO: XXX hermetic option.
-        let hermetic = true;
-        // TODO: Derive the preferred Python.
-        let _preferred_python: Option<PythonImplementation> = None;
-        let sh_boot_shebang = create_sh_boot_shebang("<subject>", pex_info, hermetic, None)?;
-        dst_zip_fp.write_all(sh_boot_shebang.as_bytes())?;
-    } else {
-        // TODO: XXX: shebang option + if not set default selection.
-        dst_zip_fp.write_all(b"#!/usr/bin/env python\n")?;
-    }
-    let mut dst_zip = ZipWriter::new(&dst_zip_fp);
-
-    let directory_options = SimpleFileOptions::default();
-    let file_options = wheel_options.file_options()?;
-    let deflated_file_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    let stored_file_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-
-    // TODO: XXX: Extract this up earlier.
     let zips = wheels
         .into_par_iter()
         .map(|wheel| {
@@ -985,6 +1192,53 @@ fn create_zipapp(
             }
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
+        NamedTempFile::new_in(parent_dir)?
+    } else {
+        NamedTempFile::new()?
+    };
+
+    let preferred_python = if pythons.len() == 1 {
+        pythons.into_iter().next()
+    } else {
+        None
+    };
+
+    // TODO: XXX: shebang option.
+    if sh_boot {
+        // TODO: XXX hermetic option.
+        let hermetic = true;
+        let sh_boot_shebang =
+            create_sh_boot_shebang("<subject>", pex_info, hermetic, preferred_python)?;
+        dst_zip_fp.write_all(sh_boot_shebang.as_bytes())?;
+    } else if let Some(preferred_python) = preferred_python {
+        match preferred_python {
+            PythonImplementation::CPython(python) => writeln!(
+                dst_zip_fp,
+                "#!/usr/bin/env python{major}.{minor}",
+                major = python.major,
+                minor = python.minor
+            )?,
+            PythonImplementation::PyPy(pypy) => writeln!(
+                dst_zip_fp,
+                "#!/usr/bin/env pypy{major}.{minor}",
+                major = pypy.major,
+                minor = pypy.minor
+            )?,
+        };
+    } else {
+        dst_zip_fp.write_all(b"#!/usr/bin/env python\n")?;
+    }
+
+    let mut dst_zip = ZipWriter::new(&dst_zip_fp);
+
+    let directory_options = SimpleFileOptions::default();
+    let file_options = wheel_options.file_options()?;
+    let deflated_file_options =
+        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let stored_file_options =
+        SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
     for (file_name, zip) in zips {
         dst_zip.start_file(format!(".deps/{file_name}"), stored_file_options)?;
@@ -1028,7 +1282,7 @@ fn create_zipapp(
     Ok(())
 }
 
-fn execute_pex(pex: &Path) -> anyhow::Result<()> {
-    let exit_code = pexrs::boot(None, vec![], pex, vec![], false)?;
+fn execute_pex(pex: &Path, extra_args: Vec<String>) -> anyhow::Result<()> {
+    let exit_code = pexrs::boot(None, vec![], pex, extra_args, false)?;
     process::exit(exit_code)
 }
