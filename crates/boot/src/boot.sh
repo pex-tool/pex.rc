@@ -44,7 +44,7 @@ on_fast_path() {
 }
 
 if on_fast_path; then
-  for python in ${PYTHONS} ; do
+  for python in ${PYTHONS}; do
       if [ -x "${VENV}/sh-boot/base-${python}" ] && [ -x "${VENV}/sh-boot/pex-${python}" ]; then
           # The fast path: We're installed under the PEXRC_ROOT and the venv interpreter to use is
           # embedded in the shebang of our venv pex script; so just execute that script directly.
@@ -56,7 +56,7 @@ if on_fast_path; then
 fi
 
 find_python() {
-    for python in ${PYTHONS} ; do
+    for python in ${PYTHONS}; do
         if command -v "${python}" 2>/dev/null; then
             return
         fi
@@ -69,7 +69,7 @@ python_exe="$(find_python)"
 if [ -n "${python_exe}" ]; then
     if [ -n "${PEX_VERBOSE:-}" ]; then
         echo >&2 "$0 used /bin/sh boot to select python: ${python_exe} for re-exec..."
-        if [ -n "${PEX_VERBOSE:-}" ]; then
+        if [ -n "${PEX_TOOLS:-}" ]; then
           echo >&2 "Running pex to invoke PEX_TOOLS."
         else
           echo >&2 "Running pex to lay itself out under PEXRC_ROOT."
