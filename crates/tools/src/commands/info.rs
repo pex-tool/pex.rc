@@ -3,8 +3,8 @@
 
 use clap::Args;
 use cli::{Json, Output};
-use logging_timer::time;
 use pex::Pex;
+use tracing::instrument;
 
 #[derive(Args)]
 pub(crate) struct InfoArgs {
@@ -15,7 +15,7 @@ pub(crate) struct InfoArgs {
     output: Output,
 }
 
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 pub(crate) fn display(pex: Pex, args: InfoArgs) -> anyhow::Result<()> {
     args.output.configure()?;
 

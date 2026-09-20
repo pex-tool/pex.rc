@@ -10,11 +10,11 @@ use interpreter::{
     SearchPath,
     SelectionStrategy,
 };
-use log::debug;
 use owo_colors::OwoColorize;
 use platform::path_for_terminal_output;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scripts::{IdentifyInterpreter, Scripts};
+use tracing::debug;
 
 #[derive(Args)]
 #[group(skip)]

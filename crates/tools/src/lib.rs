@@ -9,8 +9,10 @@ mod resolve;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use logging_timer::time;
+use colorchoice_clap::ColorChoice;
+use logging::FlushHandle;
 use pex::Pex;
+use tracing::instrument;
 
 use crate::commands::graph::GraphArgs;
 use crate::commands::info::InfoArgs;
@@ -57,21 +59,29 @@ enum Commands {
     Venv(VenvArgs),
 }
 
-#[time("debug", "{}")]
-fn parse_cli(pex: &Path, argv: Vec<String>) -> anyhow::Result<Cli> {
+#[instrument(level = "debug", skip_all)]
+fn parse_cli(pex: &Path, argv: Vec<String>) -> anyhow::Result<(Cli, Vec<FlushHandle>)> {
     let cli = Cli::parse_from(
         [pex.to_string_lossy().into_owned()]
             .iter()
             .chain(argv.iter()),
     );
-    logging::init(cli.verbosity.map(|verbosity| verbosity.log_level_filter()))?;
+    let ansi = match cli.color.color {
+        ColorChoice::Auto => None,
+        ColorChoice::Always => Some(true),
+        ColorChoice::Never => Some(false),
+    };
+    let flush_handles = logging::init(
+        cli.verbosity.map(|verbosity| verbosity.log_level_filter()),
+        ansi,
+    )?;
     cli.color.write_global();
-    Ok(cli)
+    Ok((cli, flush_handles))
 }
 
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 pub fn main(python: Option<&Path>, pex: &Path, argv: Vec<String>) -> anyhow::Result<()> {
-    let cli = parse_cli(pex, argv)?;
+    let (cli, _flush_handles) = parse_cli(pex, argv)?;
     match cli.command {
         Commands::Extract { dest_dir } => extract::unzip(pex, &dest_dir),
         Commands::Graph(args) => graph::create(python, Pex::load(pex)?, args),

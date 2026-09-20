@@ -18,6 +18,7 @@ pub use atomic::{atomic_dir, atomic_file};
 use dtor::dtor;
 pub use fingerprint::{
     DigestingReader,
+    DigestingWriter,
     Fingerprint,
     HashOptions,
     default_digest,
@@ -25,9 +26,8 @@ pub use fingerprint::{
     hash_file,
 };
 pub use key::Key;
-use log::{debug, warn};
-use logging_timer::time;
 use tempfile::TempDir;
+use tracing::{debug, instrument, warn};
 
 pub fn cache_dir(name: &str, alt_name: &str) -> Option<PathBuf> {
     if let Some(cache_dir) = dirs::cache_dir() {
@@ -159,6 +159,7 @@ pub enum CacheDir {
     Interpreter,
     PythonProxy,
     Venv,
+    Wheel,
 }
 
 impl CacheDir {
@@ -171,16 +172,18 @@ impl CacheDir {
             CacheDir::Interpreter => "4",
             CacheDir::PythonProxy => "0",
             CacheDir::Venv => "1",
+            CacheDir::Wheel => "0",
         }
     }
 
-    #[time("debug", "CacheDir.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn path(&self) -> anyhow::Result<PathBuf> {
         Self::root().map(|pexrc_root| {
             match self {
                 CacheDir::Interpreter => pexrc_root.join("interpreters"),
                 CacheDir::PythonProxy => pexrc_root.join("python-proxies"),
                 CacheDir::Venv => pexrc_root.join("venvs"),
+                CacheDir::Wheel => pexrc_root.join("wheels"),
             }
             .join(self.version())
         })

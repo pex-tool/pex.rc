@@ -23,7 +23,6 @@ indexmap = { workspace = true }
 interpreter = { path = "../interpreter" }
 log = { workspace = true }
 logging = { path = "../logging" }
-logging_timer = { workspace = true }
 oneshot = { workspace = true }
 open = { workspace = true }
 owo-colors = { workspace = true }
@@ -45,6 +44,7 @@ tar = { workspace = true }
 target = { path = "../target" }
 tempfile = { workspace = true }
 textwrap = { workspace = true }
+tracing = { workspace = true }
 venv = { path = "../venv" }
 walkdir = { workspace = true }
 zip = { workspace = true }

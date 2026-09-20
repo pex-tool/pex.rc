@@ -10,10 +10,10 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use dashmap::DashMap;
 use indexmap::IndexMap;
-use logging_timer::time;
 use pep440_rs::{Version, VersionSpecifiers};
 use pep508_rs::{ExtraName, PackageName, Requirement, VersionOrUrl};
 use python_platform::PythonPlatform;
+use tracing::instrument;
 use url::Url;
 use wheel::{MetadataDirs, MetadataReader, Tag, WheelDir, WheelFile, WheelMetadata};
 
@@ -69,7 +69,7 @@ impl<'a> CollectWheelMetadata<'a> {
     }
 }
 
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 pub fn resolve_wheels<'a>(
     target: &impl PythonPlatform<'a>,
     requirements: Vec<Requirement<Url>>,

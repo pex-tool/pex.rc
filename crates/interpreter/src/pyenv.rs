@@ -14,9 +14,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, bail};
 use fs_err::File;
-use log::warn;
-use logging_timer::time;
 use python_platform::Implementation;
+use tracing::{instrument, warn};
 
 pub(crate) struct Pyenv(PathBuf);
 
@@ -25,7 +24,7 @@ impl Pyenv {
         env::var_os("PYENV_ROOT").map(PathBuf::from).map(Self)
     }
 
-    #[time("debug", "Pyenv.{}")]
+    #[instrument(level = "debug", skip_all, fields(path = %path.display()))]
     pub(crate) fn resolve_if_shim<'a>(&self, path: &'a Path) -> anyhow::Result<Cow<'a, Path>> {
         if let Ok(rel_path) = path.strip_prefix(&self.0)
             && let Some(component) = rel_path.components().next()

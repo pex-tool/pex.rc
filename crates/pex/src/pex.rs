@@ -16,8 +16,6 @@ use fs_err::File;
 use indexmap::IndexMap;
 use interpreter::{Interpreter, InterpreterConstraints, SearchPath};
 use itertools::Itertools;
-use log::{Level, debug, warn};
-use logging_timer::{time, timer};
 use pep508_rs::Requirement;
 use python_platform::PythonPlatform;
 use rayon::prelude::*;
@@ -25,6 +23,7 @@ use resolver::dependency_configuration::DependencyConfiguration;
 use resolver::{CollectWheelMetadata, ResolvedWheel};
 use scripts::{IdentifyInterpreter, Scripts};
 use strum_macros::{AsRefStr, EnumString};
+use tracing::{debug, debug_span, instrument, warn};
 use url::Url;
 use walkdir::{DirEntry, WalkDir};
 use wheel::{MetadataDirs, MetadataReader, WheelFile};
@@ -137,7 +136,7 @@ pub struct Resolve<'a> {
 }
 
 impl<'a> Pex<'a> {
-    #[time("debug", "Pex.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn load(path: &'a Path) -> anyhow::Result<Self> {
         match Layout::load(path)? {
             layout @ (Layout::Loose | Layout::Packed) => {
@@ -156,8 +155,8 @@ impl<'a> Pex<'a> {
             Layout::ZipApp => {
                 let zip_fp = File::open(path)?;
                 let mut zip = {
-                    let _timer = timer!(Level::Debug; "Open PEX zip", "{}", path.display());
-                    ZipArchive::new(BufReader::new(zip_fp))?
+                    debug_span!("Open PEX zip", path=%path.display())
+                        .in_scope(|| ZipArchive::new(BufReader::new(zip_fp)))?
                 };
                 let zip_file = zip.by_name_ex("PEX-INFO")?;
                 let size = zip_file.size();
@@ -191,7 +190,7 @@ impl<'a> Pex<'a> {
         DependencyConfiguration::parse(pex_info.excluded.as_slice(), pex_info.overridden.as_slice())
     }
 
-    #[time("debug", "Pex.{}")]
+    #[instrument(level = "debug", skip_all)]
     fn resolve_wheels(
         &'a self,
         target: &impl PythonPlatform<'a>,
@@ -304,7 +303,7 @@ impl<'a> Pex<'a> {
             }))
     }
 
-    #[time("debug", "Pex.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn resolve(
         &'a self,
         python_exe: Option<&Path>,

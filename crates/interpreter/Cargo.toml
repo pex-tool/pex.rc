@@ -13,8 +13,6 @@ indexmap = { workspace = true }
 pep440_rs = { workspace = true }
 pep508_rs = { workspace = true }
 fs-err = { workspace = true }
-log = { workspace = true }
-logging_timer = { workspace = true }
 ouroboros = { workspace = true }
 platform = { path = "../platform" }
 python-platform = { path = "../python-platform" }
@@ -24,6 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 time = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
 wheel = { path = "../wheel" }
 which = { workspace = true }

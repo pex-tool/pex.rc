@@ -4,36 +4,37 @@
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::io::{BufReader, Write as _};
+use std::io::{BufReader, Seek, Write as _};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::{io, process};
 
 use anyhow::{anyhow, bail};
 use boot::{create_sh_boot_shebang, inject_boot, write_boot};
-use cache::{DigestingReader, default_digest};
+use cache::{CacheDir, DigestingWriter, Fingerprint, atomic_file};
 use clap::{ArgAction, Args};
 use const_format::concatcp;
+use digest::Digest;
 use enumset::enum_set;
 use fs_err as fs;
 use fs_err::File;
 use indexmap::{IndexMap, IndexSet, indexmap, indexset};
 use interpreter::Interpreter;
 use itertools::Itertools;
-use log::{Level, warn};
-use logging_timer::{time, timer};
 use pep508_rs::Requirement;
 use pex::{PexInfo, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use repackage::{WheelOptions, recompress_zipped_whl};
+use repackage::{WheelOptions, recompress_zipped_whl_to_file};
 use resolver::dependency_configuration::DependencyConfiguration;
 use resolver::resolve_wheels;
 use scripts::{IdentifyInterpreter, Scripts};
 use serde_json::json;
+use sha2::Sha256;
 use target::SimplifiedTarget;
 use tempfile::NamedTempFile;
+use tracing::{debug_span, instrument, warn};
 use url::Url;
 use venv::{InstallPaths, InstalledWheel, Virtualenv, collect_installed_wheels};
 use wheel::{EntryPoints, MetadataDirs, MetadataReader, WheelFile};
@@ -242,14 +243,6 @@ impl Build {
             .or_else(|| self.script.map(PexEntryPoint::Script));
         let wheel_options = self.compression_args.into_wheel_options(None);
 
-        let tmp_dest_dir = if let Some(output) = self.output.as_deref()
-            && let Some(parent) = output.parent()
-        {
-            tempfile::tempdir_in(parent)?
-        } else {
-            tempfile::tempdir()?
-        };
-
         if let Some(pex_info) = self.pex_info {
             let pex_info_file = File::open(&pex_info)?;
             let size = pex_info_file.metadata()?.len();
@@ -277,13 +270,12 @@ impl Build {
                 });
                 self.requirements
             };
-            let (pythons, wheels, wheels_need_recompress) = resolve_wheel_files(
+            let (pythons, wheels) = resolve_wheel_files(
                 self.targets,
                 &wheel_options,
                 installed_distributions,
                 requirements,
                 pex_info.raw(),
-                tmp_dest_dir.path(),
             )?;
             pex_info.with_raw_mut(|raw_pex_info| {
                 adjust_requirements(raw_pex_info, &wheels)?;
@@ -294,7 +286,6 @@ impl Build {
                     pythons,
                     wheels,
                     wheel_options,
-                    wheels_need_recompress,
                     raw_pex_info,
                     self.packed,
                     self.sh_boot,
@@ -316,13 +307,12 @@ impl Build {
                     .collect(),
                 ..Default::default()
             };
-            let (pythons, wheels, wheels_need_recompress) = resolve_wheel_files(
+            let (pythons, wheels) = resolve_wheel_files(
                 self.targets,
                 &wheel_options,
                 installed_distributions,
                 self.requirements,
                 &pex_info,
-                tmp_dest_dir.path(),
             )?;
             adjust_requirements(&mut pex_info, &wheels)?;
             if let Some(entry_point) = entry_point {
@@ -332,7 +322,6 @@ impl Build {
                 pythons,
                 wheels,
                 wheel_options,
-                wheels_need_recompress,
                 &mut pex_info,
                 self.packed,
                 self.sh_boot,
@@ -343,11 +332,11 @@ impl Build {
     }
 }
 
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 fn resolve_entry_point(
     pex_info: &mut RawPexInfo,
     entry_point: PexEntryPoint,
-    wheels: &[PathBuf],
+    wheels: &[FingerprintedWheel],
 ) -> anyhow::Result<()> {
     match entry_point {
         PexEntryPoint::EntryPoint(ep) => pex_info.entry_point = Some(Cow::Owned(ep)),
@@ -356,11 +345,12 @@ fn resolve_entry_point(
                 .into_par_iter()
                 .map(|wheel| {
                     let wheel_file = wheel
+                        .path
                         .file_name()
                         .and_then(OsStr::to_str)
                         .ok_or_else(|| anyhow!("XXX"))
                         .and_then(WheelFile::parse_file_name)?;
-                    let mut whl = ZipArchive::new(File::open(wheel)?)?;
+                    let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
                     let metadata_dirs = MetadataDirs::locate_in_zip(
                         &whl,
                         "",
@@ -392,11 +382,11 @@ fn resolve_entry_point(
                 pex_info.script = Some(Cow::Owned(script))
             } else {
                 let mut entry_points = IndexMap::with_capacity(matches.len());
-                for (wheel_path, entry_point) in matches {
+                for (wheel, entry_point) in matches {
                     entry_points
                         .entry(entry_point)
                         .or_insert_with(IndexSet::new)
-                        .insert(wheel_path);
+                        .insert(&wheel.path);
                 }
                 if entry_points.len() > 1 {
                     let mut msg = format!(
@@ -429,13 +419,18 @@ fn resolve_entry_point(
     Ok(())
 }
 
-fn adjust_requirements(pex_info: &mut RawPexInfo, wheels: &[PathBuf]) -> anyhow::Result<()> {
+fn adjust_requirements(
+    pex_info: &mut RawPexInfo,
+    wheels: &[FingerprintedWheel],
+) -> anyhow::Result<()> {
     if pex_info.requirements.is_empty() {
         pex_info.requirements.extend(
             wheels
                 .iter()
-                .map(|path| {
-                    path.file_name()
+                .map(|wheel| {
+                    wheel
+                        .path
+                        .file_name()
                         .and_then(OsStr::to_str)
                         .ok_or_else(|| anyhow!("XXX"))
                         .and_then(WheelFile::parse_file_name)
@@ -447,15 +442,14 @@ fn adjust_requirements(pex_info: &mut RawPexInfo, wheels: &[PathBuf]) -> anyhow:
     Ok(())
 }
 
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 fn resolve_wheel_files(
     targets: Vec<PythonPlatform>,
     wheel_options: &WheelOptions,
     installed_distributions: Option<InstalledDistributions>,
     requirements: Vec<Requirement<Url>>,
     pex_info: &RawPexInfo,
-    dest_dir: &Path,
-) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<PathBuf>, bool)> {
+) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<FingerprintedWheel>)> {
     if let Some(distributions) = installed_distributions {
         match distributions {
             InstalledDistributions::Venvs(venvs) => {
@@ -468,9 +462,8 @@ fn resolve_wheel_files(
                         .map(|path| Virtualenv::load(Cow::Owned(path), &mut Scripts::Embedded))
                         .collect::<anyhow::Result<Vec<_>>>()?,
                     pex_info,
-                    dest_dir,
                 )?;
-                Ok((pythons, wheels, false))
+                Ok((pythons, wheels))
             }
             InstalledDistributions::Wheels(installed_wheels) => {
                 let mut wheels = Vec::with_capacity(installed_wheels.len());
@@ -490,11 +483,17 @@ fn resolve_wheel_files(
                 }
                 let (pythons, wheels) =
                     resolve_wheels_from_files(targets, requirements, wheels, pex_info)?;
-                Ok((pythons, wheels, true))
+                let fingerprinted_wheels = wheels
+                    .into_par_iter()
+                    .map(|wheel| cache_wheel(&wheel, wheel_options))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                Ok((pythons, fingerprinted_wheels))
             }
         }
+    } else if requirements.is_empty() {
+        Ok((indexset![], vec![]))
     } else {
-        Ok((indexset![], vec![], false))
+        bail!("Cannot resolve requirements without either `--wheels` or `--venv`.")
     }
 }
 
@@ -529,14 +528,13 @@ fn resolve_wheels_from_venvs(
     requirements: Vec<Requirement<Url>>,
     venvs: Vec<Virtualenv>,
     pex_info: &RawPexInfo,
-    dest_dir: &Path,
-) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<PathBuf>)> {
+) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<FingerprintedWheel>)> {
     let (venvs, mut repositories) = {
         let inventory = venvs
             .into_par_iter()
             .map(inventory_venv)
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let mut venvs = IndexMap::new();
+        let mut venvs = IndexMap::with_capacity(inventory.len());
         let mut repositories = Vec::with_capacity(inventory.len());
         for (venv, repository) in inventory {
             venvs.insert(venv.prefix().join(&venv.site_packages_relpath), venv);
@@ -670,27 +668,130 @@ fn resolve_wheels_from_venvs(
         wheel_paths.append(
             &mut installed_wheels
                 .into_par_iter()
-                .map(|installed_wheel| {
-                    pack_wheel(installed_wheel, &install_paths, wheel_options, dest_dir)
-                })
-                .collect::<anyhow::Result<Vec<PathBuf>>>()?,
+                .map(|installed_wheel| pack_wheel(installed_wheel, &install_paths, wheel_options))
+                .collect::<anyhow::Result<Vec<_>>>()?,
         );
     }
     Ok((pythons, wheel_paths))
+}
+
+fn wheel_path(file_name: &str, wheel_options: &WheelOptions) -> anyhow::Result<PathBuf> {
+    let options_dir_name = match (
+        wheel_options.compression_method,
+        wheel_options.compression_level,
+    ) {
+        (CompressionMethod::Stored, None) => Cow::Borrowed("stored-default"),
+        (CompressionMethod::Deflated, None) => Cow::Borrowed("deflated-default"),
+        (CompressionMethod::Zstd, None) => Cow::Borrowed("zstd-default"),
+        (CompressionMethod::Stored, Some(level)) => Cow::Owned(format!("stored-{level}")),
+        (CompressionMethod::Deflated, Some(level)) => Cow::Owned(format!("deflated-{level}")),
+        (CompressionMethod::Zstd, Some(level)) => Cow::Owned(format!("zstd-{level}")),
+        _ => bail!(
+            "Unsupported compression method {method:?}",
+            method = wheel_options.compression_method
+        ),
+    };
+    let mut whl_path = CacheDir::Wheel.path()?.join(options_dir_name.as_ref());
+    whl_path.push(file_name);
+    Ok(whl_path)
+}
+
+struct FingerprintedWheel {
+    path: PathBuf,
+    file_name: String,
+    fingerprint: Fingerprint,
+}
+
+type WheelDigestAlgorithm = Sha256;
+static ALGORITHM_NAME: &str = "sha256";
+
+fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<FingerprintedWheel> {
+    let time_cache = debug_span!("cache_wheel", wheel=%wheel.display());
+    let _time_cache = time_cache.enter();
+    let wheel_file = WheelFile::parse_file_name(
+        wheel
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| anyhow!("XXX"))?,
+    )?;
+    let wheel_path = wheel_path(wheel_file.file_name, wheel_options)?;
+    let fingerprint_path = wheel_path.with_added_extension(ALGORITHM_NAME);
+    if let Some(fingerprint) = atomic_file(&wheel_path, |whl_file| {
+        let whl_zip = ZipArchive::new(File::open(wheel)?)?;
+        let mut dest = DigestingWriter::new(WheelDigestAlgorithm::new(), whl_file);
+        recompress_zipped_whl_to_file(whl_zip, &mut dest, wheel_options)?;
+        let (mut whl_file, fingerprint, _) = dest.into_parts();
+        whl_file.rewind()?;
+        let mut fingerprint_file = tempfile::Builder::new()
+            .prefix(wheel_file.file_name)
+            .suffix(ALGORITHM_NAME)
+            .tempfile_in(
+                fingerprint_path
+                    .parent()
+                    .expect("The wheel and fingerprint are stored in a cache directory."),
+            )?;
+        fingerprint.store(&mut fingerprint_file)?;
+        fingerprint_file.persist(&fingerprint_path)?;
+        Ok(fingerprint)
+    })? {
+        Ok(FingerprintedWheel {
+            path: wheel_path,
+            file_name: wheel_file.file_name.to_string(),
+            fingerprint,
+        })
+    } else {
+        let mut fingerprint_file = File::open(fingerprint_path)?;
+        let fingerprint =
+            Fingerprint::load(&mut fingerprint_file, WheelDigestAlgorithm::output_size())?;
+        Ok(FingerprintedWheel {
+            path: wheel_path,
+            file_name: wheel_file.file_name.to_string(),
+            fingerprint,
+        })
+    }
 }
 
 fn pack_wheel(
     wheel: &InstalledWheel,
     install_paths: &InstallPaths,
     wheel_options: &WheelOptions,
-    dest_dir: &Path,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<FingerprintedWheel> {
     let wheel_file = wheel.file_name()?;
-    let _time_pack = timer!(Level::Debug; "pack_wheel", "{wheel_file}");
-    let whl_path = dest_dir.join(wheel_file);
-    let mut whl_file = File::create_new(&whl_path)?;
-    wheel.pack(install_paths, wheel_options, &mut whl_file)?;
-    Ok(whl_path)
+    let time_pack = debug_span!("pack_wheel", wheel_file = wheel_file);
+    let _time_pack = time_pack.enter();
+    let wheel_path = wheel_path(&wheel_file, wheel_options)?;
+    let fingerprint_path = wheel_path.with_added_extension(ALGORITHM_NAME);
+    if let Some(fingerprint) = atomic_file(&wheel_path, |whl_file| {
+        let mut digester = DigestingWriter::new(WheelDigestAlgorithm::new(), whl_file);
+        wheel.pack(install_paths, wheel_options, &mut digester)?;
+        let fingerprint = digester.into_fingerprint();
+        let mut fingerprint_file = tempfile::Builder::new()
+            .prefix(&wheel_file)
+            .suffix(ALGORITHM_NAME)
+            .tempfile_in(
+                fingerprint_path
+                    .parent()
+                    .expect("The wheel and fingerprint are stored in a cache directory."),
+            )?;
+        fingerprint.store(&mut fingerprint_file)?;
+        fingerprint_file.persist(&fingerprint_path)?;
+        Ok(fingerprint)
+    })? {
+        Ok(FingerprintedWheel {
+            path: wheel_path,
+            file_name: wheel_file,
+            fingerprint,
+        })
+    } else {
+        let mut fingerprint_file = File::open(fingerprint_path)?;
+        let fingerprint =
+            Fingerprint::load(&mut fingerprint_file, WheelDigestAlgorithm::output_size())?;
+        Ok(FingerprintedWheel {
+            path: wheel_path,
+            file_name: wheel_file,
+            fingerprint,
+        })
+    }
 }
 
 type Repository = (IndexMap<String, InstalledWheel>, VenvRepository);
@@ -790,12 +891,11 @@ fn resolve_wheels_from_files(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 fn build_pex(
     pythons: IndexSet<PythonImplementation>,
-    wheels: Vec<PathBuf>,
+    wheels: Vec<FingerprintedWheel>,
     wheel_options: WheelOptions,
-    wheels_need_recompress: bool,
     pex_info: &mut RawPexInfo,
     packed: bool,
     sh_boot: bool,
@@ -811,7 +911,6 @@ fn build_pex(
                 pythons,
                 wheels,
                 wheel_options,
-                wheels_need_recompress,
                 pex_info,
                 packed,
                 sh_boot,
@@ -829,7 +928,6 @@ fn build_pex(
                     pythons,
                     wheels,
                     wheel_options,
-                    wheels_need_recompress,
                     pex_info,
                     packed,
                     sh_boot,
@@ -845,7 +943,6 @@ fn build_pex(
                     pythons,
                     wheels,
                     wheel_options,
-                    wheels_need_recompress,
                     pex_info,
                     packed,
                     sh_boot,
@@ -945,15 +1042,14 @@ fn create_pex(
     subject: Cow<'_, str>,
     ephemeral: bool,
     pythons: IndexSet<PythonImplementation>,
-    wheels: Vec<PathBuf>,
+    wheels: Vec<FingerprintedWheel>,
     wheel_options: WheelOptions,
-    wheels_need_recompress: bool,
     pex_info: &mut RawPexInfo,
     packed: bool,
     sh_boot: bool,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let wheel_files = file_names(wheels.iter().map(AsRef::as_ref))?
+    let wheel_files = file_names(wheels.iter().map(|wheel| wheel.path.as_path()))?
         .into_iter()
         .map(WheelFile::parse_file_name)
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1009,23 +1105,12 @@ fn create_pex(
         )
         .collect::<Vec<_>>();
     if packed {
-        create_packed_pex(
-            pythons,
-            wheels,
-            wheel_options,
-            wheels_need_recompress,
-            pex_info,
-            clibs,
-            proxies,
-            sh_boot,
-            path,
-        )
+        create_packed_pex(pythons, wheels, pex_info, clibs, proxies, sh_boot, path)
     } else {
         create_zipapp(
             pythons,
             wheels,
             wheel_options,
-            wheels_need_recompress,
             pex_info,
             clibs,
             proxies,
@@ -1038,9 +1123,7 @@ fn create_pex(
 #[allow(clippy::too_many_arguments)]
 fn create_packed_pex(
     pythons: IndexSet<PythonImplementation>,
-    wheels: Vec<PathBuf>,
-    wheel_options: WheelOptions,
-    wheels_need_recompress: bool,
+    wheels: Vec<FingerprintedWheel>,
     pex_info: &mut RawPexInfo,
     clibs: Vec<&Binary>,
     proxies: Vec<&Binary>,
@@ -1086,40 +1169,13 @@ fn create_packed_pex(
         Cow::Borrowed("#!/usr/bin/env python\n")
     };
 
-    let zips = wheels
-        .into_par_iter()
-        .map(|wheel| {
-            if wheels_need_recompress {
-                let deps_dir = tempfile::tempdir()?;
-                let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
-                let whl_file = WheelFile::parse_file_name(
-                    wheel
-                        .file_name()
-                        .and_then(OsStr::to_str)
-                        .ok_or_else(|| anyhow!("XXX"))?,
-                )?;
-                recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
-                    .map(|file| (whl_file.file_name.to_string(), file))
-            } else {
-                let file_name = wheel
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .ok_or_else(|| anyhow!("YYY"))?
-                    .to_owned();
-                Ok((file_name, File::open(wheel)?))
-            }
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
     let deps_dir = dest_dir.path().join(".deps");
     fs::create_dir(&deps_dir)?;
-    for (file_name, zip) in zips {
-        let mut src = DigestingReader::new(default_digest(), zip);
-        let mut dst_zip = File::create_new(deps_dir.join(&file_name))?;
-        io::copy(&mut src, &mut dst_zip)?;
+    for wheel in wheels {
+        platform::link_or_copy(wheel.path, deps_dir.join(&wheel.file_name))?;
         pex_info.distributions.insert(
-            Cow::Owned(file_name),
-            Cow::Owned(src.into_fingerprint().hex_digest()),
+            Cow::Owned(wheel.file_name),
+            Cow::Owned(wheel.fingerprint.hex_digest()),
         );
     }
     pex_info.deps_are_wheel_files = true;
@@ -1159,40 +1215,14 @@ fn create_packed_pex(
 #[allow(clippy::too_many_arguments)]
 fn create_zipapp(
     pythons: IndexSet<PythonImplementation>,
-    wheels: Vec<PathBuf>,
+    wheels: Vec<FingerprintedWheel>,
     wheel_options: WheelOptions,
-    wheels_need_recompress: bool,
     pex_info: &mut RawPexInfo,
     clibs: Vec<&Binary>,
     proxies: Vec<&Binary>,
     sh_boot: bool,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let zips = wheels
-        .into_par_iter()
-        .map(|wheel| {
-            if wheels_need_recompress {
-                let deps_dir = tempfile::tempdir()?;
-                let whl_zip = ZipArchive::new(File::open(&wheel)?)?;
-                let whl_file = WheelFile::parse_file_name(
-                    wheel
-                        .file_name()
-                        .and_then(OsStr::to_str)
-                        .ok_or_else(|| anyhow!("XXX"))?,
-                )?;
-                recompress_zipped_whl(whl_zip, &whl_file, &wheel_options, deps_dir.path())
-                    .map(|file| (whl_file.file_name.to_string(), file))
-            } else {
-                let file_name = wheel
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .ok_or_else(|| anyhow!("YYY"))?
-                    .to_owned();
-                Ok((file_name, File::open(wheel)?))
-            }
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
     let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
         NamedTempFile::new_in(parent_dir)?
     } else {
@@ -1240,13 +1270,13 @@ fn create_zipapp(
     let stored_file_options =
         SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
-    for (file_name, zip) in zips {
-        dst_zip.start_file(format!(".deps/{file_name}"), stored_file_options)?;
-        let mut src = DigestingReader::new(default_digest(), zip);
+    for wheel in wheels {
+        dst_zip.start_file(format!(".deps/{}", wheel.file_name), stored_file_options)?;
+        let mut src = File::open(wheel.path)?;
         io::copy(&mut src, &mut dst_zip)?;
         pex_info.distributions.insert(
-            Cow::Owned(file_name),
-            Cow::Owned(src.into_fingerprint().hex_digest()),
+            Cow::Owned(wheel.file_name),
+            Cow::Owned(wheel.fingerprint.hex_digest()),
         );
     }
     pex_info.deps_are_wheel_files = true;

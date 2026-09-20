@@ -12,10 +12,10 @@ use std::sync::LazyLock;
 
 use anyhow::bail;
 use indexmap::IndexSet;
-use log::debug;
 use pep440_rs::{Operator, Version, VersionSpecifier, VersionSpecifiers};
 use pep508_rs::{ExtraName, MarkerTree, PackageName, Requirement, VersionOrUrl};
 use python_platform::{CPythonImplementation, PythonImplementation};
+use tracing::debug;
 use url::Url;
 
 #[cfg(unix)]

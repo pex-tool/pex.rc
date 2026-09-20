@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::bail;
 use indexmap::{IndexSet, indexset};
-use logging_timer::time;
 use same_file::is_same_file;
+use tracing::instrument;
 
 #[derive(Clone)]
 pub struct SearchPath {
@@ -32,7 +32,7 @@ impl SearchPath {
         }
     }
 
-    #[time("debug", "SearchPath.{}")]
+    #[instrument(level = "debug")]
     pub fn from_env() -> anyhow::Result<Self> {
         let (pex_python, python_exe) = if let Some(pex_python) = env::var_os("PEX_PYTHON") {
             let python = PathBuf::from(pex_python);

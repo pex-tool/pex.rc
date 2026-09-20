@@ -9,11 +9,11 @@ use anyhow::anyhow;
 use cache::Fingerprint;
 use indexmap::IndexMap;
 use interpreter::SelectionStrategy;
-use logging_timer::time;
 use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tracing::instrument;
 use wheel::WheelFile;
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
@@ -137,7 +137,7 @@ pub struct PexInfo {
 }
 
 impl PexInfo {
-    #[time("debug", "PexInfo.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn parse<'a>(
         contents: impl Read,
         size: u64,

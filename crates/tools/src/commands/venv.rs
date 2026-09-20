@@ -15,12 +15,12 @@ use clap::builder::PossibleValue;
 use clap::{Args, ValueEnum};
 use fs_err as fs;
 use interpreter::SearchPath;
-use log::warn;
 use pep508_rs::PackageName;
 use pex::{Layout, Pex, PexPath};
 use python_proxy::ProxySource;
 use resolver::CollectWheelMetadata;
 use shell_quote::Quote;
+use tracing::warn;
 use venv::virtualenv::FileSystemLinker;
 use venv::{Provenance, Virtualenv, venv_pex};
 

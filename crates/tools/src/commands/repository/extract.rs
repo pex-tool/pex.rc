@@ -20,7 +20,6 @@ use flate2::write::GzEncoder;
 use fs_err as fs;
 use indexmap::IndexSet;
 use interpreter::{Interpreter, InterpreterConstraints, SearchPath, SelectionStrategy};
-use log::warn;
 use pex::{
     Layout,
     Pex,
@@ -33,6 +32,7 @@ use platform::path_for_terminal_output;
 use repackage::{WheelOptions, repackage_wheels};
 use scripts::IdentifyInterpreter;
 use tar::Header;
+use tracing::warn;
 use zip::{CompressionMethod, ZipArchive};
 
 #[derive(Args)]
