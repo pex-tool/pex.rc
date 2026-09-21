@@ -23,3 +23,4 @@ venv = { path = "../venv" }
 
 [features]
 tools = ["dep:tools"]
+profiling = ["logging/profiling"]

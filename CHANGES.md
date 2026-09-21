@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.24.0
+
+This release adds support for flame graph profiles by adding `PEXRC_FLAME_PROFILE=<path>` for both
+`pexrc` runs and PEX runs. These can be processed for viewing using the `inferno-flamegraph` tool
+from the `inferno` crate.
+
+Additionally, profiling support is now opt in via the `profiling` feature which is supported by the
+`package` tool with the `--enable-profiling` option.
+
 ## 0.23.0
 
 This release introduces a wheel cache for improved `pexrc -X build` performance along with improved

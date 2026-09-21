@@ -106,6 +106,9 @@ struct Cli {
     #[arg(short = 't', visible_alias = "tools", long, default_value = "false")]
     include_tools: bool,
 
+    #[arg(long, default_value = "false")]
+    enable_profiling: bool,
+
     #[arg(short = 'o', long)]
     dist_dir: Option<PathBuf>,
 
@@ -173,15 +176,26 @@ fn main() -> anyhow::Result<()> {
         (profile, None)
     };
 
-    let mut env = vec![("PEXRC_TARGETS", "all")];
+    let mut args = vec![];
+    let mut envs = vec![("PEXRC_TARGETS", "all".to_string())];
+    let mut clib_features = vec![];
     if cli.include_tools {
-        env.push(("PEXRC_CLIB_FEATURES", "tools"));
+        clib_features.push("tools");
+    }
+    if cli.enable_profiling {
+        clib_features.push("profiling");
+        args.push("--features");
+        args.push("profiling");
+    }
+    if !clib_features.is_empty() {
+        envs.push(("PEXRC_CLIB_FEATURES", clib_features.join(",")));
     }
 
     let built = if cli.targets.is_empty() {
         let result = Command::new(cargo)
             .args(["build", "--profile", profile])
-            .envs(env)
+            .args(args)
+            .envs(envs)
             .spawn()?
             .wait()?;
         if !result.success() {
@@ -207,7 +221,7 @@ fn main() -> anyhow::Result<()> {
             .collect::<Vec<_>>();
         if !zigbuild_targets.is_empty() {
             let mut command = Command::new(cargo);
-            command.args(["zigbuild", "--profile", profile]);
+            command.args(["zigbuild", "--profile", profile]).args(args);
             for target in zigbuild_targets {
                 command.args(["--target", target.zigbuild_target()]);
                 built.push((
@@ -218,7 +232,7 @@ fn main() -> anyhow::Result<()> {
                     target.fully_qualified_binary_name("pexrc", profile_target_suffix)?,
                 ));
             }
-            command.envs(env.clone());
+            command.envs(envs.clone());
             for found_tool in &found_tools {
                 command.env(found_tool.env_var, &found_tool.path);
             }
