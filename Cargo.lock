@@ -1837,11 +1837,15 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "logging"
 version = "0.0.0"
 dependencies = [
+ "anstream",
  "anyhow",
  "env_filter",
+ "fs-err",
  "log",
+ "owo-colors",
  "tracing",
  "tracing-chrome",
+ "tracing-flame",
  "tracing-subscriber",
 ]
 
@@ -2266,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -3743,7 +3747,6 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
- "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -3779,6 +3782,17 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-flame"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bae117ee14789185e129aaee5d93750abe67fdc5a9a62650452bfe4e122a3a9"
+dependencies = [
+ "lazy_static",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

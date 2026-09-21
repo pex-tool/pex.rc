@@ -15,3 +15,4 @@ pexrs = { path = "../pexrs" }
 
 [features]
 tools = ["pexrs/tools"]
+profiling = ["pexrs/profiling"]

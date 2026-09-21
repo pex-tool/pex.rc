@@ -94,16 +94,24 @@ pub fn boot(
     argv: Vec<String>,
     init_logging: bool,
 ) -> anyhow::Result<i32> {
-    #[cfg(feature = "tools")]
     if let Ok(tools) = env::var("PEX_TOOLS")
         && tools == "1"
     {
-        if let Err(err) = tools::main(python, pex, argv) {
-            eprintln!("{err}");
+        #[cfg(feature = "tools")]
+        {
+            if let Err(err) = tools::main(python, pex, argv) {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+        #[cfg(not(feature = "tools"))]
+        {
+            eprintln!("This PEX was not built with PEX_TOOLS support!");
             std::process::exit(1);
         }
-        std::process::exit(0);
     }
+
     let _flush_handles = if init_logging {
         Some(logging::init_default()?)
     } else {

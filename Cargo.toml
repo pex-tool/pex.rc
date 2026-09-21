@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.23.0"
+version = "0.24.0"
 edition = { workspace = true }
 publish = false
 
@@ -213,9 +213,7 @@ tempfile = "3.27"
 textwrap = "0.16"
 time = "0.3"
 toml = "1.1"
-tracing = { version = "0.1", features = ["attributes", "log-always"] }
-tracing-chrome = "0.7"
-tracing-subscriber = {  version = "0.3", features = ["time"] }
+tracing = { version = "0.1", features = ["attributes"] }
 url = "2.5"
 # N.B.: We take whatever version is supported by pep440_rs - it uses an optional dependency but
 # does not have a feature to activate the dep.
@@ -282,3 +280,7 @@ wheel = { path = "crates/wheel" }
 zip = { workspace = true }
 zip-ext = { path = "crates/zip-ext" }
 zstd = { workspace = true }
+
+[features]
+tools = []
+profiling = ["logging/profiling"]

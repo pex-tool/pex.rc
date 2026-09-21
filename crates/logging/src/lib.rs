@@ -3,13 +3,14 @@
 
 #![deny(clippy::all)]
 
-use std::path::PathBuf;
+mod profiling;
+
+use std::any::Any;
 use std::str::FromStr;
 use std::{env, io};
 
 use anyhow::anyhow;
 use log::LevelFilter;
-use tracing_chrome::{ChromeLayerBuilder, FlushGuard, TraceStyle};
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter as TracingLevelFiler;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -19,17 +20,17 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 const DEFAULT_LEVEL: LevelFilter = LevelFilter::Warn;
 
-pub fn init_default() -> anyhow::Result<Vec<FlushHandle>> {
+#[derive(Default)]
+pub struct FlushGuard {
+    _guards: Vec<Box<dyn Any>>,
+}
+
+pub fn init_default() -> anyhow::Result<FlushGuard> {
     init(None, None)
 }
 
-pub enum FlushHandle {
-    ChromeProfile(FlushGuard),
-}
-
-pub fn init(level: Option<LevelFilter>, ansi: Option<bool>) -> anyhow::Result<Vec<FlushHandle>> {
-    let builder = tracing_subscriber::registry();
-
+pub fn init(level: Option<LevelFilter>, ansi: Option<bool>) -> anyhow::Result<FlushGuard> {
+    let mut layers = Vec::new();
     let mut log_layer = tracing_subscriber::fmt::layer()
         .with_writer(io::stderr)
         .with_thread_names(true)
@@ -44,23 +45,15 @@ pub fn init(level: Option<LevelFilter>, ansi: Option<bool>) -> anyhow::Result<Ve
     } else {
         calculate_level()?
     };
-    let builder = builder.with(log_layer.with_filter(as_tracing_level_filter(level_filter)));
+    layers.push(
+        log_layer
+            .with_filter(as_tracing_level_filter(level_filter))
+            .boxed(),
+    );
 
-    if let Some(profile_path) = env::var_os("PEXRC_JSON_PROFILE") {
-        let (chrome_layer, flush_guard) = ChromeLayerBuilder::new()
-            .file(PathBuf::from(profile_path))
-            .include_args(true)
-            .include_locations(true)
-            .trace_style(TraceStyle::Threaded)
-            .build();
-        builder
-            .with(chrome_layer.with_filter(TracingLevelFiler::TRACE))
-            .init();
-        Ok(vec![FlushHandle::ChromeProfile(flush_guard)])
-    } else {
-        builder.init();
-        Ok(vec![])
-    }
+    let flush_guard = profiling::configure(&mut layers)?;
+    tracing_subscriber::registry().with(layers).init();
+    Ok(flush_guard)
 }
 
 fn as_tracing_level_filter(level_filter: LevelFilter) -> TracingLevelFiler {
