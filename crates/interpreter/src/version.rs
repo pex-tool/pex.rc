@@ -3,8 +3,8 @@
 
 use std::sync::LazyLock;
 
-use log::warn;
 use time::Month;
+use tracing::warn;
 
 pub static LATEST_STABLE: LazyLock<(u8, u8)> = LazyLock::new(|| {
     let minor = {

@@ -6,12 +6,15 @@ use std::path::Path;
 use anyhow::anyhow;
 use fs_err as fs;
 use fs_err::File;
-use logging_timer::time;
+use tracing::instrument;
 
-#[time("debug", "atomic.{}")]
-pub fn atomic_file(path: &Path, func: impl Fn(File) -> anyhow::Result<()>) -> anyhow::Result<File> {
+#[instrument(level = "debug", skip(func))]
+pub fn atomic_file<T>(
+    path: &Path,
+    func: impl Fn(File) -> anyhow::Result<T>,
+) -> anyhow::Result<Option<T>> {
     if path.is_file() {
-        return Ok(File::open(path)?);
+        return Ok(None);
     }
     if let Some(parent) = path.parent()
         && !parent.exists()
@@ -26,15 +29,15 @@ pub fn atomic_file(path: &Path, func: impl Fn(File) -> anyhow::Result<()>) -> an
         .open(&lock_file_path)?;
     lock_file.lock()?;
     if path.is_file() {
-        return Ok(File::open(path)?);
+        return Ok(None);
     }
 
-    func(lock_file)?;
+    let result = func(lock_file)?;
     fs::rename(lock_file_path, path)?;
-    Ok(File::open(path)?)
+    Ok(Some(result))
 }
 
-#[time("debug", "atomic.{}")]
+#[instrument(level = "trace", skip(func))]
 pub fn atomic_dir<T>(
     path: &Path,
     func: impl FnOnce(&Path) -> anyhow::Result<T>,

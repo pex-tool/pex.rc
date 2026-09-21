@@ -16,11 +16,10 @@ use cache::{CacheDir, CacheRoot, HashOptions, Key, atomic_dir};
 use fs_err as fs;
 use interpreter::SearchPath;
 use itertools::Itertools;
-use log::{info, warn};
-use logging_timer::time;
 use pex::{InheritPath, Pex, PexPath, RawPexInfo};
 use python_proxy::ProxySource;
 use regex::bytes::Regex;
+use tracing::{info, instrument, warn};
 use venv::{InstallScope, Linker, Provenance, Virtualenv, populate, populate_user_code_and_wheels};
 
 struct PythonProxyLinker<'a>(&'a Pex<'a>);
@@ -105,9 +104,11 @@ pub fn boot(
         }
         std::process::exit(0);
     }
-    if init_logging {
-        logging::init_default()?;
-    }
+    let _flush_handles = if init_logging {
+        Some(logging::init_default()?)
+    } else {
+        None
+    };
     let lock = match cache::read_lock() {
         Ok(lock) => lock,
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
@@ -167,7 +168,7 @@ fn prepare_boot(
 }
 
 pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
-    logging::init_default()?;
+    let _flush_handles = logging::init_default()?;
     match cache::read_lock() {
         Ok(lock) => {
             // N.B.: We're being called from a Python program that lives longer than us via an
@@ -187,7 +188,7 @@ pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
     .map(|venv| venv.prefix().join(&venv.site_packages_relpath))
 }
 
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 fn prepare_venv<'a>(
     python: Option<&Path>,
     pex: &Path,

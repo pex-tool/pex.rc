@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 
 use anyhow::bail;
-use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{ArgMatches, Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use cli::Output;
 use color_print::cstr;
@@ -190,14 +190,22 @@ fn main() -> anyhow::Result<()> {
         };
 
     let matches = cli_command.get_matches_mut();
-    logging::init(
+    let ansi = if let Ok(color) = Color::from_arg_matches(&matches) {
+        color.write_global();
+        match color.color {
+            ColorChoice::Auto => None,
+            ColorChoice::Always => Some(true),
+            ColorChoice::Never => Some(false),
+        }
+    } else {
+        None
+    };
+    let _flush_handles = logging::init(
         Verbosity::<WarnLevel>::from_arg_matches(&matches)
             .ok()
             .map(|verbosity| verbosity.log_level_filter()),
+        ansi,
     )?;
-    if let Ok(color) = Color::from_arg_matches(&matches) {
-        color.write_global()
-    }
 
     match matches.subcommand() {
         Some((subcommand, arg_matches)) => {

@@ -15,7 +15,6 @@ use cache::{Fingerprint, default_digest, fingerprint_file};
 use fs_err as fs;
 use fs_err::File;
 use indexmap::IndexMap;
-use logging_timer::time;
 use pex::{
     BinPath,
     Layout,
@@ -39,6 +38,7 @@ use scripts::{
     VenvPexRepl,
 };
 use serde_json::Value;
+use tracing::instrument;
 use wheel::{EntryPoint, EntryPoints, MetadataDirs, Record, WheelDir, WheelLayout};
 use zip::ZipArchive;
 use zip_ext::ZipArchiveExt;
@@ -913,7 +913,7 @@ fn populate_from_zip_app<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 pub fn populate_user_code_and_wheels<'a>(
     venv: &Virtualenv,
     shebang_interpreter: &Path,
@@ -999,7 +999,7 @@ pub fn populate_user_code_and_wheels<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 pub fn populate<'a>(
     venv: &Virtualenv,
     shebang_interpreter: &Path,

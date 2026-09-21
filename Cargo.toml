@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.22.0"
+version = "0.23.0"
 edition = { workspace = true }
 publish = false
 
@@ -178,7 +178,6 @@ indexmap = {  version = "2.14", features = ["rayon", "serde"] }
 is_executable = "1.0"
 itertools = "0.15"
 log = "0.4"
-logging_timer = "1.1"
 mailparse = "0.17"
 oneshot = {  version = "0.2", features = ["std"] }
 open = "5.3"
@@ -214,6 +213,9 @@ tempfile = "3.27"
 textwrap = "0.16"
 time = "0.3"
 toml = "1.1"
+tracing = { version = "0.1", features = ["attributes", "log-always"] }
+tracing-chrome = "0.7"
+tracing-subscriber = {  version = "0.3", features = ["time"] }
 url = "2.5"
 # N.B.: We take whatever version is supported by pep440_rs - it uses an optional dependency but
 # does not have a feature to activate the dep.
@@ -248,15 +250,12 @@ color-print = { workspace = true }
 const_format = { workspace = true }
 digest = { workspace = true }
 enumset = { workspace = true }
-env_logger = { workspace = true }
 fs-err = { workspace = true }
 include_dir = { workspace = true }
 indexmap = { workspace = true }
 interpreter = { path = "crates/interpreter" }
 itertools = { workspace = true }
-log = { workspace = true }
 logging = { path = "crates/logging" }
-logging_timer = { workspace = true }
 owo-colors = { workspace = true }
 pep508_rs = { workspace = true }
 pex = { path = "crates/pex" }
@@ -275,6 +274,7 @@ shlex = { workspace = true }
 strum = { workspace = true }
 target = { path = "crates/target" }
 tempfile = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
 venv = { path = "crates/venv" }
 walkdir = { workspace = true }

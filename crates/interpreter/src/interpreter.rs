@@ -13,7 +13,6 @@ use anyhow::{anyhow, bail};
 use cache::{CacheDir, HashOptions, atomic_dir, hash_file};
 use fs_err as fs;
 use fs_err::File;
-use logging_timer::time;
 use ouroboros::self_referencing;
 use pep508_rs::MarkerEnvironment;
 use python_platform::{
@@ -28,6 +27,7 @@ use python_platform::{
 };
 use scripts::{IdentifyInterpreter, Scripts};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct InterpreterDetails {
@@ -124,7 +124,7 @@ impl Interpreter {
         command.arg("-sE").arg(script.path());
         #[cfg(target_os = "linux")]
         {
-            use log::debug;
+            use tracing::debug;
 
             let mut linux_info = LINUX_INFO
                 .lock()
@@ -327,7 +327,7 @@ impl Interpreter {
         Ok(CacheDir::Interpreter.path()?.join(hash.base64_digest()))
     }
 
-    #[time("debug", "Interpreter.{}")]
+    #[instrument(level = "debug", skip_all, fields(python_exe = %python_exe.display()))]
     pub fn load(
         python_exe: &Path,
         identification_script: &IdentifyInterpreter,
@@ -397,7 +397,7 @@ impl Interpreter {
         Self::load_internal(&interpreter_info, python_exe, identification_script)
     }
 
-    #[time("debug", "Interpreter.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn store(&self) -> anyhow::Result<()> {
         let hash = hash_file(self.details.path.as_ref(), &Self::INTERPRETER_HASH_CONFIG)?;
         let interpreter_info = CacheDir::Interpreter.path()?.join(hash.base64_digest());
@@ -423,7 +423,7 @@ impl Interpreter {
         }
     }
 
-    #[time("debug", "Interpreter.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn resolve_base_interpreter(self, scripts: &mut Scripts) -> anyhow::Result<Interpreter> {
         if let Some(base_prefix) = self.details.base_prefix.as_ref()
             && base_prefix != &self.details.prefix

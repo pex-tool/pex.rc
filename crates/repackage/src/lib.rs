@@ -17,10 +17,10 @@ use anyhow::bail;
 use chrono::{DateTime, Utc};
 use fs_err as fs;
 use fs_err::File;
-use logging_timer::time;
 use pex::{Layout, Pex};
 use platform::PosixPath;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use tracing::instrument;
 use walkdir::WalkDir;
 use wheel::{Record, WheelFile, WheelLayout};
 use zip::read::ZipArchiveMetadata;
@@ -41,8 +41,8 @@ enum DirPexDepType {
 }
 
 pub struct WheelOptions {
-    compression_method: CompressionMethod,
-    compression_level: Option<i64>,
+    pub compression_method: CompressionMethod,
+    pub compression_level: Option<i64>,
     pub timestamp: Option<DateTime<Utc>>,
 }
 
@@ -76,7 +76,7 @@ impl WheelOptions {
     }
 }
 
-#[time("debug", "{}")]
+#[instrument(level = "debug", skip_all)]
 pub fn repackage_wheels(
     pex: &Pex,
     options: &WheelOptions,
@@ -189,15 +189,24 @@ fn repackage_directory_pex_wheel(
 }
 
 pub fn recompress_zipped_whl(
-    mut wheel: ZipArchive<impl Read + Seek>,
+    wheel: ZipArchive<impl Read + Seek>,
     wheel_file: &WheelFile,
     options: &WheelOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<File> {
     fs::create_dir_all(dest_dir)?;
     let dest_wheel = dest_dir.join(wheel_file.file_name);
-    let compressed = File::create(&dest_wheel)?;
-    let mut compressed_whl = ZipWriter::new(compressed);
+    let mut compressed = File::create(&dest_wheel)?;
+    recompress_zipped_whl_to_file(wheel, &mut compressed, options)?;
+    Ok(File::open(dest_wheel)?)
+}
+
+pub fn recompress_zipped_whl_to_file(
+    mut wheel: ZipArchive<impl Read + Seek>,
+    dest: &mut impl Write,
+    options: &WheelOptions,
+) -> anyhow::Result<()> {
+    let mut compressed_whl = ZipWriter::new_stream(dest);
     for index in 0..wheel.len() {
         let entry = wheel.by_index_raw(index)?;
         if entry.name().ends_with(".pyc") {
@@ -230,7 +239,7 @@ pub fn recompress_zipped_whl(
         }
     }
     compressed_whl.finish()?;
-    Ok(File::open(dest_wheel)?)
+    Ok(())
 }
 
 fn recompress_zipped_whl_chroot(

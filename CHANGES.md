@@ -1,5 +1,15 @@
 # Release Notes
 
+## 0.23.0
+
+This release introduces a wheel cache for improved `pexrc -X build` performance along with improved
+logging via the tracing crate ecosystem. Of note, `PEXRC_JSON_PROFILE=<path>` can be added to both
+`pexrc` runs and PEX runs to generate a json profile file that can be loaded in Chrome or via
+https://ui.perfetto.dev/.
+
+In addition, this release fixes a bug in `--venv` resolution for wheels with atypical but valid
+`*.data/` files.
+
 ## 0.22.0
 
 This release adds `pexrc -X build` support for specifying an entry point (

@@ -17,9 +17,11 @@ use fs_err as fs;
 use fs_err::File;
 use platform::PosixPath;
 use python_platform::PythonVersion;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use repackage::WheelOptions;
 use repackage::original_wheel_info::{OriginalWheelInfo, ZipFileName};
 use sha2::Sha256;
+use tracing::instrument;
 use wheel::{EntryPoints, MetadataDirs, Record, Tag, WHEEL, WheelDir, record};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
@@ -252,9 +254,9 @@ impl InstalledWheel {
         &self,
         install_paths: &InstallPaths,
         wheel_options: &WheelOptions,
-        dest: impl Write + Seek,
+        dest: impl Write,
     ) -> anyhow::Result<()> {
-        let mut whl_zip = ZipWriter::new(dest);
+        let mut whl_zip = ZipWriter::new_stream(dest);
         let file_options = wheel_options.file_options()?;
         let site_packages_dir = if self.root_is_purelib {
             &install_paths.purelib
@@ -378,9 +380,9 @@ impl InstalledWheel {
     ) -> anyhow::Result<Option<WheelEntry<'a>>> {
         let mut needs_script_rewrite: Option<(File, PythonScript)> = None;
         let installed_path = if entry.path.is_relative() {
-            site_packages_dir.join(&entry.path).canonicalize()?
+            Cow::Owned(site_packages_dir.join(&entry.path).normalize_lexically()?)
         } else {
-            entry.path.canonicalize()?
+            entry.path.clone()
         };
         let zip_path = if entry.path.is_relative()
             && entry
@@ -392,7 +394,7 @@ impl InstalledWheel {
         } else {
             let data_dir = self.metadata_dirs.data_dir().as_path();
             let data_dir_rel_path = if let Ok(scripts_rel_path) =
-                installed_path.strip_prefix(install_paths.scripts.canonicalize()?)
+                installed_path.strip_prefix(&install_paths.scripts)
             {
                 let has_parent = scripts_rel_path
                     .parent()
@@ -404,27 +406,23 @@ impl InstalledWheel {
                 {
                     return Ok(None);
                 }
-                let mut file = File::open(&installed_path)?;
+                let mut file = File::open(installed_path.as_ref())?;
                 let size = file.metadata()?.len();
                 needs_script_rewrite =
                     PythonScript::detect(&mut file, size, install_paths.python_version)?
                         .map(|python_script| (file, python_script));
                 data_dir.join("scripts").join(scripts_rel_path)
-            } else if let Ok(headers_rel_path) = installed_path
-                .strip_prefix(install_paths.headers(&self.project_name).canonicalize()?)
+            } else if let Ok(headers_rel_path) =
+                installed_path.strip_prefix(install_paths.headers(&self.project_name))
             {
                 data_dir.join("headers").join(headers_rel_path)
-            } else if let Ok(platlib_rel_path) =
-                installed_path.strip_prefix(install_paths.platlib.canonicalize()?)
+            } else if let Ok(platlib_rel_path) = installed_path.strip_prefix(&install_paths.platlib)
             {
                 data_dir.join("platlib").join(platlib_rel_path)
-            } else if let Ok(purelib_rel_path) =
-                installed_path.strip_prefix(install_paths.purelib.canonicalize()?)
+            } else if let Ok(purelib_rel_path) = installed_path.strip_prefix(&install_paths.purelib)
             {
                 data_dir.join("purelib").join(purelib_rel_path)
-            } else if let Ok(data_rel_path) =
-                installed_path.strip_prefix(install_paths.data.canonicalize()?)
-            {
+            } else if let Ok(data_rel_path) = installed_path.strip_prefix(&install_paths.data) {
                 data_dir.join("data").join(data_rel_path)
             } else {
                 bail!(
@@ -436,7 +434,7 @@ impl InstalledWheel {
             PosixPath::new(Cow::Owned(data_dir_rel_path), false)?
         };
         Ok(Some(WheelEntry {
-            installed_path: Cow::Owned(installed_path),
+            installed_path,
             zip_path: zip_path.to_string(),
             script: needs_script_rewrite,
         }))
@@ -454,8 +452,9 @@ impl Display for InstalledWheel {
     }
 }
 
+#[instrument(level = "debug", skip_all)]
 pub fn collect_installed_wheels(venv: &Virtualenv) -> anyhow::Result<Vec<InstalledWheel>> {
-    let mut installed_wheels = Vec::new();
+    let mut entries = Vec::with_capacity(1024);
     for entry in venv.prefix().join(&venv.site_packages_relpath).read_dir()? {
         if let Ok(entry) = entry
             && let Ok(file_type) = entry.file_type()
@@ -465,10 +464,13 @@ pub fn collect_installed_wheels(venv: &Virtualenv) -> anyhow::Result<Vec<Install
                 .as_encoded_bytes()
                 .ends_with(b".dist-info")
         {
-            installed_wheels.push(InstalledWheel::load(entry.path())?);
+            entries.push(entry.path());
         }
     }
-    Ok(installed_wheels)
+    entries
+        .into_par_iter()
+        .map(InstalledWheel::load)
+        .collect::<anyhow::Result<Vec<_>>>()
 }
 
 #[cfg(test)]

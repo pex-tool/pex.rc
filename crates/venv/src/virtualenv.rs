@@ -12,11 +12,11 @@ use anyhow::{anyhow, bail};
 use fs_err as fs;
 use fs_err::File;
 use interpreter::Interpreter;
-use logging_timer::time;
 use platform::{is_executable, symlink_or_link_or_copy};
 use python_platform::{PythonPlatform, PythonVersion};
 use scripts::{IdentifyInterpreter, Scripts, VendoredVirtualenv};
 use target_lexicon::{HOST, OperatingSystem};
+use tracing::instrument;
 
 #[cfg(unix)]
 const SCRIPTS_DIR: &str = "bin";
@@ -77,7 +77,7 @@ pub struct Virtualenv<'a> {
 }
 
 impl<'a> Virtualenv<'a> {
-    #[time("debug", "Virtualenv.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn enclosing(interpreter: Interpreter) -> anyhow::Result<Self> {
         let site_packages_relpath = site_packages_relpath(&interpreter);
         Ok(Self {
@@ -87,7 +87,7 @@ impl<'a> Virtualenv<'a> {
         })
     }
 
-    #[time("debug", "Virtualenv.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn load(path: Cow<'a, Path>, scripts: &mut Scripts) -> anyhow::Result<Self> {
         let pyvenv_cfg = PyVenvCfg::read(path.as_ref())?;
         let identification_script = IdentifyInterpreter::read(scripts)?;
@@ -122,7 +122,7 @@ impl<'a> Virtualenv<'a> {
         Ok(venv_interpreter)
     }
 
-    #[time("debug", "Virtualenv.{}")]
+    #[instrument(level = "debug", skip_all)]
     pub fn create(
         interpreter: Interpreter,
         path: Cow<'a, Path>,

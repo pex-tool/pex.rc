@@ -3,6 +3,7 @@
 
 #![deny(clippy::all)]
 #![feature(exit_status_error)]
+#![feature(normalize_lexically)]
 #![feature(slice_split_once)]
 #![feature(trim_prefix_suffix)]
 extern crate core;

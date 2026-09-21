@@ -268,10 +268,9 @@ dependencies = [
  "dtor",
  "fs-err",
  "hex",
- "log",
- "logging_timer",
  "sha2",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1532,8 +1531,6 @@ dependencies = [
  "cache",
  "fs-err",
  "indexmap 2.14.2",
- "log",
- "logging_timer",
  "ouroboros",
  "pep440_rs",
  "pep508_rs",
@@ -1550,6 +1547,7 @@ dependencies = [
  "testing",
  "textwrap",
  "time",
+ "tracing",
  "url",
  "wheel",
  "which",
@@ -1782,6 +1780,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1835,30 +1839,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "env_filter",
- "env_logger",
  "log",
-]
-
-[[package]]
-name = "logging_timer"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5669c09dbcb4a0b5f6de8364154495574238e18d6736bbdaa7726307f3268471"
-dependencies = [
- "log",
- "logging_timer_proc_macros",
-]
-
-[[package]]
-name = "logging_timer_proc_macros"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27906ca51651609191eeb2d1fdc6b52b8024789ec188b07aad88b6dfbe392fbe"
-dependencies = [
- "log",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
+ "tracing",
+ "tracing-chrome",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1980,6 +1964,15 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2241,8 +2234,6 @@ dependencies = [
  "indexmap 2.14.2",
  "interpreter",
  "itertools 0.15.0",
- "log",
- "logging_timer",
  "mailparse 0.17.0",
  "ouroboros",
  "pep440_rs",
@@ -2264,6 +2255,7 @@ dependencies = [
  "strum_macros",
  "tempfile",
  "testing",
+ "tracing",
  "url",
  "version-ranges",
  "walkdir",
@@ -2274,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2297,9 +2289,7 @@ dependencies = [
  "indexmap 2.14.2",
  "interpreter",
  "itertools 0.15.0",
- "log",
  "logging",
- "logging_timer",
  "owo-colors",
  "pep508_rs",
  "pex",
@@ -2318,6 +2308,7 @@ dependencies = [
  "strum",
  "target",
  "tempfile",
+ "tracing",
  "url",
  "venv",
  "walkdir",
@@ -2336,14 +2327,13 @@ dependencies = [
  "fs-err",
  "interpreter",
  "itertools 0.15.0",
- "log",
  "logging",
- "logging_timer",
  "pex",
  "platform",
  "python-proxy",
  "regex",
  "tools",
+ "tracing",
  "venv",
 ]
 
@@ -2488,7 +2478,6 @@ dependencies = [
  "fs-err",
  "interpreter",
  "log",
- "logging_timer",
  "ouroboros",
  "pep440_rs",
  "pep508_rs",
@@ -2505,6 +2494,7 @@ dependencies = [
  "strum_macros",
  "target-lexicon",
  "testing",
+ "tracing",
  "windows-version",
 ]
 
@@ -2736,13 +2726,13 @@ dependencies = [
  "anyhow",
  "chrono",
  "fs-err",
- "logging_timer",
  "ouroboros",
  "pex",
  "platform",
  "rayon",
  "serde",
  "serde_json",
+ "tracing",
  "walkdir",
  "wheel",
  "zip",
@@ -2806,11 +2796,11 @@ dependencies = [
  "anyhow",
  "dashmap",
  "indexmap 2.14.2",
- "logging_timer",
  "pep440_rs",
  "pep508_rs",
  "python-platform",
  "regex",
+ "tracing",
  "url",
  "version-ranges",
  "wheel",
@@ -3190,6 +3180,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "shell-quote"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3492,6 +3491,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3656,7 +3664,6 @@ dependencies = [
  "interpreter",
  "log",
  "logging",
- "logging_timer",
  "oneshot",
  "open",
  "owo-colors",
@@ -3678,6 +3685,7 @@ dependencies = [
  "target",
  "tempfile",
  "textwrap",
+ "tracing",
  "url",
  "venv",
  "walkdir",
@@ -3735,8 +3743,32 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "tracing-chrome"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf0a738ed5d6450a9fb96e86a23ad808de2b727fd1394585da5cdd6788ffe724"
+dependencies = [
+ "serde_json",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3746,6 +3778,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "nu-ansi-term",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "time",
+ "tracing-core",
+ "tracing-log",
 ]
 
 [[package]]
@@ -3840,6 +3899,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
 name = "venv"
 version = "0.0.0"
 dependencies = [
@@ -3853,7 +3918,6 @@ dependencies = [
  "interpreter",
  "itertools 0.15.0",
  "log",
- "logging_timer",
  "pelite",
  "pex",
  "platform",
@@ -3871,6 +3935,7 @@ dependencies = [
  "target-lexicon",
  "tempfile",
  "testing",
+ "tracing",
  "walkdir",
  "wheel",
  "zip",

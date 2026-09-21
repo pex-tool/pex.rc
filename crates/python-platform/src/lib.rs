@@ -22,10 +22,10 @@ use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
-use logging_timer::time;
 use pep508_rs::pep440_rs::Version;
 use pep508_rs::{MarkerEnvironment, MarkerValueVersion};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 pub use crate::arch::Arch;
 pub use crate::implementation::Implementation;
@@ -168,7 +168,7 @@ impl<'a> PythonPlatform<'a> for PlatformDetails<'a> {
     }
 }
 
-#[time("debug", "python-platform.{}")]
+#[instrument(level = "debug", skip_all)]
 pub fn parse<'a>(
     spec: &'a str,
     platform_release: Option<PlatformRelease<'a>>,

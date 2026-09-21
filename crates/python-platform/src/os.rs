@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use anyhow::bail;
 #[cfg(target_os = "linux")]
-use logging_timer::time;
+use tracing::instrument;
 
 use crate::linux::LibcVersion;
 use crate::mac::Release as MacRelease;
@@ -31,7 +31,7 @@ pub(crate) struct ReleaseInfo<'a> {
 
 impl Os {
     #[cfg(target_os = "linux")]
-    #[time("debug", "Os.{}")]
+    #[instrument(level = "debug")]
     pub fn current() -> anyhow::Result<Self> {
         let libc = match crate::LinuxInfo::parse(std::env::current_exe()?)? {
             crate::LinuxInfo::ManyLinux(manylinux) => Libc::Gnu(

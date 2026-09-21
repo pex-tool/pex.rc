@@ -12,14 +12,13 @@ cache = { path = "../cache" }
 fs-err = { workspace = true }
 interpreter = { path = "../interpreter" }
 itertools = { workspace = true }
-log = { workspace = true }
 logging = { path = "../logging" }
-logging_timer = { workspace = true }
 pex = { path = "../pex" }
 platform = { path = "../platform" }
 python-proxy = { path = "../python-proxy" }
 regex = { workspace = true }
 tools = { path = "../tools", optional = true}
+tracing = { workspace = true }
 venv = { path = "../venv" }
 
 [features]

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fmt::{Display, Formatter};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -11,8 +11,8 @@ use base64::display::Base64Display;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use digest::Digest;
 use fs_err::File;
-use logging_timer::time;
 use sha2::Sha256;
+use tracing::instrument;
 
 pub fn default_digest() -> impl Digest {
     Sha256::new()
@@ -22,18 +22,28 @@ pub fn default_digest() -> impl Digest {
 pub struct Fingerprint(Vec<u8>);
 
 impl Fingerprint {
+    pub fn load(source: &mut impl Read, size_hint: usize) -> anyhow::Result<Self> {
+        let mut bytes = Vec::with_capacity(size_hint);
+        source.read_to_end(&mut bytes)?;
+        Ok(Self(bytes))
+    }
+
     pub fn new<D: Digest>(digest: D) -> Self {
         Self(Vec::from(digest.finalize().as_slice()))
     }
 
-    #[time("trace", "Fingerprint.{}")]
+    #[instrument(level = "trace", skip_all)]
     pub fn base64_digest(&self) -> String {
         URL_SAFE_NO_PAD.encode(&self.0)
     }
 
-    #[time("trace", "Fingerprint.{}")]
+    #[instrument(level = "trace", skip_all)]
     pub fn hex_digest(&self) -> String {
         hex::encode(&self.0)
+    }
+
+    pub fn store(&self, sink: &mut impl Write) -> anyhow::Result<()> {
+        Ok(sink.write_all(&self.0)?)
     }
 }
 
@@ -86,6 +96,47 @@ impl<D: Digest, R: Read> Read for DigestingReader<D, R> {
     }
 }
 
+pub struct DigestingWriter<D: Digest, W: Write> {
+    digest: D,
+    writer: W,
+    size: u64,
+}
+
+impl<D: Digest, W: Write> DigestingWriter<D, W> {
+    pub fn new(digest: D, writer: W) -> Self {
+        Self {
+            digest,
+            writer,
+            size: 0,
+        }
+    }
+
+    pub fn into_fingerprint(self) -> Fingerprint {
+        Fingerprint::new(self.digest)
+    }
+
+    pub fn into_fingerprint_and_size(self) -> (Fingerprint, u64) {
+        (Fingerprint::new(self.digest), self.size)
+    }
+
+    pub fn into_parts(self) -> (W, Fingerprint, u64) {
+        (self.writer, Fingerprint::new(self.digest), self.size)
+    }
+}
+
+impl<D: Digest, W: Write> Write for DigestingWriter<D, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let amount = self.writer.write(buf)?;
+        self.digest.update(&buf[0..amount]);
+        self.size += amount as u64;
+        Ok(amount)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
+}
+
 #[derive(Default)]
 pub struct HashOptions {
     path: bool,
@@ -125,7 +176,7 @@ impl HashOptions {
     }
 }
 
-#[time("debug", "fingerprint.{}")]
+#[instrument(level = "debug", skip(options))]
 pub fn hash_file(path: &Path, options: &HashOptions) -> anyhow::Result<Fingerprint> {
     let mut digest = default_digest();
     digest_file(path, options, &mut digest)?;
