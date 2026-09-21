@@ -16,11 +16,13 @@ owo-colors = { workspace = true }
 tracing-subscriber = {  version = "0.3", features = ["time"] }
 
 # profiling feature deps
+tracing = { workspace = true, optional = true }
 tracing-chrome = {  version = "0.7", optional = true }
 tracing-flame = { version = "0.2", optional = true }
 
 [features]
 profiling = [
+    "dep:tracing",
     "dep:tracing-chrome",
     "dep:tracing-flame",
 ]
