@@ -176,19 +176,15 @@ fn main() -> anyhow::Result<()> {
         (profile, None)
     };
 
+    let envs = vec![("PEXRC_TARGETS", "all")];
     let mut args = vec![];
-    let mut envs = vec![("PEXRC_TARGETS", "all".to_string())];
-    let mut clib_features = vec![];
     if cli.include_tools {
-        clib_features.push("tools");
+        args.push("--features");
+        args.push("tools");
     }
     if cli.enable_profiling {
-        clib_features.push("profiling");
         args.push("--features");
         args.push("profiling");
-    }
-    if !clib_features.is_empty() {
-        envs.push(("PEXRC_CLIB_FEATURES", clib_features.join(",")));
     }
 
     let built = if cli.targets.is_empty() {

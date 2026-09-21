@@ -1843,6 +1843,7 @@ dependencies = [
  "fs-err",
  "log",
  "owo-colors",
+ "tracing",
  "tracing-chrome",
  "tracing-flame",
  "tracing-subscriber",

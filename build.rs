@@ -4,11 +4,10 @@
 #![deny(clippy::all)]
 #![feature(exact_size_is_empty)]
 
-use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::{env, io};
+use std::{env, io, vec};
 
 use anyhow::{anyhow, bail};
 use bstr::ByteSlice;
@@ -169,15 +168,24 @@ fn main() -> anyhow::Result<()> {
         Optimizations::All
     };
 
+    let mut optional_args = Vec::new();
     println!("cargo::rerun-if-env-changed=PEXRC_CLIB_FEATURES");
-    let optional_clib_args: &[Cow<'_, str>] =
-        if let Ok(clib_features) = env::var("PEXRC_CLIB_FEATURES") {
-            &[Cow::Borrowed("--features"), Cow::Owned(clib_features)]
-        } else {
-            &[]
-        };
+    if let Ok(clib_features) = env::var("PEXRC_CLIB_FEATURES") {
+        println!("cargo::warning=PEXRC_CLIB_FEATURES={clib_features} no longer has any effect.");
+        println!("cargo::warning=Use `cargo build --features {clib_features}` instead.");
+    }
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_TOOLS");
+    if env::var_os("CARGO_FEATURE_TOOLS").is_some() {
+        optional_args.push("--features");
+        optional_args.push("tools");
+    }
+    println!("cargo::rerun-if-env-changed=CARGO_FEATURE_PROFILING");
+    if env::var_os("CARGO_FEATURE_PROFILING").is_some() {
+        optional_args.push("--features");
+        optional_args.push("profiling");
+    }
 
-    let python_proxyw_options = [Cow::Borrowed("--features"), Cow::Borrowed("windows")];
+    let python_proxyw_options = ["--features", "windows"];
 
     println!("cargo::rerun-if-env-changed=PEXRC_TARGETS");
     if all_targets {
@@ -187,7 +195,7 @@ fn main() -> anyhow::Result<()> {
         custom_cargo_build(
             &cargo,
             &["zigbuild", "--target-dir", tgt_arg, "--package", "clib"],
-            optional_clib_args,
+            optional_args.as_slice(),
             embeds_configuration.profile,
             &found_tools,
             targets.iter().map(BuildTarget::zigbuild_target),
@@ -251,7 +259,7 @@ fn main() -> anyhow::Result<()> {
         custom_cargo_build(
             &cargo,
             &["build", "--target-dir", tgt_arg, "--package", "clib"],
-            optional_clib_args,
+            optional_args.as_slice(),
             embeds_configuration.profile,
             &found_tools,
             targets.iter().map(|target| target.as_str()),
@@ -306,7 +314,7 @@ fn main() -> anyhow::Result<()> {
 fn custom_cargo_build<'a>(
     cargo: &Path,
     custom_build_args: &[&str],
-    optional_args: &[Cow<'_, str>],
+    optional_args: &[&str],
     profile: &str,
     found_tools: &[FoundTool],
     targets: impl ExactSizeIterator<Item = &'a str>,
@@ -332,10 +340,8 @@ fn custom_cargo_build<'a>(
     }
 
     cmd.args(custom_build_args)
-        .args(optimizations.cargo_options());
-    for arg in optional_args {
-        cmd.arg(arg.as_ref());
-    }
+        .args(optimizations.cargo_options())
+        .args(optional_args);
 
     cmd.args([
         "--profile",

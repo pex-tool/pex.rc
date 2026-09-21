@@ -6,6 +6,7 @@ use std::cmp;
 use cache::Fingerprint;
 use digest::Digest;
 use include_dir::File;
+use indexmap::IndexMap;
 use owo_colors::OwoColorize;
 use platform::path_for_terminal_output;
 use sha2::Sha256;
@@ -17,6 +18,20 @@ fn iter_embeds<'a>() -> impl Iterator<Item = &'a File<'a>> {
 }
 
 pub fn display() -> anyhow::Result<()> {
+    let mut features = IndexMap::new();
+    features.insert("profiling", cfg!(feature = "profiling"));
+    features.insert("tools", cfg!(feature = "tools"));
+    anstream::println!("Features:");
+    for (feature, enabled) in features {
+        anstream::print!("  {feature}: ", feature = feature.blue());
+        if enabled {
+            anstream::println!("{}", "yes".green());
+        } else {
+            anstream::println!("{}", "no".yellow());
+        }
+    }
+    anstream::println!();
+
     let mut paths = Vec::new();
     let mut max_width = 0;
     for embed in iter_embeds() {

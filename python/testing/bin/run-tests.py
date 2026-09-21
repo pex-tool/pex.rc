@@ -26,9 +26,17 @@ def ensure_pexrc(release_mode):
     # type: (Optional[bool]) -> str
 
     profile = "release" if release_mode else os.environ.pop("PEXRC_PROFILE", "dev")
-    env = os.environ.copy()
-    env.update(PEXRC_CLIB_FEATURES="tools")
-    subprocess.check_call(args=["cargo", "build", "--profile", profile], env=env)
+    features = ["profiling", "tools"]
+    subprocess.check_call(
+        args=[
+            "cargo",
+            "build",
+            "--features",
+            ",".join(features),
+            "--profile",
+            profile,
+        ]
+    )
     profile_dir = "debug" if profile == "dev" else profile
     return os.path.abspath(
         os.path.join("target", profile_dir, "pexrc" + sysconfig.get_config_vars()["EXE"])
