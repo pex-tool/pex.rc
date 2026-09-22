@@ -1,5 +1,17 @@
 # Release Notes
 
+## 0.25.0
+
+This release add support for several `pex` features to `pexrc -X build`:
++ `--python-shebang`: Set a custom PEX shebang.
++ `--inherit-path`: Allow the PEX to inherit from `PYTHONPATH`.
++ `--exclude`: Exclude certain transitive dependencies.
++ `--override`: Override certain transitive dependencies with others.
++ `--ignore-errors`: Ignore resolution errors (missing transitive dependencies).
+
+In addition, when specifying no requirements, but specifying either `--wheels` or `--venv`s, all
+available applicable wheels for the selected `--target`s will be resolved.
+
 ## 0.24.0
 
 This release adds support for flame graph profiles by adding `PEXRC_FLAME_PROFILE=<path>` for both

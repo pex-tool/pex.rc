@@ -76,7 +76,11 @@ if [ -n "${python_exe}" ]; then
         fi
     fi
     export _PEXRC_SH_BOOT_SEED_DIR="${VENV}/sh-boot"
-    exec "${python_exe}" "${PYTHON_ARGS}" "$0" "$@"
+    if [ -n "${PYTHON_ARGS}" ]; then
+        exec "${python_exe}" "${PYTHON_ARGS}" "$0" "$@"
+    else
+        exec "${python_exe}" "$0" "$@"
+    fi
 fi
 
 echo >&2 "Failed to find any of these python binaries on the PATH:"

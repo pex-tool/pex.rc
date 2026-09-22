@@ -3,6 +3,7 @@
 
 #![deny(clippy::all)]
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -10,8 +11,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use dashmap::DashMap;
 use indexmap::IndexMap;
-use pep440_rs::{Version, VersionSpecifiers};
-use pep508_rs::{ExtraName, PackageName, Requirement, VersionOrUrl};
+use pep440_rs::{Version, VersionSpecifier, VersionSpecifiers};
+use pep508_rs::{ExtraName, MarkerTree, PackageName, Requirement, VersionOrUrl};
 use python_platform::PythonPlatform;
 use tracing::instrument;
 use url::Url;
@@ -72,7 +73,7 @@ impl<'a> CollectWheelMetadata<'a> {
 #[instrument(level = "debug", skip_all)]
 pub fn resolve_wheels<'a>(
     target: &impl PythonPlatform<'a>,
-    requirements: Vec<Requirement<Url>>,
+    requirements: &[Requirement<Url>],
     wheel_files: Vec<WheelFile<'a>>,
     metadata_reader: &mut impl MetadataReader,
     dependency_configuration: &DependencyConfiguration,
@@ -120,8 +121,8 @@ pub fn resolve_wheels<'a>(
         metadata_dirs: MetadataDirs,
     }
 
-    let mut wheels_by_project_name: HashMap<PackageName, Vec<WheelInfo>> =
-        HashMap::with_capacity(ranked_wheels.len());
+    let mut wheels_by_project_name: IndexMap<PackageName, Vec<WheelInfo>> =
+        IndexMap::with_capacity(ranked_wheels.len());
     for ranked_wheel in ranked_wheels {
         wheels_by_project_name
             .entry(ranked_wheel.metadata.project_name)
@@ -144,13 +145,41 @@ pub fn resolve_wheels<'a>(
         wheels.sort_by_key(|WheelInfo { rank, .. }| *rank);
     }
 
+    let collected_reqs = if requirements.is_empty() {
+        Cow::Owned(
+            wheels_by_project_name
+                .iter()
+                .filter_map(|(project_name, wheels)| {
+                    let mut requirement = Requirement {
+                        name: project_name.clone(),
+                        extras: vec![],
+                        version_or_url: None,
+                        marker: MarkerTree::TRUE,
+                        origin: None,
+                    };
+                    for wheel in wheels {
+                        requirement.version_or_url = Some(VersionOrUrl::VersionSpecifier(
+                            VersionSpecifier::equals_version(wheel.version.clone()).into(),
+                        ));
+                        if !dependency_configuration.excluded(&requirement) {
+                            return Some(requirement);
+                        }
+                    }
+                    None
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        Cow::Borrowed(requirements)
+    };
+
     let mut resolved_by_project_name: IndexMap<RequirementKey, ResolvedWheel> =
         IndexMap::with_capacity(wheels_by_project_name.len());
-    let mut indexed_extras: Vec<Vec<ExtraName>> = vec![vec![]];
-    let mut to_resolve: VecDeque<(Requirement<Url>, usize)> = requirements
-        .into_iter()
+    let mut indexed_extras: Vec<&[ExtraName]> = vec![&[]];
+    let mut to_resolve: VecDeque<(&Requirement<Url>, usize)> = collected_reqs
+        .iter()
         .filter_map(|requirement| {
-            if dependency_configuration.excluded(&requirement) {
+            if dependency_configuration.excluded(requirement) {
                 None
             } else {
                 Some((requirement, 0))
@@ -161,7 +190,7 @@ pub fn resolve_wheels<'a>(
     let marker_env = target.marker_env();
     let no_wheels: Vec<WheelInfo> = vec![];
     while let Some((requirement, extras_index)) = to_resolve.pop_front() {
-        let requirement_key = RequirementKey::of(&requirement);
+        let requirement_key = RequirementKey::of(requirement);
 
         // Already processed.
         if resolved_by_project_name.contains_key(&requirement_key) {
@@ -177,7 +206,7 @@ pub fn resolve_wheels<'a>(
         // Does not apply.
         if !requirement
             .marker
-            .evaluate(marker_env, &indexed_extras[extras_index])
+            .evaluate(marker_env, indexed_extras[extras_index])
         {
             continue;
         }
@@ -256,7 +285,7 @@ pub fn resolve_wheels<'a>(
                 0
             } else {
                 let idx = indexed_extras.len();
-                indexed_extras.push(requirement.extras);
+                indexed_extras.push(&requirement.extras);
                 idx
             };
             if let Some(extra_metadata) = collect_extra_metadata.as_ref() {
@@ -290,8 +319,8 @@ pub fn resolve_wheels<'a>(
                 }
                 to_resolve.push_back((
                     dependency_configuration
-                        .overridden(req, target, &indexed_extras[extras_index])?
-                        .unwrap_or_else(|| req.clone()),
+                        .overridden(req, target, indexed_extras[extras_index])?
+                        .unwrap_or(req),
                     extras_index,
                 ))
             }

@@ -33,11 +33,16 @@ static OVERRIDE_REPLACE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 impl DependencyConfiguration {
-    pub fn parse(excluded: &[&str], overridden: &[&str]) -> anyhow::Result<Self> {
+    pub fn parse(
+        excluded: &[impl AsRef<str>],
+        overridden: &[impl AsRef<str>],
+    ) -> anyhow::Result<Self> {
         let parsed_excludes = excluded
             .iter()
             .map(|excluded| {
-                match Requirement::<Url>::from_str(excluded).map_err(|err| anyhow!("{err}")) {
+                match Requirement::<Url>::from_str(excluded.as_ref())
+                    .map_err(|err| anyhow!("{err}"))
+                {
                     Ok(requirement) => {
                         let exclude_constraint = match requirement.version_or_url {
                             None => ExcludeConstraint::None,
@@ -56,7 +61,7 @@ impl DependencyConfiguration {
         let mut parsed_overrides: HashMap<PackageName, IndexSet<Requirement<Url>>> = HashMap::new();
         for override_spec in overridden {
             let (name, requirement) = if let Some(captures) =
-                OVERRIDE_REPLACE.captures(override_spec)
+                OVERRIDE_REPLACE.captures(override_spec.as_ref())
                 && let Some(name) = captures.name("project")
                 && let Some(requirement) = captures.name("requirement")
             {
@@ -65,7 +70,7 @@ impl DependencyConfiguration {
                     Requirement::from_str(requirement.as_str())?,
                 )
             } else {
-                let requirement = Requirement::from_str(override_spec)?;
+                let requirement = Requirement::from_str(override_spec.as_ref())?;
                 (requirement.name.clone(), requirement)
             };
             parsed_overrides
@@ -105,7 +110,7 @@ impl DependencyConfiguration {
         requirement: &Requirement<Url>,
         target: &impl PythonPlatform<'a>,
         extras: &[ExtraName],
-    ) -> anyhow::Result<Option<Requirement<Url>>> {
+    ) -> anyhow::Result<Option<&Requirement<Url>>> {
         if let Some(overrides) = self.overridden.get(&requirement.name) {
             let marker_env = target.marker_env();
             let mut applicable_overrides = Vec::with_capacity(overrides.len());
@@ -133,7 +138,7 @@ impl DependencyConfiguration {
                 )
             }
             if !applicable_overrides.is_empty() {
-                return Ok(Some(applicable_overrides[0].clone()));
+                return Ok(Some(applicable_overrides[0]));
             }
         }
         Ok(None)
