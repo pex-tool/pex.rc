@@ -17,7 +17,6 @@ use interpreter::{
     InterpreterConstraints,
     SearchPath,
     SelectionStrategy,
-    VersionSpec,
     calculate_compatible_unix_binary_names,
 };
 use itertools::Itertools;
@@ -31,9 +30,13 @@ use zip::write::{FileOptionExtension, FileOptions};
 const SH_BOOT_SHEBANG: &[u8] = b"#!/bin/sh\n";
 const SH_BOOT_PARTS: [&str; 4] = str_split!(include_str!("boot.sh"), "# --- split --- #\n");
 
+pub fn sh_boot_buffer() -> Vec<u8> {
+    // N.B.: At time of measurement, typical size was ~3500
+    Vec::with_capacity(4096)
+}
+
 pub fn sh_boot_shebang(
     pex: &Pex,
-    hermetic: bool,
     preferred_interpreter: Option<PythonImplementation>,
 ) -> anyhow::Result<Option<String>> {
     let mut sh_boot_shebang_buffer: [_; SH_BOOT_SHEBANG.len()] = [0; SH_BOOT_SHEBANG.len()];
@@ -50,20 +53,22 @@ pub fn sh_boot_shebang(
             pex = pex.path.display()
         ),
     };
-    Ok(Some(create_sh_boot_shebang(
+    let mut shebang = sh_boot_buffer();
+    write_sh_boot_shebang(
         pex.path.display(),
         pex.info.raw(),
-        hermetic,
         preferred_interpreter,
-    )?))
+        &mut shebang,
+    )?;
+    Ok(Some(String::from_utf8(shebang)?))
 }
 
-pub fn create_sh_boot_shebang(
+pub fn write_sh_boot_shebang(
     subject: impl Display,
     pex_info: &RawPexInfo,
-    hermetic: bool,
     preferred_interpreter: Option<PythonImplementation>,
-) -> anyhow::Result<String> {
+    sink: &mut impl Write,
+) -> anyhow::Result<()> {
     let pex_path = PexPath::from_pex_info(pex_info, false);
     let additional_pexes = pex_path.load_pexes()?;
 
@@ -96,27 +101,14 @@ pub fn create_sh_boot_shebang(
             .map_err(|err| anyhow!("{err}", err = err.display()))
     })
     .collect::<anyhow::Result<Vec<_>>>()?;
-    let python_args = if hermetic {
-        if pythons.iter().any(|(_, version_spec)| {
-            matches!(version_spec, None | Some(VersionSpec::Major(_)))
-                || matches!(
-                    version_spec,
-                    Some(VersionSpec::MajorMinor(major, minor)) if (*major, *minor) < (3, 4)
-                )
-        }) {
-            "-sE"
-        } else {
-            "-I"
-        }
-    } else {
-        ""
-    };
     let pexrc_root = if let Some(pex_root) = pex_info.pex_root.as_deref() {
         Cow::Owned(PosixPath::try_from(pex_root)?.to_string())
     } else {
         Cow::Borrowed("")
     };
-    Ok(format!(
+    let python_args = shlex::try_join(pex_info.inject_python_args.iter().copied())?;
+    write!(
+        sink,
         "{shebang}'''': pshprs\n{header}{vars}{body}\n'''\n\n",
         shebang = SH_BOOT_PARTS[0], // N.B.: SH_BOOT_SHEBANG
         header = SH_BOOT_PARTS[1],
@@ -133,9 +125,10 @@ pub fn create_sh_boot_shebang(
                     .map(|(binary_name, _)| binary_name)
                     .join("\n")
             )
-            .replace("{python_args}", python_args),
+            .replace("{python_args}", &python_args),
         body = SH_BOOT_PARTS[3].trim_end(),
-    ))
+    )?;
+    Ok(())
 }
 
 const PY_BOOT: &[u8] = include_bytes!("boot.py");

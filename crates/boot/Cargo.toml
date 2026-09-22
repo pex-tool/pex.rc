@@ -17,4 +17,5 @@ itertools = { workspace = true }
 pex = { path = "../pex" }
 pexrs = { path = "../pexrs" }
 platform = { path = "../platform" }
+shlex = { workspace = true }
 zip = { workspace = true }

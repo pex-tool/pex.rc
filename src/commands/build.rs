@@ -3,14 +3,13 @@
 
 use std::borrow::Cow;
 use std::ffi::OsStr;
-use std::fmt::Write as _;
-use std::io::{BufReader, Seek, Write as _};
+use std::fmt::{Display, Formatter, Write as _};
+use std::io::{BufReader, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::{io, process};
 
 use anyhow::{anyhow, bail};
-use boot::{create_sh_boot_shebang, inject_boot, write_boot};
+use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
 use cache::{CacheDir, DigestingWriter, Fingerprint, atomic_file};
 use clap::{ArgAction, Args};
 use const_format::concatcp;
@@ -22,7 +21,7 @@ use indexmap::{IndexMap, IndexSet, indexmap, indexset};
 use interpreter::Interpreter;
 use itertools::Itertools;
 use pep508_rs::Requirement;
-use pex::{PexInfo, RawPexInfo};
+use pex::{InheritPath, PexInfo, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -58,6 +57,43 @@ enum PexEntryPoint {
     Script(String),
 }
 
+enum Shebang {
+    Custom(String),
+    EnvCompatible,
+    ShBoot,
+}
+
+//  TODO:
+//
+//  "build_properties": {  # Maybe custom build properties?
+//     "pex_version": "2.103.2"
+//   },
+//
+//   "emit_warnings": true  # There is not yet a pex_warnings facility; just generic warn tracing.
+//   "includes_tools": false  # This could act as an assertion pexrc is built with tools.
+//
+//   "pex_root": "/home/jsirois/.cache/pex",
+//
+//   # Interpreter discovery:
+//   "interpreter_constraints": []
+//   "interpreter_selection_strategy": "oldest"
+//
+//   # Resolver:
+//   "pex_paths": []
+//
+//   # Entry point:
+//   "strip_pex_env": true
+//   "inject_env": {}
+//   "inject_args": []
+//   "inject_python_args": []
+//   "bind_resource_paths": {}
+//
+//   # Venv setup:
+//   "max_install_jobs": 1
+//   "venv_bin_path": "false"
+//   "venv_hermetic_scripts": true,
+//   "venv_system_site_packages": false
+
 #[derive(Args, Debug)]
 #[group(skip)]
 pub struct Build {
@@ -70,6 +106,33 @@ pub struct Build {
         verbatim_doc_comment
     )]
     requirements: Vec<Requirement<Url>>,
+
+    /// Specifies a requirement to exclude from the built PEX.
+    ///
+    /// Any distribution included in the PEX's resolve that matches the requirement is excluded
+    /// from the built PEX along with all of its transitive dependencies that are not also required
+    /// by other non-excluded distributions. At runtime, the PEX will boot without checking the
+    /// excluded dependencies are available (say, via `--inherit-path`).
+    #[arg(long = "exclude", help_heading = "Contents", verbatim_doc_comment)]
+    excluded: Vec<String>,
+
+    /// Specifies a transitive requirement to override when resolving.
+    ///
+    /// Overrides can either modify an existing dependency on a project name by changing extras,
+    /// version constraints or markers or else they can completely swap out the dependency for a
+    /// dependency on another project altogether. For the former, simply supply the requirement you
+    /// wish. For example, specifying `--override cowsay==5.0` will override any transitive
+    /// dependency on cowsay that has any combination of extras, version constraints or markers with
+    /// the requirement `cowsay==5.0`. To completely replace cowsay with another library altogether,
+    /// you can specify an override like `--override cowsay=my-cowsay>2`. This will replace any
+    /// transitive dependency on cowsay that has any combination of extras, version constraints or
+    /// markers with the requirement `my-cowsay>2`.
+    #[arg(long = "override", help_heading = "Contents", verbatim_doc_comment)]
+    overridden: Vec<String>,
+
+    /// Ignore requirement resolution solver errors when building PEXes and later invoking them.
+    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
+    ignore_errors: bool,
 
     /// Venvs containing distributions to include in the PEX.
     ///
@@ -140,6 +203,14 @@ pub struct Build {
     )]
     script: Option<String>,
 
+    /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
+    /// PYTHONPATH) running the pex.
+    ///
+    /// Possible values: `false` (does not inherit `sys.path`), `fallback` (inherits sys.path after
+    /// packaged dependencies), `prefer` (inherits `sys.path` before packaged dependencies).
+    #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
+    inherit_path: Option<InheritPath>,
+
     /// The Python platforms the built PEX will target at runtime.
     ///
     /// If specified, the targets will be used to resolve any specified requirements from the
@@ -186,9 +257,22 @@ pub struct Build {
         long,
         help_heading = "Boot Mode",
         default_value_t = false,
+        conflicts_with = "python_shebang",
         verbatim_doc_comment
     )]
     sh_boot: bool,
+
+    /// The shebang line (`#!...\n`) to boot the PEX with minus the `#!` and trailing newline.
+    ///
+    /// This overrides the default behavior, which picks an environment Python interpreter
+    /// compatible with the one used to build the PEX file.
+    #[arg(
+        long,
+        help_heading = "Boot Mode",
+        conflicts_with = "sh_boot",
+        verbatim_doc_comment
+    )]
+    python_shebang: Option<String>,
 
     /// The name of the generated PEX file.
     ///
@@ -237,6 +321,19 @@ impl Build {
             None
         };
 
+        assert!(
+            !(self.sh_boot && self.python_shebang.is_some()),
+            "We should never get here by arrangement of a mutex condition between sh_boot and \
+            python_shebang via clap `conflicts_with`."
+        );
+        let shebang = if self.sh_boot {
+            Shebang::ShBoot
+        } else if let Some(shebang) = self.python_shebang {
+            Shebang::Custom(shebang)
+        } else {
+            Shebang::EnvCompatible
+        };
+
         let entry_point = self
             .entry_point
             .map(PexEntryPoint::EntryPoint)
@@ -251,7 +348,21 @@ impl Build {
                 size,
                 Some(|| Cow::Owned(pex_info.display().to_string())),
             )?;
-            pex_info.with_raw_mut(|pi| pi.build_properties.insert("pexrc_version", json!(VERSION)));
+            pex_info.with_raw_mut(|pi| {
+                pi.build_properties.insert("pexrc_version", json!(VERSION));
+
+                if !self.excluded.is_empty() {
+                    pi.excluded = self.excluded.into_iter().map(Cow::Owned).collect()
+                }
+                if !self.overridden.is_empty() {
+                    pi.overridden = self.overridden.into_iter().map(Cow::Owned).collect()
+                }
+                pi.ignore_errors |= self.ignore_errors;
+
+                if self.inherit_path.is_some() {
+                    pi.inherit_path = self.inherit_path;
+                }
+            });
             let requirements = if self.requirements.is_empty() {
                 pex_info
                     .raw()
@@ -288,7 +399,7 @@ impl Build {
                     wheel_options,
                     raw_pex_info,
                     self.packed,
-                    self.sh_boot,
+                    shebang,
                     self.output,
                     self.extra_args,
                 )
@@ -305,6 +416,10 @@ impl Build {
                     .map(ToString::to_string)
                     .map(Cow::Owned)
                     .collect(),
+                excluded: self.excluded.into_iter().map(Cow::Owned).collect(),
+                overridden: self.overridden.into_iter().map(Cow::Owned).collect(),
+                ignore_errors: self.ignore_errors,
+                inherit_path: self.inherit_path,
                 ..Default::default()
             };
             let (pythons, wheels) = resolve_wheel_files(
@@ -324,7 +439,7 @@ impl Build {
                 wheel_options,
                 &mut pex_info,
                 self.packed,
-                self.sh_boot,
+                shebang,
                 self.output,
                 self.extra_args,
             )
@@ -584,23 +699,14 @@ fn resolve_wheels_from_venvs(
             if wheels.contains_key(platform) {
                 continue;
             }
-            let mut requirements = requirements.clone();
             let wheel_files = installed_wheels
                 .keys()
                 .map(|file_name| WheelFile::parse_file_name(file_name))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            if requirements.is_empty() {
-                requirements.extend(
-                    wheel_files
-                        .iter()
-                        .map(|wheel_file| Ok(Requirement::from_str(wheel_file.raw_project_name)?))
-                        .collect::<anyhow::Result<IndexSet<_>>>()?,
-                )
-            }
             let result = match platform {
                 Platform::Details(platform) => resolve_wheels(
                     platform,
-                    requirements,
+                    &requirements,
                     wheel_files,
                     venv_repository,
                     &dependency_configuration,
@@ -609,7 +715,7 @@ fn resolve_wheels_from_venvs(
                 ),
                 Platform::Interpreter(interpreter) => resolve_wheels(
                     interpreter.as_ref(),
-                    requirements,
+                    &requirements,
                     wheel_files,
                     venv_repository,
                     &dependency_configuration,
@@ -820,7 +926,29 @@ fn resolve_wheels_from_files(
     wheels: Vec<PathBuf>,
     pex_info: &RawPexInfo,
 ) -> anyhow::Result<(IndexSet<PythonImplementation>, Vec<PathBuf>)> {
-    if targets.is_empty() || requirements.is_empty() {
+    if targets.is_empty() {
+        if !requirements.is_empty() {
+            struct Requirements(Vec<Requirement<Url>>);
+            impl Display for Requirements {
+                fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "You must specify at least one `--target` to resolve ")?;
+                    if self.0.len() > 1 {
+                        writeln!(f, "requirements:")?;
+                        for (index, requirement) in self.0.iter().enumerate() {
+                            if index + 1 == self.0.len() {
+                                write!(f, "  {requirement}")?;
+                            } else {
+                                writeln!(f, "  {requirement}")?;
+                            }
+                        }
+                    } else {
+                        write!(f, "requirement: {}", self.0.as_slice()[0])?;
+                    }
+                    Ok(())
+                }
+            }
+            bail!("{}", Requirements(requirements))
+        }
         return Ok((indexset!(), wheels));
     }
 
@@ -857,7 +985,7 @@ fn resolve_wheels_from_files(
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 resolve_wheels(
                     &platform,
-                    requirements.clone(),
+                    &requirements,
                     wheel_files,
                     &mut wheel_repository,
                     &dependency_configuration,
@@ -875,7 +1003,7 @@ fn resolve_wheels_from_files(
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 resolve_wheels(
                     &interpreter,
-                    requirements.clone(),
+                    &requirements,
                     wheel_files,
                     &mut wheel_repository,
                     &dependency_configuration,
@@ -898,7 +1026,7 @@ fn build_pex(
     wheel_options: WheelOptions,
     pex_info: &mut RawPexInfo,
     packed: bool,
-    sh_boot: bool,
+    shebang: Shebang,
     output: Option<PathBuf>,
     extra_args: Vec<String>,
 ) -> anyhow::Result<()> {
@@ -913,7 +1041,7 @@ fn build_pex(
                 wheel_options,
                 pex_info,
                 packed,
-                sh_boot,
+                shebang,
                 &path,
             )
         }
@@ -930,7 +1058,7 @@ fn build_pex(
                     wheel_options,
                     pex_info,
                     packed,
-                    sh_boot,
+                    shebang,
                     path,
                 )?;
                 execute_pex(path, extra_args)
@@ -945,7 +1073,7 @@ fn build_pex(
                     wheel_options,
                     pex_info,
                     packed,
-                    sh_boot,
+                    shebang,
                     path,
                 )?;
                 execute_pex(path, extra_args)
@@ -1046,7 +1174,7 @@ fn create_pex(
     wheel_options: WheelOptions,
     pex_info: &mut RawPexInfo,
     packed: bool,
-    sh_boot: bool,
+    shebang: Shebang,
     path: &Path,
 ) -> anyhow::Result<()> {
     let wheel_files = file_names(wheels.iter().map(|wheel| wheel.path.as_path()))?
@@ -1105,7 +1233,7 @@ fn create_pex(
         )
         .collect::<Vec<_>>();
     if packed {
-        create_packed_pex(pythons, wheels, pex_info, clibs, proxies, sh_boot, path)
+        create_packed_pex(pythons, wheels, pex_info, clibs, proxies, shebang, path)
     } else {
         create_zipapp(
             pythons,
@@ -1114,7 +1242,7 @@ fn create_pex(
             pex_info,
             clibs,
             proxies,
-            sh_boot,
+            shebang,
             path,
         )
     }
@@ -1127,7 +1255,7 @@ fn create_packed_pex(
     pex_info: &mut RawPexInfo,
     clibs: Vec<&Binary>,
     proxies: Vec<&Binary>,
-    sh_boot: bool,
+    shebang: Shebang,
     path: &Path,
 ) -> anyhow::Result<()> {
     let mut dest_dir = if let Some(parent_dir) = path.parent() {
@@ -1135,39 +1263,6 @@ fn create_packed_pex(
     } else {
         tempfile::tempdir()
     }?;
-
-    let preferred_python = if pythons.len() == 1 {
-        pythons.into_iter().next()
-    } else {
-        None
-    };
-
-    // TODO: XXX: shebang option.
-    let shebang = if sh_boot {
-        // TODO: XXX hermetic option.
-        let hermetic = true;
-        Cow::Owned(create_sh_boot_shebang(
-            "<subject>",
-            pex_info,
-            hermetic,
-            preferred_python,
-        )?)
-    } else if let Some(preferred_python) = preferred_python {
-        Cow::Owned(match preferred_python {
-            PythonImplementation::CPython(python) => format!(
-                "#!/usr/bin/env python{major}.{minor}\n",
-                major = python.major,
-                minor = python.minor
-            ),
-            PythonImplementation::PyPy(pypy) => format!(
-                "#!/usr/bin/env pypy{major}.{minor}\n",
-                major = pypy.major,
-                minor = pypy.minor
-            ),
-        })
-    } else {
-        Cow::Borrowed("#!/usr/bin/env python\n")
-    };
 
     let deps_dir = dest_dir.path().join(".deps");
     fs::create_dir(&deps_dir)?;
@@ -1200,6 +1295,9 @@ fn create_packed_pex(
     let mut pex_info_fp = File::create_new(dest_dir.path().join("PEX-INFO"))?;
     pex_info.write(&mut pex_info_fp)?;
 
+    let mut shebang_buffer = sh_boot_buffer();
+    write_shebang(pythons, pex_info, shebang, &mut shebang_buffer)?;
+    let shebang = String::from_utf8(shebang_buffer)?;
     write_boot(dest_dir.path(), shebang.as_ref())?;
 
     if path.is_dir() {
@@ -1220,7 +1318,7 @@ fn create_zipapp(
     pex_info: &mut RawPexInfo,
     clibs: Vec<&Binary>,
     proxies: Vec<&Binary>,
-    sh_boot: bool,
+    shebang: Shebang,
     path: &Path,
 ) -> anyhow::Result<()> {
     let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
@@ -1228,38 +1326,7 @@ fn create_zipapp(
     } else {
         NamedTempFile::new()?
     };
-
-    let preferred_python = if pythons.len() == 1 {
-        pythons.into_iter().next()
-    } else {
-        None
-    };
-
-    // TODO: XXX: shebang option.
-    if sh_boot {
-        // TODO: XXX hermetic option.
-        let hermetic = true;
-        let sh_boot_shebang =
-            create_sh_boot_shebang("<subject>", pex_info, hermetic, preferred_python)?;
-        dst_zip_fp.write_all(sh_boot_shebang.as_bytes())?;
-    } else if let Some(preferred_python) = preferred_python {
-        match preferred_python {
-            PythonImplementation::CPython(python) => writeln!(
-                dst_zip_fp,
-                "#!/usr/bin/env python{major}.{minor}",
-                major = python.major,
-                minor = python.minor
-            )?,
-            PythonImplementation::PyPy(pypy) => writeln!(
-                dst_zip_fp,
-                "#!/usr/bin/env pypy{major}.{minor}",
-                major = pypy.major,
-                minor = pypy.minor
-            )?,
-        };
-    } else {
-        dst_zip_fp.write_all(b"#!/usr/bin/env python\n")?;
-    }
+    write_shebang(pythons, pex_info, shebang, &mut dst_zip_fp)?;
 
     let mut dst_zip = ZipWriter::new(&dst_zip_fp);
 
@@ -1310,6 +1377,54 @@ fn create_zipapp(
     dst_zip_fp.persist(path)?;
 
     Ok(())
+}
+
+fn write_shebang(
+    pythons: IndexSet<PythonImplementation>,
+    pex_info: &mut RawPexInfo,
+    shebang: Shebang,
+    sink: &mut impl Write,
+) -> anyhow::Result<()> {
+    let preferred_python = || {
+        if pythons.len() == 1 {
+            pythons.into_iter().next()
+        } else {
+            None
+        }
+    };
+
+    match shebang {
+        Shebang::Custom(shebang) => {
+            writeln!(
+                sink,
+                "#!{shebang}",
+                shebang = shebang.trim_prefix("#!").trim_suffix('\n')
+            )?;
+            Ok(())
+        }
+        Shebang::EnvCompatible => {
+            if let Some(preferred_python) = preferred_python() {
+                match preferred_python {
+                    PythonImplementation::CPython(python) => writeln!(
+                        sink,
+                        "#!/usr/bin/env python{major}.{minor}",
+                        major = python.major,
+                        minor = python.minor
+                    )?,
+                    PythonImplementation::PyPy(pypy) => writeln!(
+                        sink,
+                        "#!/usr/bin/env pypy{major}.{minor}",
+                        major = pypy.major,
+                        minor = pypy.minor
+                    )?,
+                };
+            } else {
+                sink.write_all(b"#!/usr/bin/env python\n")?;
+            }
+            Ok(())
+        }
+        Shebang::ShBoot => write_sh_boot_shebang("<subject>", pex_info, preferred_python(), sink),
+    }
 }
 
 fn execute_pex(pex: &Path, extra_args: Vec<String>) -> anyhow::Result<()> {

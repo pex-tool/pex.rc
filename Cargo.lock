@@ -185,6 +185,7 @@ dependencies = [
  "pexrs",
  "platform",
  "python-platform",
+ "shlex",
  "zip",
 ]
 
@@ -2270,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anstream",
  "anyhow",

@@ -234,8 +234,10 @@ fn prepare_venv<'a>(
         let shebang_interpreter = venv_dir.join(interpreter_relpath);
         let shebang_arg = if (pex_info.venv && pex_info.venv_hermetic_scripts)
             || (!pex_info.venv
-                && pex_info.inherit_path.unwrap_or(InheritPath::False) == InheritPath::False)
-        {
+                && matches!(
+                    pex_info.inherit_path.unwrap_or(InheritPath::False),
+                    InheritPath::False
+                )) {
             Some(venv.interpreter.hermetic_args())
         } else {
             None

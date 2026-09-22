@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail};
 use fs_err as fs;
 use fs_err::File;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, indexmap};
 use interpreter::{Interpreter, InterpreterConstraints, SearchPath};
 use itertools::Itertools;
 use pep508_rs::Requirement;
@@ -197,6 +197,10 @@ impl<'a> Pex<'a> {
         dependency_configuration: &DependencyConfiguration,
         collect_extra_metadata: Option<CollectWheelMetadata<'a>>,
     ) -> anyhow::Result<IndexMap<&'a str, ResolvedWheel<'a>>> {
+        if self.info.raw().requirements.is_empty() {
+            return Ok(indexmap! {});
+        }
+
         let requirements: Vec<Requirement<Url>> = self
             .info
             .raw()
@@ -216,7 +220,7 @@ impl<'a> Pex<'a> {
             // detects as `--layout packed`, which properly handles the .whl zips.
             Layout::Loose => resolver::resolve_wheels(
                 target,
-                requirements,
+                &requirements,
                 wheel_files,
                 &mut LoosePexMetadataReader(self.path),
                 dependency_configuration,
@@ -228,7 +232,7 @@ impl<'a> Pex<'a> {
             // in behavior is needed.
             Layout::Packed => resolver::resolve_wheels(
                 target,
-                requirements,
+                &requirements,
                 wheel_files,
                 &mut PackedPexMetadataReader(self.path),
                 dependency_configuration,
@@ -237,7 +241,7 @@ impl<'a> Pex<'a> {
             ),
             Layout::ZipApp => resolver::resolve_wheels(
                 target,
-                requirements,
+                &requirements,
                 wheel_files,
                 &mut ZipAppPexMetadataReader::new(self.path, self.info.raw().deps_are_wheel_files)?,
                 dependency_configuration,

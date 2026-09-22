@@ -4,8 +4,9 @@
 use std::borrow::Cow;
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
+use std::str::FromStr;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use cache::Fingerprint;
 use indexmap::IndexMap;
 use interpreter::SelectionStrategy;
@@ -36,7 +37,7 @@ impl BinPath {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub enum InheritPath {
     #[serde(rename = "false")]
     False,
@@ -44,6 +45,22 @@ pub enum InheritPath {
     Prefer,
     #[serde(rename = "fallback")]
     Fallback,
+}
+
+impl FromStr for InheritPath {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "false" => Ok(Self::False),
+            "prefer" => Ok(Self::Prefer),
+            "fallback" => Ok(Self::Fallback),
+            _ => bail!(
+                "Invalid value for InheritPath: {s}.\n\
+                Most be one of: false, prefer or fallback"
+            ),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
@@ -74,7 +91,7 @@ pub struct RawPexInfo<'a> {
     pub emit_warnings: bool,
     #[serde(borrow)]
     pub entry_point: Option<Cow<'a, str>>,
-    pub excluded: Vec<&'a str>,
+    pub excluded: Vec<Cow<'a, str>>,
     pub ignore_errors: bool,
     pub inherit_path: Option<InheritPath>,
     pub inject_args: Vec<&'a str>,
@@ -82,7 +99,7 @@ pub struct RawPexInfo<'a> {
     pub inject_python_args: Vec<&'a str>,
     pub interpreter_constraints: Vec<&'a str>,
     pub interpreter_selection_strategy: Option<InterpreterSelectionStrategy>,
-    pub overridden: Vec<&'a str>,
+    pub overridden: Vec<Cow<'a, str>>,
     #[serde(borrow)]
     pub pex_hash: Cow<'a, str>,
     #[serde(borrow)]
