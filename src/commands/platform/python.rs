@@ -1,6 +1,8 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
+
 use clap::Args;
 use cli::{Json, Output};
 use interpreter::Interpreter;
@@ -24,18 +26,18 @@ pub struct Python {
 }
 
 impl Python {
-    pub fn execute(&self) -> anyhow::Result<()> {
+    pub fn execute(self) -> anyhow::Result<()> {
         self.output.configure()?;
 
         let mut out = self.output.writer()?;
-        match &self.python_platform {
+        match self.python_platform {
             PythonPlatform::Spec(spec) => {
-                let platform = python_platform::parse(spec, None, None)?;
+                let platform = python_platform::parse(Cow::Owned(spec), None, None)?;
                 self.json.serialize(&mut out, &platform)
             }
             PythonPlatform::Interpreter(path) => {
                 let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
-                let interpreter = Interpreter::load(path, &identification_script)?;
+                let interpreter = Interpreter::load(&path, &identification_script)?;
                 self.json
                     .serialize(&mut out, interpreter.platform_details())
             }

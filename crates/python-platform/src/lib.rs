@@ -250,7 +250,7 @@ With this, you have a full [^2] specification Python platform specification. For
 
 #[instrument(level = "debug", skip_all)]
 pub fn parse<'a>(
-    spec: &'a str,
+    spec: Cow<'a, str>,
     platform_release: Option<PlatformRelease<'a>>,
     platform_version: Option<PlatformVersion<'a>>,
 ) -> anyhow::Result<PlatformDetails<'a>> {

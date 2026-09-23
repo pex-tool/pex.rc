@@ -254,6 +254,7 @@ indexmap = { workspace = true }
 interpreter = { path = "crates/interpreter" }
 itertools = { workspace = true }
 logging = { path = "crates/logging" }
+ouroboros = { workspace = true }
 owo-colors = { workspace = true }
 pep508_rs = { workspace = true }
 pex = { path = "crates/pex" }
