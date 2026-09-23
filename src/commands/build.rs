@@ -23,7 +23,7 @@ use itertools::Itertools;
 use pep508_rs::Requirement;
 use pex::{InheritPath, PexInfo, RawPexInfo};
 use platform::mark_executable;
-use python_platform::{PlatformDetails, PythonImplementation};
+use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use repackage::{WheelOptions, recompress_zipped_whl_to_file};
 use resolver::dependency_configuration::DependencyConfiguration;
@@ -45,7 +45,7 @@ use zip_ext::ZipArchiveExt;
 use crate::VERSION;
 use crate::compression_method::CompressionArgs;
 use crate::embeds::{AVAILABLE_TARGETS, Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
-use crate::target::{PYTHON_PLATFORM_LONG_HELP, PythonPlatform, RequiredTargets};
+use crate::target::{PythonPlatform, RequiredTargets};
 
 enum InstalledDistributions {
     Venvs(Vec<PathBuf>),

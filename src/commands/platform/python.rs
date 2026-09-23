@@ -4,9 +4,10 @@
 use clap::Args;
 use cli::{Json, Output};
 use interpreter::Interpreter;
+use python_platform::PYTHON_PLATFORM_LONG_HELP;
 use scripts::{IdentifyInterpreter, Scripts};
 
-use crate::target::{PYTHON_PLATFORM_LONG_HELP, PythonPlatform};
+use crate::target::PythonPlatform;
 
 #[derive(Args)]
 #[group(skip)]
