@@ -1416,7 +1416,7 @@ fn create_zipapp(
 }
 
 fn write_shebang(
-    preferred_python: Option<&Platform>,
+    preferred_platform: Option<&Platform>,
     pex_info: &mut RawPexInfo,
     shebang: Shebang,
     sink: &mut impl Write,
@@ -1431,8 +1431,8 @@ fn write_shebang(
             Ok(())
         }
         Shebang::EnvCompatible => {
-            if let Some(preferred_python) = preferred_python {
-                match preferred_python.implementation()? {
+            if let Some(preferred_platform) = preferred_platform {
+                match preferred_platform.implementation()? {
                     PythonImplementation::CPython(python) => writeln!(
                         sink,
                         "#!/usr/bin/env python{major}.{minor}",
@@ -1452,7 +1452,7 @@ fn write_shebang(
             Ok(())
         }
         Shebang::ShBoot => {
-            let preferred_python = if let Some(preferred) = preferred_python {
+            let preferred_python = if let Some(preferred) = preferred_platform {
                 Some(preferred.implementation()?)
             } else {
                 None
