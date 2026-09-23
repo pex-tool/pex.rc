@@ -91,6 +91,7 @@ pub struct RawPexInfo<'a> {
     pub emit_warnings: bool,
     #[serde(borrow)]
     pub entry_point: Option<Cow<'a, str>>,
+    #[serde(borrow)]
     pub excluded: Vec<Cow<'a, str>>,
     pub ignore_errors: bool,
     pub inherit_path: Option<InheritPath>,
@@ -99,6 +100,7 @@ pub struct RawPexInfo<'a> {
     pub inject_python_args: Vec<&'a str>,
     pub interpreter_constraints: Vec<&'a str>,
     pub interpreter_selection_strategy: Option<InterpreterSelectionStrategy>,
+    #[serde(borrow)]
     pub overridden: Vec<Cow<'a, str>>,
     #[serde(borrow)]
     pub pex_hash: Cow<'a, str>,
