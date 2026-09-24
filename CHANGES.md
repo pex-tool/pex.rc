@@ -1,16 +1,28 @@
 # Release Notes
 
+## 0.27.0
+
+This release adds support for `--include-tools` to `pexrc -X build`. This option just acts as an
+assertion that `pexrc` was built with tool support. If it wasn't and the command fails as a result,
+you still have to go find a `pexrc` built with tool support.
+
+In addition, a resolver bug that would let some requirements silently go unsatisfied is fixed and
+resolution error messages are improved.
+
+Finally, all `pexrc` errors are now rendered to the console in red when colors are supported /
+enabled.
+
 ## 0.26.0
 
 This release adds support for `--target python3.14` and `--target pypy3.11`; i.e.: `python` is
 treated as if `cpython` was specified, and the need for the `-` separator between the python
-implementation and the version is no longr required. This allows a natural spelling of a local
+implementation and the version is no longer required. This allows a natural spelling of a local
 target on unix hosts via the typical Python binary names.
 
-In addition, ephemeral PEXes are now executed under the preferred interpreter. For `--venv`
-repositories, with no `--target`s specified, this is the base interpreter of the 1st listed
-`--venv`. If there are `--target`s specified though, the base interpreter of the 1st listed
-`--venv` that satisfies the resolve for the 1st listed `--target` is used.
+In addition, `pexrc -X build` ephemeral PEXes are now executed under the preferred interpreter. For
+`--venv` repositories, with no `--target`s specified, this is the base interpreter of the 1st listed
+`--venv`. If there are `--target`s specified though, the base interpreter of the 1st listed `--venv`
+that satisfies the resolve for the 1st listed `--target` is used.
 
 ## 0.25.0
 
