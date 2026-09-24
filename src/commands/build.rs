@@ -1075,6 +1075,11 @@ fn build_pex(
         }
         None => {
             let subject = Cow::Borrowed("ephemeral PEX");
+            let (python_args, args) = if pex_info.has_entry_point() {
+                (vec![], extra_args)
+            } else {
+                (extra_args, vec![])
+            };
             if packed {
                 let chroot = tempfile::tempdir()?;
                 let path = chroot.path();
@@ -1089,7 +1094,7 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(path, extra_args, preferred_python)
+                execute_pex(preferred_python, python_args, path, args)
             } else {
                 let pex = NamedTempFile::new()?;
                 let path = pex.path();
@@ -1104,7 +1109,7 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(path, extra_args, preferred_python)
+                execute_pex(preferred_python, python_args, path, args)
             }
         }
     }
@@ -1463,11 +1468,12 @@ fn write_shebang(
 }
 
 fn execute_pex(
-    pex: &Path,
-    extra_args: Vec<String>,
     preferred_python: Option<&Interpreter>,
+    python_args: Vec<String>,
+    pex: &Path,
+    args: Vec<String>,
 ) -> anyhow::Result<()> {
     let preferred_python = preferred_python.map(|interpreter| interpreter.realpath.as_path());
-    let exit_code = pexrs::boot(preferred_python, vec![], pex, extra_args, false)?;
+    let exit_code = pexrs::boot(preferred_python, python_args, pex, args, false)?;
     process::exit(exit_code)
 }

@@ -145,6 +145,10 @@ impl<'a> RawPexInfo<'a> {
     pub fn write(&self, writer: impl Write) -> anyhow::Result<()> {
         Ok(serde_json::to_writer(writer, self)?)
     }
+
+    pub fn has_entry_point(&self) -> bool {
+        self.entry_point.is_some() || self.script.is_some()
+    }
 }
 
 #[self_referencing]
