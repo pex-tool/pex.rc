@@ -8,7 +8,7 @@ use std::io::{BufReader, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::{io, process};
 
-use anyhow::{anyhow, bail};
+use anyhow::{Error, anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
 use cache::{CacheDir, DigestingWriter, Fingerprint, atomic_file};
 use clap::{ArgAction, Args};
@@ -19,7 +19,6 @@ use fs_err as fs;
 use fs_err::File;
 use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::Interpreter;
-use itertools::Itertools;
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
 use pex::{InheritPath, PexInfo, RawPexInfo};
@@ -114,7 +113,6 @@ enum Shebang {
 //   },
 //
 //   "emit_warnings": true  # There is not yet a pex_warnings facility; just generic warn tracing.
-//   "includes_tools": false  # This could act as an assertion pexrc is built with tools.
 //
 //   "pex_root": "/home/jsirois/.cache/pex",
 //
@@ -177,6 +175,12 @@ pub struct Build {
     /// Ignore requirement resolution solver errors when building PEXes and later invoking them.
     #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
     ignore_errors: bool,
+
+    /// Ensure the PEX is built with included tools.
+    ///
+    /// If this `pexrc` does not include tools, the build will fail fast.
+    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
+    include_tools: bool,
 
     /// Venvs containing distributions to include in the PEX.
     ///
@@ -278,12 +282,7 @@ pub struct Build {
     /// and other needed assets as-is under that. This can be useful in situations where using
     /// rsync-style transfer to ship incremental updates to large PEXes as opposed to having to ship
     /// the whole PEX.
-    #[arg(
-        long,
-        help_heading = "Layout",
-        default_value_t = false,
-        verbatim_doc_comment
-    )]
+    #[arg(long, help_heading = "Layout", verbatim_doc_comment)]
     packed: bool,
 
     /// Instead of booting via a Python shebang, boot via a Posix `sh` shebang.
@@ -300,7 +299,6 @@ pub struct Build {
     #[arg(
         long,
         help_heading = "Boot Mode",
-        default_value_t = false,
         conflicts_with = "python_shebang",
         verbatim_doc_comment
     )]
@@ -342,6 +340,12 @@ pub struct Build {
 
 impl Build {
     pub fn execute(self) -> anyhow::Result<()> {
+        if self.include_tools && !cfg!(feature = "tools") {
+            bail!(
+                "You requested the PEX `--include-tools` but this `pexrc` binary was not built \
+                with PEX_TOOLS support!"
+            )
+        }
         if !self.extra_args.is_empty()
             && let Some(output) = self.output.as_deref()
         {
@@ -746,6 +750,7 @@ fn resolve_wheels_from_venvs<'a>(
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let result = match platform {
                 Platform::Details(platform) => resolve_wheels(
+                    "venv",
                     platform,
                     &requirements,
                     wheel_files,
@@ -755,6 +760,7 @@ fn resolve_wheels_from_venvs<'a>(
                     pex_info.ignore_errors,
                 ),
                 Platform::Interpreter(interpreter) => resolve_wheels(
+                    "venv",
                     interpreter.as_ref(),
                     &requirements,
                     wheel_files,
@@ -799,12 +805,39 @@ fn resolve_wheels_from_venvs<'a>(
         }
     }
     if !errors_by_platform.is_empty() {
-        // TODO: XXX: Better error message.
-        bail!(
-            "Failed to resolve wheels for {count} platforms:\n{errs}",
-            count = errors_by_platform.len(),
-            errs = errors_by_platform.values().flatten().join("\n")
-        )
+        struct ErrorsByPlatform<'a>(IndexMap<&'a Platform<'a>, Vec<Error>>);
+        impl<'a> Display for ErrorsByPlatform<'a> {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                let count = self.0.len();
+                write!(
+                    f,
+                    "Failed to resolve wheels for {count} {platforms}:",
+                    platforms = if count == 1 { "platform" } else { "platforms" },
+                )?;
+                for (index, (platform, errors)) in self.0.iter().enumerate() {
+                    writeln!(f)?;
+                    write!(f, "{index:>3}. ", index = index + 1)?;
+                    match *platform {
+                        Platform::Details(platform) => {
+                            write!(f, "Target {platform}")?;
+                        }
+                        Platform::Interpreter(interpreter) => {
+                            if interpreter.is_venv() {
+                                write!(f, "Venv @ {}", interpreter.details.prefix.display())?;
+                            } else {
+                                write!(f, "Interpreter @ {}", interpreter.details.path.display())?;
+                            }
+                        }
+                    }
+                    for error in errors.iter() {
+                        writeln!(f)?;
+                        write!(f, "    - {error}")?;
+                    }
+                }
+                Ok(())
+            }
+        }
+        bail!("{}", ErrorsByPlatform(errors_by_platform))
     }
 
     let mut wheel_paths = vec![];
@@ -1014,6 +1047,7 @@ fn resolve_wheels_from_files<'a>(
                     .map(|file_name| WheelFile::parse_file_name(file_name))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 resolve_wheels(
+                    "specified set of wheels",
                     platform,
                     &requirements,
                     wheel_files,
@@ -1029,6 +1063,7 @@ fn resolve_wheels_from_files<'a>(
                     .map(|file_name| WheelFile::parse_file_name(file_name))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 resolve_wheels(
+                    "specified set of wheels",
                     interpreter.as_ref(),
                     &requirements,
                     wheel_files,

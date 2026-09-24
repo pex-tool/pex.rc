@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -70,8 +71,10 @@ impl<'a> CollectWheelMetadata<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(level = "debug", skip_all)]
 pub fn resolve_wheels<'a>(
+    source: impl Display,
     target: &impl PythonPlatform<'a>,
     requirements: &[Requirement<Url>],
     wheel_files: Vec<WheelFile<'a>>,
@@ -189,6 +192,7 @@ pub fn resolve_wheels<'a>(
 
     let marker_env = target.marker_env();
     let no_wheels: Vec<WheelInfo> = vec![];
+    let mut inapplicable_wheels: Vec<&str> = vec![];
     while let Some((requirement, extras_index)) = to_resolve.pop_front() {
         let requirement_key = RequirementKey::of(requirement);
 
@@ -234,29 +238,49 @@ pub fn resolve_wheels<'a>(
                         }
                     })
                     .collect::<Vec<_>>();
-                let count = inapplicable_wheels.len();
-                let wheels = if count == 1 { "wheel" } else { "wheels" };
-                let reason = if inapplicable_wheels.is_empty() {
-                    format_args!(
-                        "The PEX contains {count} embedded {wheels} for project: {project}",
-                        project = requirement.name
-                    )
-                } else {
-                    format_args!(
-                        "The PEX contains {count} inapplicable {wheels} for project: \
-                            {project}\n\
-                            {inapplicable_wheels}",
-                        project = requirement.name,
-                        inapplicable_wheels = inapplicable_wheels.join("\n")
-                    )
-                };
+                struct Reason<'a, S: Display>(&'a S, &'a Requirement<Url>, Vec<&'a str>);
+                impl<'a, S: Display> Display for Reason<'a, S> {
+                    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                        let project = &self.1.name;
+                        if self.2.is_empty() {
+                            write!(
+                                f,
+                                "The {source} contains no wheels for project: {project}",
+                                source = self.0
+                            )
+                        } else {
+                            let count = self.2.len();
+                            let wheels = if count == 1 { "wheel" } else { "wheels" };
+                            write!(
+                                f,
+                                "The {source} contains {count} inapplicable {wheels} for project \
+                                {project}: ",
+                                source = self.0
+                            )?;
+                            if count == 1 {
+                                write!(f, "{}", self.2.first().expect("We checked there was 1."))?;
+                            } else {
+                                for (index, inapplicable_wheel) in self.2.iter().enumerate() {
+                                    if index == 0 {
+                                        write!(f, " {}", inapplicable_wheel)?;
+                                    } else if index + 1 < count {
+                                        write!(f, ", {}", inapplicable_wheel)?;
+                                    } else {
+                                        write!(f, " and {}", inapplicable_wheel)?;
+                                    }
+                                }
+                            }
+                            Ok(())
+                        }
+                    }
+                }
                 anyhow!(
-                    "The requirement {requirement} cannot be satisfied for {target}.\n\
-                    {reason}",
-                    target = target.description(),
-                    reason = reason,
+                    "The requirement {requirement} cannot be satisfied: {reason}",
+                    reason = Reason(&source, requirement, inapplicable_wheels)
                 )
             })?;
+
+        inapplicable_wheels.clear();
         for WheelInfo {
             file_name,
             raw_project_name,
@@ -275,6 +299,7 @@ pub fn resolve_wheels<'a>(
                 match version_or_url {
                     VersionOrUrl::VersionSpecifier(version_specifier) => {
                         if !version_specifier.contains(version) {
+                            inapplicable_wheels.push(file_name);
                             continue;
                         }
                     }
@@ -324,7 +349,37 @@ pub fn resolve_wheels<'a>(
                     extras_index,
                 ))
             }
+            inapplicable_wheels.clear();
             break;
+        }
+        if !inapplicable_wheels.is_empty() {
+            struct InapplicableWheels<'a, S: Display>(S, &'a Requirement<Url>, Vec<&'a str>);
+            impl<'a, S: Display> Display for InapplicableWheels<'a, S> {
+                fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                    let count = self.2.len();
+                    let wheels = if count == 1 { "wheel" } else { "wheels" };
+                    write!(
+                        f,
+                        "The {source} contains {count} inapplicable {wheels} for requirement \
+                        `{requirement}`:",
+                        source = self.0,
+                        requirement = self.1
+                    )?;
+                    if count == 1 {
+                        write!(f, " {}", self.2.first().expect("We checked there was 1"))?;
+                    } else {
+                        for inapplicable_wheel in &self.2 {
+                            writeln!(f)?;
+                            write!(f, "{inapplicable_wheel}")?;
+                        }
+                    }
+                    Ok(())
+                }
+            }
+            bail!(
+                "{}",
+                InapplicableWheels(source, requirement, inapplicable_wheels)
+            )
         }
     }
     Ok(resolved_by_project_name

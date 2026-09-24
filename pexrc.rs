@@ -4,14 +4,24 @@
 #![deny(clippy::all)]
 
 use std::collections::{HashMap, HashSet};
-use std::env;
+use std::{env, process};
 
 use anyhow::bail;
-use clap::{ArgMatches, Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{
+    ArgMatches,
+    Args,
+    ColorChoice,
+    Command,
+    CommandFactory,
+    FromArgMatches,
+    Parser,
+    Subcommand,
+};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use cli::Output;
 use color_print::cstr;
 use colorchoice_clap::Color;
+use owo_colors::OwoColorize;
 use pexrc::commands::{Build, Extract, Inject, Platform, Python, Script, info};
 
 /// Pex Runtime Control.
@@ -155,7 +165,7 @@ const EXPERIMENTAL_COMMAND_WARNING: &str = cstr!(
     </>"
 );
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     let (mut cli_command, experimental_commands) =
         if env::args_os().any(|arg| arg == "-X" || arg == "--experiment") {
             let cli_command = Cli::command();
@@ -200,6 +210,18 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    if let Err(err) = execute(cli_command, experimental_commands, matches, ansi) {
+        anstream::eprintln!("{}", err.red());
+        process::exit(1);
+    }
+}
+
+fn execute(
+    cli_command: Command,
+    experimental_commands: Option<HashMap<String, String>>,
+    matches: ArgMatches,
+    ansi: Option<bool>,
+) -> anyhow::Result<()> {
     let _flush_handles = logging::init(
         Verbosity::<WarnLevel>::from_arg_matches(&matches)
             .ok()

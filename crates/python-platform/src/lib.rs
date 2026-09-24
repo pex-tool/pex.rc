@@ -16,7 +16,7 @@ mod version;
 mod windows;
 
 use std::borrow::Cow;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::path::Path;
 use std::str::FromStr;
@@ -107,6 +107,12 @@ impl<'a> PlatformDetails<'a> {
                 },
             }))
         }
+    }
+}
+
+impl<'a> Display for PlatformDetails<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.source.as_ref())
     }
 }
 
