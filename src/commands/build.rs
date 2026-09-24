@@ -114,7 +114,6 @@ enum Shebang {
 //   },
 //
 //   "emit_warnings": true  # There is not yet a pex_warnings facility; just generic warn tracing.
-//   "includes_tools": false  # This could act as an assertion pexrc is built with tools.
 //
 //   "pex_root": "/home/jsirois/.cache/pex",
 //
@@ -177,6 +176,12 @@ pub struct Build {
     /// Ignore requirement resolution solver errors when building PEXes and later invoking them.
     #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
     ignore_errors: bool,
+
+    /// Ensure the PEX is built with included tools.
+    ///
+    /// If this `pexrc` does not include tools, the build will fail fast.
+    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
+    include_tools: bool,
 
     /// Venvs containing distributions to include in the PEX.
     ///
@@ -278,12 +283,7 @@ pub struct Build {
     /// and other needed assets as-is under that. This can be useful in situations where using
     /// rsync-style transfer to ship incremental updates to large PEXes as opposed to having to ship
     /// the whole PEX.
-    #[arg(
-        long,
-        help_heading = "Layout",
-        default_value_t = false,
-        verbatim_doc_comment
-    )]
+    #[arg(long, help_heading = "Layout", verbatim_doc_comment)]
     packed: bool,
 
     /// Instead of booting via a Python shebang, boot via a Posix `sh` shebang.
@@ -300,7 +300,6 @@ pub struct Build {
     #[arg(
         long,
         help_heading = "Boot Mode",
-        default_value_t = false,
         conflicts_with = "python_shebang",
         verbatim_doc_comment
     )]
@@ -342,6 +341,12 @@ pub struct Build {
 
 impl Build {
     pub fn execute(self) -> anyhow::Result<()> {
+        if self.include_tools && !cfg!(feature = "tools") {
+            bail!(
+                "You requested the PEX `--include-tools` but this `pexrc` binary was not built \
+                with PEX_TOOLS support!"
+            )
+        }
         if !self.extra_args.is_empty()
             && let Some(output) = self.output.as_deref()
         {
