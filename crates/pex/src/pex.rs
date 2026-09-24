@@ -219,6 +219,7 @@ impl<'a> Pex<'a> {
             // N.B.: When deps_are_wheel_files for a `--layout loose` PEX, our layout detection
             // detects as `--layout packed`, which properly handles the .whl zips.
             Layout::Loose => resolver::resolve_wheels(
+                "PEX",
                 target,
                 &requirements,
                 wheel_files,
@@ -231,6 +232,7 @@ impl<'a> Pex<'a> {
             // zips and normal .whl zips have the same for code and metadata; so no differentiation
             // in behavior is needed.
             Layout::Packed => resolver::resolve_wheels(
+                "PEX",
                 target,
                 &requirements,
                 wheel_files,
@@ -240,6 +242,7 @@ impl<'a> Pex<'a> {
                 ignore_errors,
             ),
             Layout::ZipApp => resolver::resolve_wheels(
+                "PEX",
                 target,
                 &requirements,
                 wheel_files,
