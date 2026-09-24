@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2295,6 +2295,7 @@ dependencies = [
  "interpreter",
  "itertools 0.15.0",
  "logging",
+ "ouroboros",
  "owo-colors",
  "pep508_rs",
  "pex",

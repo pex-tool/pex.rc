@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.25.0"
+version = "0.26.0"
 edition = { workspace = true }
 publish = false
 
@@ -254,6 +254,7 @@ indexmap = { workspace = true }
 interpreter = { path = "crates/interpreter" }
 itertools = { workspace = true }
 logging = { path = "crates/logging" }
+ouroboros = { workspace = true }
 owo-colors = { workspace = true }
 pep508_rs = { workspace = true }
 pex = { path = "crates/pex" }

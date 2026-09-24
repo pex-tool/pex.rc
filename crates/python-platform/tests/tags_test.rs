@@ -1,6 +1,7 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use interpreter::Interpreter;
@@ -53,7 +54,7 @@ fn test_abbreviated_platform(
         arch = Arch::current().unwrap(),
     );
     let platform_details = parse(
-        &spec,
+        Cow::Owned(spec),
         Some(PlatformRelease::new(
             interpreter.marker_env().platform_release(),
         )),

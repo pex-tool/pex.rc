@@ -1,5 +1,17 @@
 # Release Notes
 
+## 0.26.0
+
+This release adds support for `--target python3.14` and `--target pypy3.11`; i.e.: `python` is
+treated as if `cpython` was specified, and the need for the `-` separator between the python
+implementation and the version is no longr required. This allows a natural spelling of a local
+target on unix hosts via the typical Python binary names.
+
+In addition, ephemeral PEXes are now executed under the preferred interpreter. For `--venv`
+repositories, with no `--target`s specified, this is the base interpreter of the 1st listed
+`--venv`. If there are `--target`s specified though, the base interpreter of the 1st listed
+`--venv` that satisfies the resolve for the 1st listed `--target` is used.
+
 ## 0.25.0
 
 This release add support for several `pex` features to `pexrc -X build`:
