@@ -191,6 +191,7 @@ plist = "1.9"
 pretty_assertions = "1.4"
 python-pkginfo = "0.6"
 rayon = "1.12"
+reflink-copy = "0.1"
 regex = "1.12"
 rfc2047-decoder = "1.1"
 rstest = "0.27"
@@ -259,7 +260,7 @@ owo-colors = { workspace = true }
 pep508_rs = { workspace = true }
 pex = { path = "crates/pex" }
 pexrs = { path = "crates/pexrs" }
-platform = { path = "crates/platform" }
+platform = { path = "crates/platform", features = ["reflink"] }
 python-platform = { path = "crates/python-platform" }
 python-proxy = { path = "crates/python-proxy" }
 rayon = { workspace = true }
