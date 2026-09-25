@@ -10,7 +10,7 @@ use indexmap::{IndexSet, indexset};
 use same_file::is_same_file;
 use tracing::instrument;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SearchPath {
     pex_python: Option<OsString>,
     pex_python_path: Option<Vec<PathBuf>>,
@@ -26,9 +26,8 @@ impl SearchPath {
 
     pub fn known(python_exes: IndexSet<PathBuf>) -> Self {
         Self {
-            pex_python: None,
-            pex_python_path: None,
             python_exes: Some(python_exes),
+            ..Default::default()
         }
     }
 
@@ -47,10 +46,10 @@ impl SearchPath {
 
         let mut python_exes: Option<IndexSet<PathBuf>> = None;
         let pex_python_path = if let Some(pex_python_path) = env::var_os("PEX_PYTHON_PATH") {
-            let path = env::split_paths(&pex_python_path);
+            let search_path = env::split_paths(&pex_python_path);
             if let Some(python) = python_exe {
                 let mut contained = false;
-                for entry in path {
+                for entry in search_path {
                     if python.starts_with(entry) {
                         contained = true;
                         break;
@@ -66,32 +65,8 @@ impl SearchPath {
                 }
                 python_exes = Some(indexset![python]);
                 None
-            } else if let Some(pex_python) = pex_python.as_ref() {
-                for entry in path {
-                    if platform::is_executable(&entry).unwrap_or_default()
-                        && entry.ends_with(pex_python)
-                    {
-                        python_exes.get_or_insert_default().insert(entry);
-                    } else if entry.is_dir() {
-                        let python_exe = entry.join(pex_python);
-                        if platform::is_executable(&python_exe).unwrap_or_default() {
-                            python_exes.get_or_insert_default().insert(python_exe);
-                        }
-                    }
-                }
-                None
             } else {
-                Some(
-                    path.filter_map(|entry| {
-                        if platform::is_executable(&entry).unwrap_or_default() {
-                            python_exes.get_or_insert_default().insert(entry);
-                            None
-                        } else {
-                            Some(entry)
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-                )
+                return Ok(Self::from_search_path(search_path, pex_python));
             }
         } else {
             None
@@ -102,6 +77,54 @@ impl SearchPath {
             pex_python_path,
             python_exes,
         })
+    }
+
+    pub fn from_pex_python_path(
+        pex_python_path: impl AsRef<OsStr>,
+        pex_python: Option<OsString>,
+    ) -> Self {
+        Self::from_search_path(env::split_paths(&pex_python_path), pex_python)
+    }
+
+    fn from_search_path(
+        search_path: impl IntoIterator<Item = PathBuf>,
+        pex_python: Option<OsString>,
+    ) -> Self {
+        let mut python_exes: Option<IndexSet<PathBuf>> = None;
+        let pex_python_path = if let Some(pex_python) = pex_python.as_ref() {
+            for entry in search_path {
+                if platform::is_executable(&entry).unwrap_or_default()
+                    && entry.ends_with(pex_python)
+                {
+                    python_exes.get_or_insert_default().insert(entry);
+                } else if entry.is_dir() {
+                    let python_exe = entry.join(pex_python);
+                    if platform::is_executable(&python_exe).unwrap_or_default() {
+                        python_exes.get_or_insert_default().insert(python_exe);
+                    }
+                }
+            }
+            None
+        } else {
+            Some(
+                search_path
+                    .into_iter()
+                    .filter_map(|entry| {
+                        if platform::is_executable(&entry).unwrap_or_default() {
+                            python_exes.get_or_insert_default().insert(entry);
+                            None
+                        } else {
+                            Some(entry)
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        Self {
+            pex_python,
+            python_exes,
+            pex_python_path,
+        }
     }
 
     pub fn is_empty(&self) -> bool {

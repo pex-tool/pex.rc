@@ -217,7 +217,7 @@ build-backend = "setuptools.build_meta"
     {
         write!(&mut python_requires, "{version_specifiers}")?;
     } else if !pex_info.interpreter_constraints.is_empty() {
-        struct DisplayIcs<'a>(&'a Vec<&'a str>);
+        struct DisplayIcs<'a>(&'a Vec<Cow<'a, str>>);
         impl<'a> Display for DisplayIcs<'a> {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 for (idx, ic) in self.0.iter().enumerate() {

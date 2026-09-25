@@ -28,6 +28,7 @@ pub enum Perms {
 
 #[cfg(unix)]
 pub use unix::{
+    PATH_SEP,
     exec,
     is_executable,
     mark_executable,
@@ -38,6 +39,7 @@ pub use unix::{
 };
 #[cfg(windows)]
 pub use windows::{
+    PATH_SEP,
     exec,
     is_executable,
     mark_executable,

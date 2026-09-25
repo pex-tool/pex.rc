@@ -80,6 +80,30 @@ impl From<InterpreterSelectionStrategy> for SelectionStrategy {
     }
 }
 
+impl From<SelectionStrategy> for InterpreterSelectionStrategy {
+    fn from(value: SelectionStrategy) -> Self {
+        match value {
+            SelectionStrategy::Oldest => Self::Oldest,
+            SelectionStrategy::Newest => Self::Newest,
+        }
+    }
+}
+
+impl FromStr for InterpreterSelectionStrategy {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "oldest" => Ok(Self::Oldest),
+            "newest" => Ok(Self::Newest),
+            _ => bail!(
+                "Invalid value for InterpreterSelectionStrategy: {s}.\n\
+                Most be one of: oldest or newest"
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RawPexInfo<'a> {
     pub bind_resource_paths: Option<IndexMap<&'a str, &'a str>>,
@@ -98,7 +122,8 @@ pub struct RawPexInfo<'a> {
     pub inject_args: Vec<&'a str>,
     pub inject_env: Option<IndexMap<&'a str, &'a str>>,
     pub inject_python_args: Vec<&'a str>,
-    pub interpreter_constraints: Vec<&'a str>,
+    #[serde(borrow)]
+    pub interpreter_constraints: Vec<Cow<'a, str>>,
     pub interpreter_selection_strategy: Option<InterpreterSelectionStrategy>,
     #[serde(borrow)]
     pub overridden: Vec<Cow<'a, str>>,
