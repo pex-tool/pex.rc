@@ -120,6 +120,11 @@ jobs:
     steps:
       - name: Checkout Pexrc
         uses: actions/checkout@v6
+      - name: Configure Windows pytest short tmp dir path
+        if: matrix.os == 'windows-2022' || matrix.os == 'windows-11-arm'
+        run: |
+          mkdir -p C:/tmp/gha
+          echo PYTEST_ADDOPTS="--basetemp C:/tmp/gha/pytest" >> ${GITHUB_ENV}
       - name: Run Tests
         run: |
           if [ "${{ matrix.os }}" == "windows-11-arm" ]; then
