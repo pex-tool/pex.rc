@@ -57,7 +57,7 @@ impl FromStr for InheritPath {
             "fallback" => Ok(Self::Fallback),
             _ => bail!(
                 "Invalid value for InheritPath: {s}.\n\
-                Most be one of: false, prefer or fallback"
+                Must be one of: false, prefer or fallback"
             ),
         }
     }
@@ -98,7 +98,7 @@ impl FromStr for InterpreterSelectionStrategy {
             "newest" => Ok(Self::Newest),
             _ => bail!(
                 "Invalid value for InterpreterSelectionStrategy: {s}.\n\
-                Most be one of: oldest or newest"
+                Must be one of: oldest or newest"
             ),
         }
     }
@@ -106,7 +106,7 @@ impl FromStr for InterpreterSelectionStrategy {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RawPexInfo<'a> {
-    pub bind_resource_paths: Option<IndexMap<&'a str, &'a str>>,
+    pub bind_resource_paths: Option<IndexMap<Cow<'a, str>, Cow<'a, str>>>,
     pub build_properties: IndexMap<&'a str, Value>,
     pub code_hash: &'a str,
     pub deps_are_wheel_files: bool,
@@ -119,9 +119,12 @@ pub struct RawPexInfo<'a> {
     pub excluded: Vec<Cow<'a, str>>,
     pub ignore_errors: bool,
     pub inherit_path: Option<InheritPath>,
-    pub inject_args: Vec<&'a str>,
-    pub inject_env: Option<IndexMap<&'a str, &'a str>>,
-    pub inject_python_args: Vec<&'a str>,
+    #[serde(borrow)]
+    pub inject_args: Vec<Cow<'a, str>>,
+    #[serde(borrow)]
+    pub inject_env: Option<IndexMap<Cow<'a, str>, Cow<'a, str>>>,
+    #[serde(borrow)]
+    pub inject_python_args: Vec<Cow<'a, str>>,
     #[serde(borrow)]
     pub interpreter_constraints: Vec<Cow<'a, str>>,
     pub interpreter_selection_strategy: Option<InterpreterSelectionStrategy>,

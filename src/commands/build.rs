@@ -4,11 +4,13 @@
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter, Write as _};
-use std::io::{BufReader, Seek, Write};
+use std::io::{Seek, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::{io, process};
 
-use anyhow::{Error, anyhow, bail};
+use anyhow::{anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
 use cache::{CacheDir, DigestingWriter, Fingerprint, atomic_file};
 use clap::{ArgAction, Args};
@@ -21,7 +23,7 @@ use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
-use pex::{InheritPath, InterpreterSelectionStrategy, PexInfo, RawPexInfo};
+use pex::{InheritPath, InterpreterSelectionStrategy, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -107,6 +109,36 @@ enum Shebang {
     ShBoot,
 }
 
+#[derive(Clone, Debug)]
+struct KeyValue((String, String));
+
+impl KeyValue {
+    fn into_cow_tuple<'a>(self) -> (Cow<'a, str>, Cow<'a, str>) {
+        let (key, value) = self.0;
+        (Cow::Owned(key), Cow::Owned(value))
+    }
+}
+
+impl FromStr for KeyValue {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        if let Some((key, value)) = s.split_once('=') {
+            Ok(Self((key.to_owned(), value.to_owned())))
+        } else {
+            bail!("must be of the form `<key>=<value>`")
+        }
+    }
+}
+
+impl Deref for KeyValue {
+    type Target = (String, String);
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 //  TODO:
 //
 //  "build_properties": {  # Maybe custom build properties?
@@ -119,13 +151,6 @@ enum Shebang {
 //
 //   # Resolver:
 //   "pex_paths": []
-//
-//   # Entry point:
-//   "strip_pex_env": true
-//   "inject_env": {}
-//   "inject_args": []
-//   "inject_python_args": []
-//   "bind_resource_paths": {}
 //
 //   # Venv setup:
 //   "max_install_jobs": 1
@@ -241,7 +266,7 @@ pub struct Build {
     /// Set the entry point to the given script.
     ///
     /// The script must be either a console script, gui script or data script found in one of the
-    /// distributions in the PEX. For example: `pexrc build -c cowsay --venv venv/ cowsay`.
+    /// distributions in the PEX. For example: `pexrc build -c cowsay --venv /venv/dir cowsay`.
     #[arg(
         short = 'c',
         long,
@@ -251,6 +276,39 @@ pub struct Build {
         verbatim_doc_comment
     )]
     script: Option<String>,
+
+    /// Do not strip `PEX_*` environment variables when executing the PEX.
+    #[arg(long, help_heading = "Entry Point")]
+    no_strip_pex_env: bool,
+
+    /// Environment variables to freeze in to the application environment.
+    #[arg(long, help_heading = "Entry Point")]
+    inject_env: Vec<KeyValue>,
+
+    /// Command line arguments to the application to freeze in.
+    ///
+    /// Arguments that have `{pex.env.<env var name>}` placeholders will have them replaced with
+    /// the corresponding environment variable value if set and '' otherwise.
+    #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
+    inject_args: Vec<String>,
+
+    /// Command line arguments to the Python interpreter to freeze in.
+    ///
+    /// For example, `-u` to disable buffering of `sys.stdout` and `sys.stderr` or `-W <arg>` to
+    /// control Python warnings.
+    #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
+    inject_python_args: Vec<String>,
+
+    /// Specifies an environment variable to bind the path of a resource in the PEX.
+    ///
+    /// The binding is specified in the form `<env var name>=<resource rel path>`. For example
+    /// `WINDOWS_X64_CONSOLE_TRAMPOLINE=pex/windows/stubs/uv-trampoline-x86_64-console.exe` would
+    /// look up the path of the `pex/windows/stubs/uv-trampoline-x86_64-console.exe` file on the
+    /// `sys.path` and bind its absolute path to the `WINDOWS_X64_CONSOLE_TRAMPOLINE` environment
+    /// variable. N.B.: resource paths must use the Unix path separator of `/`. These will be
+    /// converted to the runtime host path separator as needed.
+    #[arg(long = "bind-resource-path", help_heading = "Entry Point", verbatim_doc_comment)]
+    bind_resource_paths: Vec<KeyValue>,
 
     /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
     /// PYTHONPATH) running the pex.
@@ -404,25 +462,30 @@ impl Build {
                 "pex_version" => json!(concatcp!("rc ", VERSION)),
                 "pexrc_version" => json!(VERSION),
             },
-            requirements: self
-                .requirements
-                .iter()
-                .map(ToString::to_string)
-                .map(Cow::Owned)
-                .collect(),
-            excluded: self.excluded.into_iter().map(Cow::Owned).collect(),
-            overridden: self.overridden.into_iter().map(Cow::Owned).collect(),
+            requirements: into_vec_of_cow(self.requirements.iter().map(ToString::to_string)),
+            excluded: into_vec_of_cow(self.excluded),
+            overridden: into_vec_of_cow(self.overridden),
             ignore_errors: self.ignore_errors,
             inherit_path: self.inherit_path,
-            interpreter_constraints: interpreter_selection
-                .constraints
-                .into_constraints()
-                .into_iter()
-                .map(|ic| Cow::Owned(ic.to_string()))
-                .collect(),
+            interpreter_constraints: into_vec_of_cow(
+                interpreter_selection
+                    .constraints
+                    .into_constraints()
+                    .into_iter()
+                    .map(|ic| ic.to_string()),
+            ),
             interpreter_selection_strategy: interpreter_selection
                 .selection_strategy
                 .map(InterpreterSelectionStrategy::from),
+            strip_pex_env: if self.no_strip_pex_env {
+                Some(false)
+            } else {
+                None
+            },
+            inject_args: into_vec_of_cow(self.inject_args),
+            inject_env: into_optional_index_map_of_cow_cow(self.inject_env),
+            inject_python_args: into_vec_of_cow(self.inject_python_args),
+            bind_resource_paths: into_optional_index_map_of_cow_cow(self.bind_resource_paths),
             ..Default::default()
         };
         let (preferred_python, wheels) = resolve_wheel_files(
@@ -449,6 +512,20 @@ impl Build {
             self.extra_args,
         )
     }
+}
+
+fn into_optional_index_map_of_cow_cow<'a>(
+    items: Vec<KeyValue>,
+) -> Option<IndexMap<Cow<'a, str>, Cow<'a, str>>> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(items.into_iter().map(KeyValue::into_cow_tuple).collect())
+    }
+}
+
+fn into_vec_of_cow<'a>(items: impl IntoIterator<Item = String>) -> Vec<Cow<'a, str>> {
+    items.into_iter().map(Cow::Owned).collect()
 }
 
 #[instrument(level = "debug", skip_all)]
@@ -750,7 +827,7 @@ fn resolve_wheels_from_venvs<'a>(
         }
     }
     if !errors_by_platform.is_empty() {
-        struct ErrorsByPlatform<'a>(IndexMap<&'a Platform<'a>, Vec<Error>>);
+        struct ErrorsByPlatform<'a>(IndexMap<&'a Platform<'a>, Vec<anyhow::Error>>);
         impl<'a> Display for ErrorsByPlatform<'a> {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 let count = self.0.len();
@@ -1320,7 +1397,7 @@ fn create_packed_pex(
     let mut shebang_buffer = sh_boot_buffer();
     write_shebang(preferred_python, pex_info, shebang, &mut shebang_buffer)?;
     let shebang = String::from_utf8(shebang_buffer)?;
-    write_boot(dest_dir.path(), shebang.as_ref())?;
+    write_boot(pex_info, dest_dir.path(), shebang.as_ref())?;
 
     if path.is_dir() {
         fs::remove_dir_all(path)?;
@@ -1388,7 +1465,7 @@ fn create_zipapp(
     dst_zip.start_file("PEX-INFO", deflated_file_options)?;
     pex_info.write(&mut dst_zip)?;
 
-    inject_boot(&mut dst_zip, deflate_options)?;
+    inject_boot(pex_info, &mut dst_zip, deflate_options)?;
 
     dst_zip.finish()?;
     mark_executable(dst_zip_fp.as_file_mut())?;

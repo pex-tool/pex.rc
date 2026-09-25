@@ -1204,7 +1204,7 @@ impl<'a> Display for OptionalPythonStr<'a> {
     }
 }
 
-struct PythonListStr<'a>(&'a Vec<&'a str>);
+struct PythonListStr<'a>(&'a Vec<Cow<'a, str>>);
 
 impl<'a> Display for PythonListStr<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -1219,7 +1219,7 @@ impl<'a> Display for PythonListStr<'a> {
     }
 }
 
-struct PythonListTupleStrStr<'a>(Option<&'a IndexMap<&'a str, &'a str>>);
+struct PythonListTupleStrStr<'a>(Option<&'a IndexMap<Cow<'a, str>, Cow<'a, str>>>);
 
 impl<'a> Display for PythonListTupleStrStr<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

@@ -2338,6 +2338,7 @@ dependencies = [
  "platform",
  "python-proxy",
  "regex",
+ "tempfile",
  "tools",
  "tracing",
  "venv",

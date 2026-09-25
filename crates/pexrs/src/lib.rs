@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -314,6 +315,16 @@ fn prepare_venv<'a>(
                 sh_boot_seed_dir.join(format!("pex-{python}")),
                 true,
             )?;
+            // N.B.: This is a "manual symlink" used by the --sh-boot script when it needs to pass
+            // python args.
+            let mut proxy_link_file = tempfile::NamedTempFile::new_in(&sh_boot_seed_dir)?;
+            proxy_link_file
+                .write_all(venv_interpreter.details.path.as_os_str().as_encoded_bytes())?;
+            // N.B.: The trailing newline is critical for use by the --sh-boot script which uses
+            // `read var < /this/file` to read the contents and `read` terminates non-zero when it
+            // does not encounter a newline.
+            proxy_link_file.write_all(b"\n")?;
+            proxy_link_file.persist(sh_boot_seed_dir.join(format!("proxy-{python}")))?;
         }
         Virtualenv::enclosing(venv_interpreter)
     } else {
