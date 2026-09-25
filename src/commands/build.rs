@@ -23,7 +23,7 @@ use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
-use pex::{InheritPath, InterpreterSelectionStrategy, RawPexInfo};
+use pex::{BinPath, InheritPath, InterpreterSelectionStrategy, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -152,11 +152,6 @@ impl Deref for KeyValue {
 //   # Resolver:
 //   "pex_paths": []
 //
-//   # Venv setup:
-//   "max_install_jobs": 1
-//   "venv_bin_path": "false"
-//   "venv_hermetic_scripts": true,
-//   "venv_system_site_packages": false
 
 const PYTHON_PLATFORM_HELP: &str = "The Python platforms the built PEX will target at runtime.";
 
@@ -307,7 +302,11 @@ pub struct Build {
     /// `sys.path` and bind its absolute path to the `WINDOWS_X64_CONSOLE_TRAMPOLINE` environment
     /// variable. N.B.: resource paths must use the Unix path separator of `/`. These will be
     /// converted to the runtime host path separator as needed.
-    #[arg(long = "bind-resource-path", help_heading = "Entry Point", verbatim_doc_comment)]
+    #[arg(
+        long = "bind-resource-path",
+        help_heading = "Entry Point",
+        verbatim_doc_comment
+    )]
     bind_resource_paths: Vec<KeyValue>,
 
     /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
@@ -317,6 +316,32 @@ pub struct Build {
     /// after packaged dependencies), `prefer` (inherits `sys.path` before packaged dependencies).
     #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
     inherit_path: Option<InheritPath>,
+
+    //   # Venv setup:
+    /// The maximum number of threads to use when installing dependencies on first boot.
+    ///
+    /// Byt default, all cores will be utilized. This can be made explicit with
+    /// `--max-install-jobs 0`.
+    #[arg(long)]
+    max_install_jobs: Option<usize>,
+
+    /// Whether to add the PEX venv scripts dir to the `$PATH`.
+    ///
+    /// If `prepend` or `append` is specified, then all scripts and console scripts provided by
+    /// distributions in the pex file will be added to the `$PATH` in the corresponding position.
+    #[arg(long)]
+    venv_bin_path: Option<BinPath>,
+
+    /// Don't rewrite Python script shebangs to use Python isolated mode.
+    ///
+    /// This can be useful to, for example, to enable running the venv PEX itself or its Python
+    /// scripts with a custom `PYTHONPATH`.
+    #[arg(long)]
+    non_hermetic_venv_scripts: bool,
+
+    /// Give the PEX venv access to the system `site-packages` dir.
+    #[arg(long)]
+    venv_system_site_packages: bool,
 
     #[command(flatten)]
     interpreter_selection_args: InterpreterSelectionArgs,
@@ -486,6 +511,10 @@ impl Build {
             inject_env: into_optional_index_map_of_cow_cow(self.inject_env),
             inject_python_args: into_vec_of_cow(self.inject_python_args),
             bind_resource_paths: into_optional_index_map_of_cow_cow(self.bind_resource_paths),
+            max_install_jobs: self.max_install_jobs.map(|max| max as isize),
+            venv_bin_path: self.venv_bin_path,
+            venv_hermetic_scripts: !self.non_hermetic_venv_scripts,
+            venv_system_site_packages: self.venv_system_site_packages,
             ..Default::default()
         };
         let (preferred_python, wheels) = resolve_wheel_files(
@@ -1533,6 +1562,14 @@ fn execute_pex(
     args: Vec<String>,
 ) -> anyhow::Result<()> {
     let preferred_python = preferred_python.map(|interpreter| interpreter.realpath.as_path());
-    let exit_code = pexrs::boot(preferred_python, python_args, pex, args, search_path, false)?;
+    let exit_code = pexrs::boot(
+        preferred_python,
+        python_args,
+        pex,
+        args,
+        search_path,
+        false,
+        false,
+    )?;
     process::exit(exit_code)
 }

@@ -37,6 +37,22 @@ impl BinPath {
     }
 }
 
+impl FromStr for BinPath {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "false" => Ok(Self::False),
+            "append" => Ok(Self::Append),
+            "prepend" => Ok(Self::Prepend),
+            _ => bail!(
+                "Invalid value for BinPath: {s}.\n\
+                Must be one of: false, append or prepend"
+            ),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub enum InheritPath {
     #[serde(rename = "false")]
@@ -128,6 +144,8 @@ pub struct RawPexInfo<'a> {
     #[serde(borrow)]
     pub interpreter_constraints: Vec<Cow<'a, str>>,
     pub interpreter_selection_strategy: Option<InterpreterSelectionStrategy>,
+    // N.B.: Pex accepts -1; so we accommodate, although we translate that to 0 elsewhere.
+    pub max_install_jobs: Option<isize>,
     #[serde(borrow)]
     pub overridden: Vec<Cow<'a, str>>,
     #[serde(borrow)]

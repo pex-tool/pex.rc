@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::{env, mem};
+use std::{cmp, env, mem};
 
 use anyhow::{anyhow, bail};
 use cache::{CacheDir, CacheRoot, HashOptions, Key, atomic_dir};
@@ -95,6 +95,7 @@ pub fn boot(
     argv: Vec<String>,
     search_path: Option<SearchPath>,
     init_logging: bool,
+    init_thread_pool: bool,
 ) -> anyhow::Result<i32> {
     if let Ok(tools) = env::var("PEX_TOOLS")
         && tools == "1"
@@ -123,7 +124,14 @@ pub fn boot(
         Ok(lock) => lock,
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
     };
-    let mut command = prepare_boot(python, python_args, pex, argv, search_path)?;
+    let mut command = prepare_boot(
+        python,
+        python_args,
+        pex,
+        argv,
+        search_path,
+        init_thread_pool,
+    )?;
     info!(
         "Booting with {exe} {args}",
         exe = command.get_program().to_string_lossy(),
@@ -143,6 +151,7 @@ fn prepare_boot(
     pex: impl AsRef<Path>,
     argv: Vec<String>,
     search_path: Option<SearchPath>,
+    init_threadpool: bool,
 ) -> anyhow::Result<Command> {
     let venv = prepare_venv(
         python,
@@ -150,6 +159,7 @@ fn prepare_boot(
         search_path,
         #[cfg(unix)]
         env::var_os("_PEXRC_SH_BOOT_SEED_DIR").map(PathBuf::from),
+        init_threadpool,
     )?;
 
     let mut command = {
@@ -197,6 +207,7 @@ pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
         None,
         #[cfg(unix)]
         None,
+        true,
     )
     .map(|venv| venv.prefix().join(&venv.site_packages_relpath))
 }
@@ -207,9 +218,18 @@ fn prepare_venv<'a>(
     pex: &Path,
     search_path: Option<SearchPath>,
     #[cfg(unix)] sh_boot_seed_dir: Option<PathBuf>,
+    init_threadpool: bool,
 ) -> anyhow::Result<Virtualenv<'a>> {
     let pex = Pex::load(pex)?;
     let pex_info = pex.info.raw();
+    if init_threadpool && let Some(max_install_jobs) = pex_info.max_install_jobs {
+        rayon::ThreadPoolBuilder::default()
+            // N.B.: Pex supported -1 in its PEX-INFO to indicate a special form of 0 (all cores)
+            // with load pre-allocation heuristics. We just rely on rayon to load balance
+            // automatically via work stealing no matter how many threads are configured.
+            .num_threads(cmp::max(0, max_install_jobs) as usize)
+            .build_global()?;
+    }
     let pex_path = PexPath::from_pex_info(pex_info, true);
     let additional_pexes = pex_path.load_pexes()?;
     let search_path = if let Some(search_path) = search_path {

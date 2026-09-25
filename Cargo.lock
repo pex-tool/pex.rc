@@ -2337,6 +2337,7 @@ dependencies = [
  "pex",
  "platform",
  "python-proxy",
+ "rayon",
  "regex",
  "tempfile",
  "tools",
