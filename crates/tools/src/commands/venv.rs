@@ -125,13 +125,12 @@ https://docs.pex-tool.org/recipes.html#pex-app-in-a-container for more informati
     bin_path: Option<BinPath>,
 
     /// Give the venv access to the system site-packages dir.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     system_site_packages: bool,
 
     /// Don't rewrite Python script shebangs in the venv to pass `-I` (or `-sE`).
     #[arg(
         long,
-        default_value_t = false,
         long_help = "\
 Don't rewrite Python script shebangs in the venv to pass `-I` (or `-sE`) to the interpreter.
 This can be used to enable running the venv PEX itself or its Python scripts with a custom
@@ -141,15 +140,15 @@ This can be used to enable running the venv PEX itself or its Python scripts wit
     non_hermetic_scripts: bool,
 
     /// Compile all `.py` files in the venv.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     compile: bool,
 
     /// If the venv directory already exists, overwrite it.
-    #[arg(short = 'f', long, default_value_t = false)]
+    #[arg(short = 'f', long)]
     force: bool,
 
     /// Add pip to the venv.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     pip: bool,
 
     /// A custom prompt for the venv activation scripts to use.
@@ -157,16 +156,16 @@ This can be used to enable running the venv PEX itself or its Python scripts wit
     prompt: Option<String>,
 
     /// Don't error if population of the ven-v encounters distributions in the PEX file with colliding files, just emit a warning.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     collisions_ok: bool,
 
     /// DEPRECATED: Create the venv using copies of system files instead of symlinks (ignored).
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     copies: bool,
 
     /// DEPRECATED: Create the venv using copies of distributions instead of links or symlinks
     /// (ignored).
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     site_packages_copies: bool,
 
     /// The directory to create the venv in.

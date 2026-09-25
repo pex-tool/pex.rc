@@ -14,7 +14,7 @@ use crate::resolve::resolve;
 #[derive(Args)]
 pub(crate) struct InfoArgs {
     /// Print the distributions requirements in addition to its name version and path.
-    #[arg(short = 'v', long, default_value_t = false)]
+    #[arg(short = 'v', long)]
     verbose: bool,
 
     #[command(flatten)]

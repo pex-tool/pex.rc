@@ -177,7 +177,7 @@ pub(crate) struct GraphArgs {
     output: Output,
 
     /// Attempt to render the graph.
-    #[arg(short = 'r', long, default_value_t = false)]
+    #[arg(short = 'r', long)]
     render: bool,
 
     /// The format to render the graph in.
@@ -185,7 +185,7 @@ pub(crate) struct GraphArgs {
     format: Format,
 
     /// Attempt to open the graph in the system viewer (implies --render).
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     open: bool,
 }
 

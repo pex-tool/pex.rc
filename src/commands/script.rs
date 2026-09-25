@@ -21,7 +21,7 @@ pub struct Script {
     #[arg(short = 'o', long)]
     output_file: PathBuf,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     gui: bool,
 
     #[arg(value_name = "SCRIPT")]

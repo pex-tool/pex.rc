@@ -37,7 +37,6 @@ struct Cli {
     #[arg(
         short = 'X',
         long,
-        default_value_t = false,
         help = cstr!(
             "Enable experimental commands (displayed in dim yellow; e.g.: \
             <dim><y>example-cmd</></>)"

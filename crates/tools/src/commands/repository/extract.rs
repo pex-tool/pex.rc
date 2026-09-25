@@ -42,7 +42,7 @@ pub(crate) struct ExtractArgs {
     dest_dir: PathBuf,
 
     /// Also extract a wheel for the PEX file sources.
-    #[arg(short = 'D', long, default_value_t = false)]
+    #[arg(short = 'D', long)]
     sources: bool,
 
     /// Use the current system time to generate timestamps for the extracted distributions.
@@ -51,11 +51,11 @@ pub(crate) struct ExtractArgs {
     /// distributions will not be reproducible, meaning that if you were to re-run extraction
     /// against the same PEX file then the newly extracted distributions would not be byte-for-byte
     /// identical distributions extracted in prior runs.
-    #[arg(long, default_value_t = false, verbatim_doc_comment)]
+    #[arg(long, verbatim_doc_comment)]
     use_system_time: bool,
 
     /// Serve the `--find-links` repo.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     serve: bool,
 
     /// The port to serve the --find-links repo on.
@@ -70,7 +70,7 @@ pub(crate) struct ExtractArgs {
     ///
     /// If this timeout is reached, the command will exit with an error instead of
     /// waiting indefinitely. The wait is indefinite by default.
-    #[arg(long, default_value_t = 0.0, verbatim_doc_comment)]
+    #[arg(long, verbatim_doc_comment)]
     timeout: f32,
 
     #[command(flatten)]

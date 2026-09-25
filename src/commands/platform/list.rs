@@ -11,7 +11,7 @@ use target::SimplifiedTarget;
 #[group(skip)]
 pub struct List {
     /// Output platform list in JSON.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     json: bool,
 
     #[command(flatten)]
