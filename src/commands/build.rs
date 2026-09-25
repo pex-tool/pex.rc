@@ -223,14 +223,6 @@ pub struct Build {
     )]
     wheels: Vec<PathBuf>,
 
-    /// Existing PEX-INFO to use for the built PEX.
-    ///
-    /// If the PEX-INFO is from a traditional PEX it may be edited minimally to conform to the PEXrc
-    /// runtime and any specified requirements. If no PEX-INFO is supplied, it will be created from
-    /// the other given inputs.
-    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
-    pex_info: Option<PathBuf>,
-
     /// Set the entry point to `module` or `module:symbol`.
     ///
     /// If just specifying `module`, Pex behaves like `python -m`, e.g. `python -m http.server`.
@@ -407,135 +399,55 @@ impl Build {
 
         let interpreter_selection = self.interpreter_selection_args.finalize();
 
-        if let Some(pex_info) = self.pex_info {
-            let pex_info_file = File::open(&pex_info)?;
-            let size = pex_info_file.metadata()?.len();
-            let mut pex_info = PexInfo::parse(
-                BufReader::new(pex_info_file),
-                size,
-                Some(|| Cow::Owned(pex_info.display().to_string())),
-            )?;
-            pex_info.with_raw_mut(|pi| {
-                pi.build_properties.insert("pexrc_version", json!(VERSION));
-
-                if !self.excluded.is_empty() {
-                    pi.excluded = self.excluded.into_iter().map(Cow::Owned).collect()
-                }
-                if !self.overridden.is_empty() {
-                    pi.overridden = self.overridden.into_iter().map(Cow::Owned).collect()
-                }
-                pi.ignore_errors |= self.ignore_errors;
-
-                if self.inherit_path.is_some() {
-                    pi.inherit_path = self.inherit_path;
-                }
-
-                if !interpreter_selection.constraints.is_empty() {
-                    pi.interpreter_constraints = interpreter_selection
-                        .constraints
-                        .into_constraints()
-                        .into_iter()
-                        .map(|ic| Cow::Owned(ic.to_string()))
-                        .collect()
-                }
-                if let Some(selection_strategy) = interpreter_selection.selection_strategy {
-                    pi.interpreter_selection_strategy = Some(selection_strategy.into())
-                }
-            });
-            let requirements = if self.requirements.is_empty() {
-                pex_info
-                    .raw()
-                    .requirements
-                    .iter()
-                    .map(|requirement| Ok(requirement.parse::<Requirement<Url>>()?))
-                    .collect::<anyhow::Result<Vec<_>>>()?
-            } else {
-                pex_info.with_raw_mut(|pi| {
-                    pi.requirements = self
-                        .requirements
-                        .iter()
-                        .map(ToString::to_string)
-                        .map(Cow::Owned)
-                        .collect()
-                });
-                self.requirements
-            };
-            let (preferred_python, wheels) = resolve_wheel_files(
-                &repository,
-                &platforms,
-                requirements,
-                pex_info.raw(),
-                &wheel_options,
-            )?;
-            pex_info.with_raw_mut(|raw_pex_info| {
-                adjust_requirements(raw_pex_info, &wheels)?;
-                if let Some(entry_point) = entry_point {
-                    resolve_entry_point(raw_pex_info, entry_point, &wheels)?;
-                }
-                build_pex(
-                    preferred_python,
-                    interpreter_selection.search_path,
-                    preferred_platform,
-                    wheels,
-                    wheel_options,
-                    raw_pex_info,
-                    self.packed,
-                    shebang,
-                    self.output,
-                    self.extra_args,
-                )
-            })
-        } else {
-            let mut pex_info = RawPexInfo {
-                build_properties: indexmap! {
-                    "pex_version" => json!(concatcp!("rc ", VERSION)),
-                    "pexrc_version" => json!(VERSION),
-                },
-                requirements: self
-                    .requirements
-                    .iter()
-                    .map(ToString::to_string)
-                    .map(Cow::Owned)
-                    .collect(),
-                excluded: self.excluded.into_iter().map(Cow::Owned).collect(),
-                overridden: self.overridden.into_iter().map(Cow::Owned).collect(),
-                ignore_errors: self.ignore_errors,
-                inherit_path: self.inherit_path,
-                interpreter_constraints: interpreter_selection
-                    .constraints
-                    .into_constraints()
-                    .into_iter()
-                    .map(|ic| Cow::Owned(ic.to_string()))
-                    .collect(),
-                interpreter_selection_strategy: interpreter_selection
-                    .selection_strategy
-                    .map(InterpreterSelectionStrategy::from),
-                ..Default::default()
-            };
-            let (preferred_python, wheels) = resolve_wheel_files(
-                &repository,
-                &platforms,
-                self.requirements,
-                &pex_info,
-                &wheel_options,
-            )?;
-            adjust_requirements(&mut pex_info, &wheels)?;
-            if let Some(entry_point) = entry_point {
-                resolve_entry_point(&mut pex_info, entry_point, &wheels)?;
-            }
-            build_pex(
-                preferred_python,
-                interpreter_selection.search_path,
-                preferred_platform,
-                wheels,
-                wheel_options,
-                &mut pex_info,
-                self.packed,
-                shebang,
-                self.output,
-                self.extra_args,
-            )
+        let mut pex_info = RawPexInfo {
+            build_properties: indexmap! {
+                "pex_version" => json!(concatcp!("rc ", VERSION)),
+                "pexrc_version" => json!(VERSION),
+            },
+            requirements: self
+                .requirements
+                .iter()
+                .map(ToString::to_string)
+                .map(Cow::Owned)
+                .collect(),
+            excluded: self.excluded.into_iter().map(Cow::Owned).collect(),
+            overridden: self.overridden.into_iter().map(Cow::Owned).collect(),
+            ignore_errors: self.ignore_errors,
+            inherit_path: self.inherit_path,
+            interpreter_constraints: interpreter_selection
+                .constraints
+                .into_constraints()
+                .into_iter()
+                .map(|ic| Cow::Owned(ic.to_string()))
+                .collect(),
+            interpreter_selection_strategy: interpreter_selection
+                .selection_strategy
+                .map(InterpreterSelectionStrategy::from),
+            ..Default::default()
+        };
+        let (preferred_python, wheels) = resolve_wheel_files(
+            &repository,
+            &platforms,
+            self.requirements,
+            &pex_info,
+            &wheel_options,
+        )?;
+        adjust_requirements(&mut pex_info, &wheels)?;
+        if let Some(entry_point) = entry_point {
+            resolve_entry_point(&mut pex_info, entry_point, &wheels)?;
         }
+        build_pex(
+            preferred_python,
+            interpreter_selection.search_path,
+            preferred_platform,
+            wheels,
+            wheel_options,
+            &mut pex_info,
+            self.packed,
+            shebang,
+            self.output,
+            self.extra_args,
+        )
     }
 }
 
