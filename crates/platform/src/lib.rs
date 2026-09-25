@@ -28,6 +28,7 @@ pub enum Perms {
 
 #[cfg(unix)]
 pub use unix::{
+    PATH_SEP,
     exec,
     is_executable,
     mark_executable,
@@ -38,6 +39,7 @@ pub use unix::{
 };
 #[cfg(windows)]
 pub use windows::{
+    PATH_SEP,
     exec,
     is_executable,
     mark_executable,
@@ -66,6 +68,21 @@ pub fn os_str_as_str(text: &OsStr) -> io::Result<&str> {
 }
 
 pub fn link_or_copy(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    #[cfg(feature = "reflink")]
+    match reflink_copy::reflink(src.as_ref(), dst.as_ref()) {
+        Ok(()) => return Ok(()),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::AlreadyExists
+            ) =>
+        {
+            return Err(err);
+        }
+        _ => {}
+    }
     fs::hard_link(src.as_ref(), dst.as_ref())
         .or_else(|_| fs::copy(src.as_ref(), dst.as_ref()).map(|_| ()))
         .map_err(|err| {

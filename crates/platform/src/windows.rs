@@ -12,6 +12,8 @@ use is_executable::IsExecutable;
 
 use crate::Perms;
 
+pub const PATH_SEP: char = ';';
+
 pub fn symlink_or_link_or_copy(
     src: impl AsRef<Path>,
     dst: impl AsRef<Path>,

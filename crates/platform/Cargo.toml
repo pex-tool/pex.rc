@@ -10,6 +10,9 @@ publish = false
 # crate which produces a size-sensitive binary. Particularly, no fs-err or anyhow: we handle 
 # ensuring useful errors manually in this crate.
 
+[dependencies]
+reflink-copy = { workspace = true, optional = true}
+
 [target.'cfg(windows)'.dependencies]
 # N.B.: Although is_executable is cross-platform, we only use it for Windows. The nix unistd access
 # function is more robust that the check is_executable does on unix.
@@ -18,3 +21,6 @@ is_executable = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }
 pathdiff = { workspace = true }
+
+[features]
+reflink = ["dep:reflink-copy"]

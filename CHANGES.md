@@ -1,5 +1,19 @@
 # Release Notes
 
+## 0.28.0
+
+This release adds support for interpreter selection options in `pexrc -X build` and
+`pexrc python inspect`:
++ `--interpreter-constraint`
++ `--interpreter-selection-strategy`
++ `--python-path`
+
+In addition `pexrc python inspect` gains an `--all` option to inspect all available Pythons within
+the interpreter selection constraint options mentioned above.
+
+Finally, use reflink where available in `pexrc` to better isolate the cache from items borrowed
+from it.
+
 ## 0.27.0
 
 This release adds support for `--include-tools` to `pexrc -X build`. This option just acts as an

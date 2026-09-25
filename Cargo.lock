@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2361,6 +2361,7 @@ version = "0.0.0"
 dependencies = [
  "is_executable",
  "pathdiff",
+ "reflink-copy",
  "rustix",
 ]
 
@@ -2688,6 +2689,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "reflink-copy"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9dd7ab4af0363d5ccfd2838d782a28196cf32a5cc2e4fe3c5dc83f2be588b8b"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "rustix",
+ "windows",
 ]
 
 [[package]]

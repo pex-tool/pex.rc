@@ -257,7 +257,7 @@ static SUPPORTED_VERSIONS_NEWEST_FIRST: LazyLock<Vec<(u8, u8)>> = LazyLock::new(
     supported_versions
 });
 
-#[derive(Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum SelectionStrategy {
     Oldest,
     Newest,

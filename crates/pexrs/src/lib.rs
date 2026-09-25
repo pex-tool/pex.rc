@@ -92,6 +92,7 @@ pub fn boot(
     python_args: Vec<String>,
     pex: &Path,
     argv: Vec<String>,
+    search_path: Option<SearchPath>,
     init_logging: bool,
 ) -> anyhow::Result<i32> {
     if let Ok(tools) = env::var("PEX_TOOLS")
@@ -121,7 +122,7 @@ pub fn boot(
         Ok(lock) => lock,
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
     };
-    let mut command = prepare_boot(python, python_args, pex, argv)?;
+    let mut command = prepare_boot(python, python_args, pex, argv, search_path)?;
     info!(
         "Booting with {exe} {args}",
         exe = command.get_program().to_string_lossy(),
@@ -140,10 +141,12 @@ fn prepare_boot(
     python_args: Vec<String>,
     pex: impl AsRef<Path>,
     argv: Vec<String>,
+    search_path: Option<SearchPath>,
 ) -> anyhow::Result<Command> {
     let venv = prepare_venv(
         python,
         pex.as_ref(),
+        search_path,
         #[cfg(unix)]
         env::var_os("_PEXRC_SH_BOOT_SEED_DIR").map(PathBuf::from),
     )?;
@@ -190,6 +193,7 @@ pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
     prepare_venv(
         Some(python),
         pex,
+        None,
         #[cfg(unix)]
         None,
     )
@@ -200,13 +204,18 @@ pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
 fn prepare_venv<'a>(
     python: Option<&Path>,
     pex: &Path,
+    search_path: Option<SearchPath>,
     #[cfg(unix)] sh_boot_seed_dir: Option<PathBuf>,
 ) -> anyhow::Result<Virtualenv<'a>> {
     let pex = Pex::load(pex)?;
     let pex_info = pex.info.raw();
     let pex_path = PexPath::from_pex_info(pex_info, true);
     let additional_pexes = pex_path.load_pexes()?;
-    let search_path = SearchPath::from_env()?;
+    let search_path = if let Some(search_path) = search_path {
+        search_path
+    } else {
+        SearchPath::from_env()?
+    };
     let venv_dir = venv_dir(
         python,
         pex.path.display(),

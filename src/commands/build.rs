@@ -18,10 +18,10 @@ use enumset::enum_set;
 use fs_err as fs;
 use fs_err::File;
 use indexmap::{IndexMap, IndexSet, indexmap};
-use interpreter::Interpreter;
+use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
-use pex::{InheritPath, PexInfo, RawPexInfo};
+use pex::{InheritPath, InterpreterSelectionStrategy, PexInfo, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -45,6 +45,7 @@ use zip_ext::ZipArchiveExt;
 use crate::VERSION;
 use crate::compression_method::CompressionArgs;
 use crate::embeds::{AVAILABLE_TARGETS, Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
+use crate::interpreter_selection::InterpreterSelectionArgs;
 use crate::target::{PythonPlatform, RequiredTargets};
 
 #[self_referencing]
@@ -116,10 +117,6 @@ enum Shebang {
 //
 //   "pex_root": "/home/jsirois/.cache/pex",
 //
-//   # Interpreter discovery:
-//   "interpreter_constraints": []
-//   "interpreter_selection_strategy": "oldest"
-//
 //   # Resolver:
 //   "pex_paths": []
 //
@@ -135,6 +132,18 @@ enum Shebang {
 //   "venv_bin_path": "false"
 //   "venv_hermetic_scripts": true,
 //   "venv_system_site_packages": false
+
+const PYTHON_PLATFORM_HELP: &str = "The Python platforms the built PEX will target at runtime.";
+
+const COMPLETE_PYTHON_PLATFORM_LONG_HELP: &str = concatcp!(
+    PYTHON_PLATFORM_HELP,
+    r#"
+
+If specified, the targets will be used to resolve any specified requirements from the
+configured wheels. If required wheels are not present, the build will error.
+"#,
+    PYTHON_PLATFORM_LONG_HELP
+);
 
 #[derive(Args, Debug)]
 #[group(skip)]
@@ -254,22 +263,21 @@ pub struct Build {
     /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
     /// PYTHONPATH) running the pex.
     ///
-    /// Possible values: `false` (does not inherit `sys.path`), `fallback` (inherits sys.path after
-    /// packaged dependencies), `prefer` (inherits `sys.path` before packaged dependencies).
+    /// Possible values: `false` (does not inherit `sys.path`), `fallback` (inherits `sys.path`
+    /// after packaged dependencies), `prefer` (inherits `sys.path` before packaged dependencies).
     #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
     inherit_path: Option<InheritPath>,
 
-    /// The Python platforms the built PEX will target at runtime.
-    ///
-    /// If specified, the targets will be used to resolve any specified requirements from the
-    /// configured wheels. If required wheels are not present, the build will error.
+    #[command(flatten)]
+    interpreter_selection_args: InterpreterSelectionArgs,
+
     #[arg(
         long = "target",
         action = ArgAction::Append,
         help_heading = "Targets",
         value_parser = PythonPlatform::parse,
-        long_help=PYTHON_PLATFORM_LONG_HELP,
-        verbatim_doc_comment
+        help=PYTHON_PLATFORM_HELP,
+        long_help=COMPLETE_PYTHON_PLATFORM_LONG_HELP,
     )]
     targets: Vec<PythonPlatform>,
 
@@ -397,6 +405,8 @@ impl Build {
         // N.B.: Determines shebang for PEX.
         let preferred_platform = platforms.first();
 
+        let interpreter_selection = self.interpreter_selection_args.finalize();
+
         if let Some(pex_info) = self.pex_info {
             let pex_info_file = File::open(&pex_info)?;
             let size = pex_info_file.metadata()?.len();
@@ -418,6 +428,18 @@ impl Build {
 
                 if self.inherit_path.is_some() {
                     pi.inherit_path = self.inherit_path;
+                }
+
+                if !interpreter_selection.constraints.is_empty() {
+                    pi.interpreter_constraints = interpreter_selection
+                        .constraints
+                        .into_constraints()
+                        .into_iter()
+                        .map(|ic| Cow::Owned(ic.to_string()))
+                        .collect()
+                }
+                if let Some(selection_strategy) = interpreter_selection.selection_strategy {
+                    pi.interpreter_selection_strategy = Some(selection_strategy.into())
                 }
             });
             let requirements = if self.requirements.is_empty() {
@@ -452,6 +474,7 @@ impl Build {
                 }
                 build_pex(
                     preferred_python,
+                    interpreter_selection.search_path,
                     preferred_platform,
                     wheels,
                     wheel_options,
@@ -478,6 +501,15 @@ impl Build {
                 overridden: self.overridden.into_iter().map(Cow::Owned).collect(),
                 ignore_errors: self.ignore_errors,
                 inherit_path: self.inherit_path,
+                interpreter_constraints: interpreter_selection
+                    .constraints
+                    .into_constraints()
+                    .into_iter()
+                    .map(|ic| Cow::Owned(ic.to_string()))
+                    .collect(),
+                interpreter_selection_strategy: interpreter_selection
+                    .selection_strategy
+                    .map(InterpreterSelectionStrategy::from),
                 ..Default::default()
             };
             let (preferred_python, wheels) = resolve_wheel_files(
@@ -493,6 +525,7 @@ impl Build {
             }
             build_pex(
                 preferred_python,
+                interpreter_selection.search_path,
                 preferred_platform,
                 wheels,
                 wheel_options,
@@ -1084,6 +1117,7 @@ fn resolve_wheels_from_files<'a>(
 #[instrument(level = "debug", skip_all)]
 fn build_pex(
     preferred_python: Option<&Interpreter>,
+    search_path: Option<SearchPath>,
     preferred_platform: Option<&Platform>,
     wheels: Vec<FingerprintedWheel>,
     wheel_options: WheelOptions,
@@ -1129,7 +1163,7 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(preferred_python, python_args, path, args)
+                execute_pex(preferred_python, search_path, python_args, path, args)
             } else {
                 let pex = NamedTempFile::new()?;
                 let path = pex.path();
@@ -1144,7 +1178,7 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(preferred_python, python_args, path, args)
+                execute_pex(preferred_python, search_path, python_args, path, args)
             }
         }
     }
@@ -1504,11 +1538,12 @@ fn write_shebang(
 
 fn execute_pex(
     preferred_python: Option<&Interpreter>,
+    search_path: Option<SearchPath>,
     python_args: Vec<String>,
     pex: &Path,
     args: Vec<String>,
 ) -> anyhow::Result<()> {
     let preferred_python = preferred_python.map(|interpreter| interpreter.realpath.as_path());
-    let exit_code = pexrs::boot(preferred_python, python_args, pex, args, false)?;
+    let exit_code = pexrs::boot(preferred_python, python_args, pex, args, search_path, false)?;
     process::exit(exit_code)
 }
