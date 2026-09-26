@@ -172,6 +172,7 @@ impl ValueEnum for Format {
 }
 
 #[derive(Args)]
+#[group(skip)]
 pub(crate) struct GraphArgs {
     #[command(flatten)]
     output: Output,

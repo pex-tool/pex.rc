@@ -22,6 +22,7 @@ impl From<CompressionMethod> for zip::CompressionMethod {
 
 #[derive(Args, Debug)]
 #[command(next_help_heading = "Compression")]
+#[group(skip)]
 pub struct CompressionArgs {
     /// The compression method to use for wheels and other files stored in the PEX.
     #[arg(

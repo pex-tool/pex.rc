@@ -36,6 +36,7 @@ use tracing::warn;
 use zip::{CompressionMethod, ZipArchive};
 
 #[derive(Args)]
+#[group(skip)]
 pub(crate) struct ExtractArgs {
     /// The path to extract distribution as wheels to.
     #[arg(short = 'f', long, visible_aliases = ["find-links", "repo"])]

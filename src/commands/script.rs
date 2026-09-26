@@ -11,6 +11,7 @@ use target::{SimplifiedTarget, Target};
 use crate::embeds::read_proxy_content;
 
 #[derive(Args)]
+#[group(skip)]
 pub struct Script {
     #[arg(long)]
     target: Option<crate::simplified_target::SimplifiedTarget>,

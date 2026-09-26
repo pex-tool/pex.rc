@@ -32,6 +32,7 @@ interpreter binaries.
 
 #[derive(Args, Debug)]
 #[command(next_help_heading = "Interpreter Selection")]
+#[group(skip)]
 pub struct InterpreterSelectionArgs {
     #[cfg_attr(
         // N.B.: This prevents doctest from attempting to analyze the code blocks. Otherwise;
