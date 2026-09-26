@@ -205,7 +205,7 @@ impl CacheDir {
         match self {
             CacheDir::Interpreter => "4",
             CacheDir::PythonProxy => "0",
-            CacheDir::Venv => "1",
+            CacheDir::Venv => "2",
             CacheDir::Wheel => "0",
         }
     }

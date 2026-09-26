@@ -93,6 +93,7 @@ pub fn boot(
     python_args: Vec<String>,
     pex: &Path,
     argv: Vec<String>,
+    extra_env: Option<impl IntoIterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>>,
     search_path: Option<SearchPath>,
     init_logging: bool,
     init_thread_pool: bool,
@@ -137,6 +138,9 @@ pub fn boot(
         search_path,
         init_thread_pool,
     )?;
+    if let Some(extra_env) = extra_env {
+        command.envs(extra_env);
+    }
     info!(
         "Booting with {exe} {args}",
         exe = command.get_program().to_string_lossy(),
