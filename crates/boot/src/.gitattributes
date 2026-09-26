@@ -1,3 +1,6 @@
 # This file is only used on linux and we split it into sections for templating based on a `\n` line
 # ending.
 boot.sh text eol=lf
+
+# This file is used on all supported platforms, but Windows Pythons tolerate the unix line endings.
+boot.py text eol=lf
