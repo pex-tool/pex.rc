@@ -1,5 +1,23 @@
 # Release Notes
 
+## 0.29.0
+
+This release wires all remaining un-plumbed PEX-INFO options through `pexrc -X build`:
++ `--pex-path`
++ `--no-strip-pex-env`
++ `--inject-env`
++ `--inject-python-args`
++ `--inject-args`
++ `--bind-resource-path`
++ `--runtime-pex-root`
++ `--max-install-jobs`
++ `--venv-bin-path`
++ `--non-hermetic-venv-scripts`
++ `--venv-system-site-packages`
++ `--emit-warnings`
+
+In addition, you can set `pexrc --pex-root` to control the build-time `PEXRC_ROOT`.
+
 ## 0.28.0
 
 This release adds support for interpreter selection options in `pexrc -X build` and
