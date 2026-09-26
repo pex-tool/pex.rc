@@ -8,7 +8,7 @@ use std::io::{Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::{io, process};
+use std::{env, io, process};
 
 use anyhow::{anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
@@ -139,18 +139,6 @@ impl Deref for KeyValue {
     }
 }
 
-//  TODO:
-//
-//  "build_properties": {  # Maybe custom build properties?
-//     "pex_version": "2.103.2"
-//   },
-//
-//   "emit_warnings": true  # There is not yet a pex_warnings facility; just generic warn tracing.
-//
-//   # Resolver:
-//   "pex_paths": []
-//
-
 const PYTHON_PLATFORM_HELP: &str = "The Python platforms the built PEX will target at runtime.";
 
 const COMPLETE_PYTHON_PLATFORM_LONG_HELP: &str = concatcp!(
@@ -161,6 +149,20 @@ If specified, the targets will be used to resolve any specified requirements fro
 configured wheels. If required wheels are not present, the build will error.
 "#,
     PYTHON_PLATFORM_LONG_HELP
+);
+
+const PEX_PATH_HELP: &str = concatcp!(
+    "A '",
+    platform::PATH_SEP,
+    "' separated list of other PEX files to merge into the runtime environment."
+);
+
+const PEX_PATH_LONG_HELP: &str = concatcp!(
+    PEX_PATH_HELP,
+    r#"
+
+N.B.: The paths specified must be valid paths at runtime. PEXes will not be merged at build time.
+"#,
 );
 
 #[derive(Args, Debug)]
@@ -240,6 +242,9 @@ pub struct Build {
         verbatim_doc_comment
     )]
     wheels: Vec<PathBuf>,
+
+    #[arg(long, help_heading = "Contents", help = PEX_PATH_HELP, long_help = PEX_PATH_LONG_HELP)]
+    pex_path: String,
 
     /// Set the entry point to `module` or `module:symbol`.
     ///
@@ -404,6 +409,14 @@ pub struct Build {
     )]
     python_shebang: Option<String>,
 
+    // TODO: XXX: This is not currently wired up properly in a comprehensive way. It's currently
+    //  scattershot and needs a re-think.
+    /// Emit runtime warnings on stderr.
+    ///
+    /// By default, only emit them when PEX_VERBOSE is set.
+    #[arg(long, help_heading = "Boot Mode", verbatim_doc_comment)]
+    emit_warnings: bool,
+
     /// The name of the generated PEX file.
     ///
     /// Omitting this will run PEX immediately and not save it to a file.
@@ -470,6 +483,7 @@ impl Build {
             Shebang::EnvCompatible
         };
 
+        let pex_paths = env::split_paths(&self.pex_path).map(Cow::Owned).collect();
         let entry_point = self
             .entry_point
             .map(PexEntryPoint::EntryPoint)
@@ -492,6 +506,8 @@ impl Build {
                 "pex_version" => json!(concatcp!("rc ", VERSION)),
                 "pexrc_version" => json!(VERSION),
             },
+            emit_warnings: self.emit_warnings,
+            pex_paths,
             requirements: into_vec_of_cow(self.requirements.iter().map(ToString::to_string)),
             excluded: into_vec_of_cow(self.excluded),
             overridden: into_vec_of_cow(self.overridden),
