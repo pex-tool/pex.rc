@@ -14,6 +14,7 @@ digest = { workspace = true }
 dtor = { workspace = true }
 fs-err = { workspace = true }
 hex = { workspace = true }
-tracing = { workspace = true }
+parking_lot = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+tracing = { workspace = true }

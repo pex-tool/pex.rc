@@ -183,6 +183,7 @@ oneshot = {  version = "0.2", features = ["std"] }
 open = "5.3"
 ouroboros = "0.18"
 owo-colors = "4.3"
+parking_lot = "0.12"
 pathdiff = "0.2"
 pelite = "0.10"
 pep440_rs = "0.7"

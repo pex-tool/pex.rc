@@ -8,6 +8,8 @@ mod resolve;
 
 use std::path::{Path, PathBuf};
 
+use anyhow::anyhow;
+use cache::CacheRoot;
 use clap::{Parser, Subcommand};
 use colorchoice_clap::ColorChoice;
 use logging::FlushGuard;
@@ -79,16 +81,25 @@ fn parse_cli(pex: &Path, argv: Vec<String>) -> anyhow::Result<(Cli, FlushGuard)>
     Ok((cli, flush_guard))
 }
 
+fn load_pex(pex: &Path) -> anyhow::Result<Pex<'_>> {
+    let pex = Pex::load(pex)?;
+    if let Some(cache_root) = pex.info.raw().configured_cache_root() {
+        cache::set_cache_root(CacheRoot::Dir(cache_root.into_owned()))?;
+    }
+    cache::read_lock().map_err(|err| anyhow!("Failed to obtain PEXRC cache read lock: {err}"))?;
+    Ok(pex)
+}
+
 #[instrument(level = "debug", skip_all)]
 pub fn main(python: Option<&Path>, pex: &Path, argv: Vec<String>) -> anyhow::Result<()> {
     let (cli, _flush_guard) = parse_cli(pex, argv)?;
     match cli.command {
         Commands::Extract { dest_dir } => extract::unzip(pex, &dest_dir),
-        Commands::Graph(args) => graph::create(python, Pex::load(pex)?, args),
-        Commands::Info(args) => info::display(Pex::load(pex)?, args),
-        Commands::Interpreter(args) => interpreter::display(python, Pex::load(pex)?, args),
-        Commands::Platforms(args) => platforms::list(Pex::load(pex)?, args),
-        Commands::Repository(repository) => repository.execute_command(python, Pex::load(pex)?),
-        Commands::Venv(args) => venv::create(python, Pex::load(pex)?, args),
+        Commands::Graph(args) => graph::create(python, load_pex(pex)?, args),
+        Commands::Info(args) => info::display(load_pex(pex)?, args),
+        Commands::Interpreter(args) => interpreter::display(python, load_pex(pex)?, args),
+        Commands::Platforms(args) => platforms::list(load_pex(pex)?, args),
+        Commands::Repository(repository) => repository.execute_command(python, load_pex(pex)?),
+        Commands::Venv(args) => venv::create(python, load_pex(pex)?, args),
     }
 }

@@ -412,13 +412,15 @@ pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow:
             Layout::ZipApp => fs::remove_file(pex.path)?,
         }
         if scope == RemoveScope::All {
-            let pex_root = if let Some(root) = pex.info.raw().pex_root.as_deref() {
-                Path::new(root)
+            if let Some(cache_root) = pex.info.raw().configured_cache_root() {
+                if cache_root.exists() {
+                    fs::remove_dir_all(cache_root)?;
+                }
             } else {
-                CacheDir::root()?
-            };
-            if pex_root.exists() {
-                fs::remove_dir_all(pex_root)?;
+                let cache_root = CacheDir::root()?;
+                if cache_root.exists() {
+                    fs::remove_dir_all(cache_root)?;
+                }
             }
         }
     }

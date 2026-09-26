@@ -147,8 +147,6 @@ impl Deref for KeyValue {
 //
 //   "emit_warnings": true  # There is not yet a pex_warnings facility; just generic warn tracing.
 //
-//   "pex_root": "/home/jsirois/.cache/pex",
-//
 //   # Resolver:
 //   "pex_paths": []
 //
@@ -314,33 +312,40 @@ pub struct Build {
     ///
     /// Possible values: `false` (does not inherit `sys.path`), `fallback` (inherits `sys.path`
     /// after packaged dependencies), `prefer` (inherits `sys.path` before packaged dependencies).
-    #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
+    #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
     inherit_path: Option<InheritPath>,
 
-    //   # Venv setup:
+    /// Specify the PEX cache root directory to be used when the generated PEX file boots.
+    ///
+    /// If unspecified, the PEX will use a `pexrc` subdirectory of the default user cache directory
+    /// for the runtime OS; e.g.: `~/.cache/pexrc` on Linux, `~/Library/Caches/pexrc` on macOS and
+    /// `~\AppData\Local\pexrc` on Windows.
+    #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
+    runtime_pex_root: Option<String>,
+
     /// The maximum number of threads to use when installing dependencies on first boot.
     ///
     /// Byt default, all cores will be utilized. This can be made explicit with
     /// `--max-install-jobs 0`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Virtual Environment")]
     max_install_jobs: Option<usize>,
 
     /// Whether to add the PEX venv scripts dir to the `$PATH`.
     ///
     /// If `prepend` or `append` is specified, then all scripts and console scripts provided by
     /// distributions in the pex file will be added to the `$PATH` in the corresponding position.
-    #[arg(long)]
+    #[arg(long, help_heading = "Virtual Environment")]
     venv_bin_path: Option<BinPath>,
 
     /// Don't rewrite Python script shebangs to use Python isolated mode.
     ///
     /// This can be useful to, for example, to enable running the venv PEX itself or its Python
     /// scripts with a custom `PYTHONPATH`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Virtual Environment")]
     non_hermetic_venv_scripts: bool,
 
     /// Give the PEX venv access to the system `site-packages` dir.
-    #[arg(long)]
+    #[arg(long, help_heading = "Virtual Environment")]
     venv_system_site_packages: bool,
 
     #[command(flatten)]
@@ -511,6 +516,7 @@ impl Build {
             inject_env: into_optional_index_map_of_cow_cow(self.inject_env),
             inject_python_args: into_vec_of_cow(self.inject_python_args),
             bind_resource_paths: into_optional_index_map_of_cow_cow(self.bind_resource_paths),
+            pexrc_root: self.runtime_pex_root.map(Cow::Owned),
             max_install_jobs: self.max_install_jobs.map(|max| max as isize),
             venv_bin_path: self.venv_bin_path,
             venv_hermetic_scripts: !self.non_hermetic_venv_scripts,
@@ -1181,7 +1187,14 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(preferred_python, search_path, python_args, path, args)
+                execute_pex(
+                    preferred_python,
+                    search_path,
+                    python_args,
+                    path,
+                    args,
+                    pex_info.configured_cache_root(),
+                )
             } else {
                 let pex = NamedTempFile::new()?;
                 let path = pex.path();
@@ -1196,7 +1209,14 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(preferred_python, search_path, python_args, path, args)
+                execute_pex(
+                    preferred_python,
+                    search_path,
+                    python_args,
+                    path,
+                    args,
+                    pex_info.configured_cache_root(),
+                )
             }
         }
     }
@@ -1560,14 +1580,26 @@ fn execute_pex(
     python_args: Vec<String>,
     pex: &Path,
     args: Vec<String>,
+    custom_pex_root: Option<Cow<Path>>,
 ) -> anyhow::Result<()> {
     let preferred_python = preferred_python.map(|interpreter| interpreter.realpath.as_path());
+    if let Some(custom_root) = custom_pex_root.as_deref()
+        && let Ok(root) = CacheDir::root()
+        && custom_root != root.as_ref()
+    {
+        warn!(
+            "The `--runtime-pex-root {custom_root}` will not be used for this ephemeral PEX run.",
+            custom_root = custom_root.display(),
+        );
+        warn!("The cache for builds is at {root}.", root = root.display())
+    }
     let exit_code = pexrs::boot(
         preferred_python,
         python_args,
         pex,
         args,
         search_path,
+        false,
         false,
         false,
     )?;

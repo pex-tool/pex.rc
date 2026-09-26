@@ -115,6 +115,7 @@ pub unsafe extern "C" fn boot(
         None,
         true,
         true,
+        true,
     ) {
         Ok(code) => code,
         Err(err) => {

@@ -157,6 +157,8 @@ pub struct RawPexInfo<'a> {
     #[serde(borrow)]
     pub pex_root: Option<Cow<'a, str>>,
     #[serde(borrow)]
+    pub pexrc_root: Option<Cow<'a, str>>,
+    #[serde(borrow)]
     pub requirements: Vec<Cow<'a, str>>,
     #[serde(borrow)]
     pub script: Option<Cow<'a, str>>,
@@ -165,6 +167,20 @@ pub struct RawPexInfo<'a> {
     pub venv_bin_path: Option<BinPath>,
     pub venv_hermetic_scripts: bool,
     pub venv_system_site_packages: bool,
+}
+
+impl<'a> RawPexInfo<'a> {
+    pub fn configured_cache_root(&'a self) -> Option<Cow<'a, Path>> {
+        if let Some(pexrc_root) = &self.pexrc_root {
+            Some(Cow::Borrowed(Path::new(pexrc_root.as_ref())))
+        } else {
+            // For injected PEXes we want to ensure we nest in the requested PEX_ROOT and don't
+            // trample legacy PEX cache entries; thus the `rc/root` cache subdir.
+            self.pex_root
+                .as_ref()
+                .map(|pex_root| Cow::Owned(Path::new(pex_root.as_ref()).join("rc").join("root")))
+        }
+    }
 }
 
 impl<'a> RawPexInfo<'a> {

@@ -101,8 +101,8 @@ pub fn write_sh_boot_shebang(
             .map_err(|err| anyhow!("{err}", err = err.display()))
     })
     .collect::<anyhow::Result<Vec<_>>>()?;
-    let pexrc_root = if let Some(pex_root) = pex_info.pex_root.as_deref() {
-        Cow::Owned(PosixPath::try_from(pex_root)?.to_string())
+    let pexrc_root = if let Some(pex_root) = pex_info.configured_cache_root() {
+        Cow::Owned(PosixPath::new(pex_root, true)?.to_string())
     } else {
         Cow::Borrowed("")
     };

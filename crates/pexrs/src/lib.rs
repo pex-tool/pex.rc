@@ -88,6 +88,7 @@ impl<'a> Linker for PythonProxyLinker<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn boot(
     python: Option<&Path>,
     python_args: Vec<String>,
@@ -96,6 +97,7 @@ pub fn boot(
     search_path: Option<SearchPath>,
     init_logging: bool,
     init_thread_pool: bool,
+    init_cache_root: bool,
 ) -> anyhow::Result<i32> {
     if let Ok(tools) = env::var("PEX_TOOLS")
         && tools == "1"
@@ -120,6 +122,10 @@ pub fn boot(
     } else {
         None
     };
+    let pex = Pex::load(pex)?;
+    if init_cache_root && let Some(cache_root) = pex.info.raw().configured_cache_root() {
+        cache::set_cache_root(CacheRoot::Dir(cache_root.into_owned()))?;
+    }
     let lock = match cache::read_lock() {
         Ok(lock) => lock,
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
@@ -148,14 +154,14 @@ pub fn boot(
 fn prepare_boot(
     python: Option<&Path>,
     python_args: Vec<String>,
-    pex: impl AsRef<Path>,
+    pex: Pex,
     argv: Vec<String>,
     search_path: Option<SearchPath>,
     init_threadpool: bool,
 ) -> anyhow::Result<Command> {
     let venv = prepare_venv(
         python,
-        pex.as_ref(),
+        pex,
         search_path,
         #[cfg(unix)]
         env::var_os("_PEXRC_SH_BOOT_SEED_DIR").map(PathBuf::from),
@@ -191,6 +197,10 @@ fn prepare_boot(
 
 pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
     let _flush_handles = logging::init_default()?;
+    let pex = Pex::load(pex)?;
+    if let Some(cache_root) = pex.info.raw().configured_cache_root() {
+        cache::set_cache_root(CacheRoot::Dir(cache_root.into_owned()))?;
+    }
     match cache::read_lock() {
         Ok(lock) => {
             // N.B.: We're being called from a Python program that lives longer than us via an
@@ -215,12 +225,11 @@ pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
 #[instrument(level = "debug", skip_all)]
 fn prepare_venv<'a>(
     python: Option<&Path>,
-    pex: &Path,
+    pex: Pex,
     search_path: Option<SearchPath>,
     #[cfg(unix)] sh_boot_seed_dir: Option<PathBuf>,
     init_threadpool: bool,
 ) -> anyhow::Result<Virtualenv<'a>> {
-    let pex = Pex::load(pex)?;
     let pex_info = pex.info.raw();
     if init_threadpool && let Some(max_install_jobs) = pex_info.max_install_jobs {
         rayon::ThreadPoolBuilder::default()

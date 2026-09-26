@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 use std::{env, fs};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 pub use atomic::{atomic_dir, atomic_file};
 use dtor::dtor;
 pub use fingerprint::{
@@ -26,6 +26,7 @@ pub use fingerprint::{
     hash_file,
 };
 pub use key::Key;
+use parking_lot::Mutex;
 use tempfile::TempDir;
 use tracing::{debug, instrument, warn};
 
@@ -121,8 +122,41 @@ fn ensure_writeable(path: PathBuf) -> Result<CacheRoot, Cow<'static, str>> {
         })
 }
 
+struct ConfiguredCacheRoot {
+    root: Option<CacheRoot>,
+    already_set: bool,
+}
+
+impl ConfiguredCacheRoot {
+    const fn new() -> Self {
+        Self {
+            root: None,
+            already_set: false,
+        }
+    }
+
+    fn set(&mut self, cache_root: CacheRoot) -> anyhow::Result<()> {
+        if self.already_set {
+            bail!("The cache root has already been set.")
+        }
+        let _ = self.root.insert(cache_root);
+        self.already_set = true;
+        Ok(())
+    }
+}
+
+static _PEXRC_ROOT: Mutex<ConfiguredCacheRoot> = Mutex::new(ConfiguredCacheRoot::new());
+
+pub fn set_cache_root(cache_root: CacheRoot) -> anyhow::Result<()> {
+    let mut configured_cache_root = _PEXRC_ROOT.lock();
+    configured_cache_root.set(cache_root)
+}
+
 static PEXRC_ROOT: LazyLock<Result<CacheRoot, Cow<'static, str>>> = LazyLock::new(|| {
-    if let Some(pexrc_root) = env::var_os("PEXRC_ROOT") {
+    let mut configured_cache_root = _PEXRC_ROOT.lock();
+    if let Some(cache_root) = configured_cache_root.root.take() {
+        return Ok(cache_root);
+    } else if let Some(pexrc_root) = env::var_os("PEXRC_ROOT") {
         expand_home_dir(pexrc_root.into())
     } else if let Some(pex_root) = env::var_os("PEX_ROOT") {
         expand_home_dir(pex_root.into()).map(|pex_root| pex_root.join("rc").join("cache"))

@@ -4,9 +4,11 @@
 #![deny(clippy::all)]
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::{env, process};
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
+use cache::CacheRoot;
 use clap::{
     ArgMatches,
     Args,
@@ -43,6 +45,14 @@ struct Cli {
         )
     )]
     experiments: bool,
+
+    /// Specify the PEX cache root directory used in this invocation of `pexrc`.
+    ///
+    /// If unspecified, a `pexrc` subdirectory of the default user cache directory for the runtime
+    /// OS will be used; e.g.: `~/.cache/pexrc` on Linux, `~/Library/Caches/pexrc` on macOS and
+    /// `~\AppData\Local\pexrc` on Windows.
+    #[arg(long, verbatim_doc_comment)]
+    pex_root: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -209,7 +219,8 @@ fn main() {
     } else {
         None
     };
-    if let Err(err) = execute(cli_command, experimental_commands, matches, ansi) {
+    let pex_root = matches.get_one::<PathBuf>("pex_root").cloned();
+    if let Err(err) = execute(cli_command, experimental_commands, matches, ansi, pex_root) {
         anstream::eprintln!("{}", err.red());
         process::exit(1);
     }
@@ -220,6 +231,7 @@ fn execute(
     experimental_commands: Option<HashMap<String, String>>,
     matches: ArgMatches,
     ansi: Option<bool>,
+    pex_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let _flush_handles = logging::init(
         Verbosity::<WarnLevel>::from_arg_matches(&matches)
@@ -227,7 +239,10 @@ fn execute(
             .map(|verbosity| verbosity.log_level_filter()),
         ansi,
     )?;
-
+    if let Some(pex_root) = pex_root {
+        cache::set_cache_root(CacheRoot::Dir(pex_root))?;
+    }
+    cache::read_lock().map_err(|err| anyhow!("Failed to obtain PEXRC cache read lock: {err}"))?;
     match matches.subcommand() {
         Some((subcommand, arg_matches)) => {
             if let Some(experimental_commands) = experimental_commands
@@ -245,7 +260,7 @@ fn execute(
             cli_command
                 .after_help(cstr!("<red>A subcommand is required</>"))
                 .print_help()?;
-            std::process::exit(1)
+            process::exit(1)
         }
     }
 }
