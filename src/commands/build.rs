@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter, Write as _};
 use std::io::{Seek, Write};
 use std::ops::Deref;
@@ -244,7 +244,7 @@ pub struct Build {
     wheels: Vec<PathBuf>,
 
     #[arg(long, help_heading = "Contents", help = PEX_PATH_HELP, long_help = PEX_PATH_LONG_HELP)]
-    pex_path: String,
+    pex_path: Option<OsString>,
 
     /// Set the entry point to `module` or `module:symbol`.
     ///
@@ -326,7 +326,7 @@ pub struct Build {
     /// for the runtime OS; e.g.: `~/.cache/pexrc` on Linux, `~/Library/Caches/pexrc` on macOS and
     /// `~\AppData\Local\pexrc` on Windows.
     #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
-    runtime_pex_root: Option<String>,
+    runtime_pex_root: Option<PathBuf>,
 
     /// The maximum number of threads to use when installing dependencies on first boot.
     ///
@@ -483,7 +483,9 @@ impl Build {
             Shebang::EnvCompatible
         };
 
-        let pex_paths = env::split_paths(&self.pex_path).map(Cow::Owned).collect();
+        let pex_paths = self
+            .pex_path
+            .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
         let entry_point = self
             .entry_point
             .map(PexEntryPoint::EntryPoint)

@@ -122,6 +122,7 @@ impl FromStr for InterpreterSelectionStrategy {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RawPexInfo<'a> {
+    #[serde(borrow)]
     pub bind_resource_paths: Option<IndexMap<Cow<'a, str>, Cow<'a, str>>>,
     pub build_properties: IndexMap<&'a str, Value>,
     pub code_hash: &'a str,
@@ -150,14 +151,13 @@ pub struct RawPexInfo<'a> {
     pub overridden: Vec<Cow<'a, str>>,
     #[serde(borrow)]
     pub pex_hash: Cow<'a, str>,
+    pub pex_path: Option<&'a str>,
     #[serde(borrow)]
-    pub pex_path: Option<Cow<'a, str>>,
+    pub pex_paths: Option<Vec<Cow<'a, Path>>>,
     #[serde(borrow)]
-    pub pex_paths: Vec<Cow<'a, Path>>,
+    pub pex_root: Option<Cow<'a, Path>>,
     #[serde(borrow)]
-    pub pex_root: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    pub pexrc_root: Option<Cow<'a, str>>,
+    pub pexrc_root: Option<Cow<'a, Path>>,
     #[serde(borrow)]
     pub requirements: Vec<Cow<'a, str>>,
     #[serde(borrow)]
@@ -171,14 +171,14 @@ pub struct RawPexInfo<'a> {
 
 impl<'a> RawPexInfo<'a> {
     pub fn configured_cache_root(&'a self) -> Option<Cow<'a, Path>> {
-        if let Some(pexrc_root) = &self.pexrc_root {
-            Some(Cow::Borrowed(Path::new(pexrc_root.as_ref())))
+        if let Some(pexrc_root) = self.pexrc_root.as_deref() {
+            Some(Cow::Borrowed(pexrc_root))
         } else {
             // For injected PEXes we want to ensure we nest in the requested PEX_ROOT and don't
             // trample legacy PEX cache entries; thus the `rc/root` cache subdir.
             self.pex_root
-                .as_ref()
-                .map(|pex_root| Cow::Owned(Path::new(pex_root.as_ref()).join("rc").join("root")))
+                .as_deref()
+                .map(|pex_root| Cow::Owned(pex_root.join("rc").join("root")))
         }
     }
 }
