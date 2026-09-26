@@ -243,7 +243,7 @@ fn inject_pex_dir(
     pex.info
         .write(&mut File::create_new(dest_pex.path().join("PEX-INFO"))?)?;
 
-    write_boot(dest_pex.path(), &shebang)?;
+    write_boot(pex.info.raw(), dest_pex.path(), &shebang)?;
 
     if dst.is_dir() {
         fs::remove_dir_all(&dst)?;
@@ -359,7 +359,7 @@ fn inject_pex_zip(
     dst_zip.start_file("PEX-INFO", deflated_file_options)?;
     pex.info.write(&mut dst_zip)?;
 
-    inject_boot(&mut dst_zip, deflated_file_options)?;
+    inject_boot(pex.info.raw(), &mut dst_zip, deflated_file_options)?;
 
     dst_zip.finish()?;
     mark_executable(dst_zip_fp.as_file_mut())?;

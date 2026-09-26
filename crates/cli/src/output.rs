@@ -29,9 +29,10 @@ impl Display for PathOutputStyle {
 }
 
 #[derive(Args)]
+#[command(next_help_heading = "Output")]
 pub struct Output {
     /// A file to send output to; STDOUT by default.
-    #[arg(short = 'o', long, help_heading = "Output")]
+    #[arg(short = 'o', long)]
     output: Option<PathBuf>,
 
     /// Set the style file-system paths are output in.
@@ -39,7 +40,7 @@ pub struct Output {
     /// By default, the style is auto-detected by examining the environment for clues from
     /// `TERM`, `SHELL`, etc.
     #[cfg(windows)]
-    #[arg(long, help_heading = "Output", default_value_t = PathOutputStyle::Auto)]
+    #[arg(long, default_value_t = PathOutputStyle::Auto)]
     path_style: PathOutputStyle,
 }
 

@@ -20,7 +20,7 @@ use tracing::debug;
 #[group(skip)]
 pub struct List {
     /// Output discovered Python paths in JSON.
-    #[arg(long, default_value_t = false, help_heading = "Output")]
+    #[arg(long, help_heading = "Output")]
     json: bool,
 
     #[command(flatten)]

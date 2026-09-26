@@ -101,12 +101,12 @@ pub fn write_sh_boot_shebang(
             .map_err(|err| anyhow!("{err}", err = err.display()))
     })
     .collect::<anyhow::Result<Vec<_>>>()?;
-    let pexrc_root = if let Some(pex_root) = pex_info.pex_root.as_deref() {
-        Cow::Owned(PosixPath::try_from(pex_root)?.to_string())
+    let pexrc_root = if let Some(pex_root) = pex_info.configured_cache_root() {
+        Cow::Owned(PosixPath::new(pex_root, true)?.to_string())
     } else {
         Cow::Borrowed("")
     };
-    let python_args = shlex::try_join(pex_info.inject_python_args.iter().copied())?;
+    let python_args = shlex::try_join(pex_info.inject_python_args.iter().map(AsRef::as_ref))?;
     write!(
         sink,
         "{shebang}'''': pshprs\n{header}{vars}{body}\n'''\n\n",
@@ -131,27 +131,56 @@ pub fn write_sh_boot_shebang(
     Ok(())
 }
 
-const PY_BOOT: &[u8] = include_bytes!("boot.py");
+const PY_BOOT: [&str; 3] = str_split!(include_str!("boot.py"), "# --- split --- #\n");
 
 pub fn inject_boot<T: FileOptionExtension + Copy>(
+    pex_info: &RawPexInfo,
     zip: &mut ZipWriter<impl Write + Seek>,
     file_options: FileOptions<T>,
 ) -> anyhow::Result<()> {
     zip.start_file("__pex__/__init__.py", file_options)?;
-    zip.write_all(PY_BOOT)?;
+    write_boot_contents(pex_info, zip)?;
+
     zip.start_file("__main__.py", file_options)?;
-    zip.write_all(PY_BOOT)?;
+    write_boot_contents(pex_info, zip)?;
     Ok(())
 }
 
-pub fn write_boot(dest_dir: &Path, shebang: &str) -> anyhow::Result<()> {
+pub fn write_boot(pex_info: &RawPexInfo, dest_dir: &Path, shebang: &str) -> anyhow::Result<()> {
     let main_py_path = dest_dir.join("__main__.py");
     let mut file = File::create_new(&main_py_path)?;
     file.write_all(shebang.as_bytes().trim_ascii_end())?;
     file.write_all(b"\n\n")?;
-    file.write_all(PY_BOOT)?;
+    write_boot_contents(pex_info, &mut file)?;
     fs::copy(&main_py_path, dest_dir.join("__pex__").join("__init__.py"))?;
     platform::mark_executable(file.file_mut())?;
     platform::symlink_or_link_or_copy(&main_py_path, dest_dir.join("pex"), true)?;
+    Ok(())
+}
+
+fn write_boot_contents(pex_info: &RawPexInfo, sink: &mut impl Write) -> anyhow::Result<()> {
+    sink.write_all(PY_BOOT[0].as_bytes())?;
+    // TODO: XXX: Extract a proper Python string escaper.
+    let inject_python_args = pex_info
+        .inject_python_args
+        .iter()
+        .map(|arg| {
+            if arg.contains("'''") || (arg.contains('"') && arg.contains('\'')) {
+                format!(r#""""{arg}""""#)
+            } else if arg.contains(r#"""""#) {
+                format!("'''{arg}'''")
+            } else if arg.contains('"') {
+                format!("'{arg}'")
+            } else {
+                format!(r#""{arg}""#)
+            }
+        })
+        .join(", ");
+    sink.write_all(
+        PY_BOOT[1]
+            .replace("'{inject_python_args}'", &inject_python_args)
+            .as_bytes(),
+    )?;
+    sink.write_all(PY_BOOT[2].as_bytes())?;
     Ok(())
 }

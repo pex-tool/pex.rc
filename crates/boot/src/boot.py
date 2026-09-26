@@ -701,13 +701,17 @@ if __name__ == "__main__":
         sys.exit("Could not launch python executable!\n")
     os.environ["PEX"] = entry_point
 
-    python_args = []  # type: List[str]
+# --- split --- #
+    python_args = ['{inject_python_args}']  # type: List[str]
+# --- split --- #
     orig_args = orig_argv()
-    if orig_args:
+    if orig_args is not None:
+        orig_python_args = []  # type: List[str]
         for index, arg in enumerate(orig_args[1:], start=1):
             if os.path.exists(arg) and os.path.samefile(entry_point, arg):
-                python_args.extend(orig_args[1:index])
+                orig_python_args = orig_args[1:index]
                 break
+        python_args.extend(orig_python_args)
 
     boot(entry_point, python_args=python_args, args=sys.argv[1:])
 elif __name__ == "__pex__":

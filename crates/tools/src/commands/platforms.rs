@@ -15,7 +15,7 @@ use zip::ZipArchive;
 #[group(skip)]
 pub struct PlatformsArgs {
     /// Output platform list in JSON.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     json: bool,
 
     #[command(flatten)]

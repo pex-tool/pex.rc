@@ -9,7 +9,7 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::{env, mem};
+use std::{cmp, env, mem};
 
 use anyhow::{anyhow, bail};
 use cache::{CacheDir, CacheRoot, HashOptions, Key, atomic_dir};
@@ -87,6 +87,7 @@ impl<'a> Linker for PythonProxyLinker<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn boot(
     python: Option<&Path>,
     python_args: Vec<String>,
@@ -94,6 +95,8 @@ pub fn boot(
     argv: Vec<String>,
     search_path: Option<SearchPath>,
     init_logging: bool,
+    init_thread_pool: bool,
+    init_cache_root: bool,
 ) -> anyhow::Result<i32> {
     if let Ok(tools) = env::var("PEX_TOOLS")
         && tools == "1"
@@ -118,11 +121,22 @@ pub fn boot(
     } else {
         None
     };
+    let pex = Pex::load(pex)?;
+    if init_cache_root && let Some(cache_root) = pex.info.raw().configured_cache_root() {
+        cache::set_cache_root(CacheRoot::Dir(cache_root.into_owned()))?;
+    }
     let lock = match cache::read_lock() {
         Ok(lock) => lock,
         Err(err) => bail!("Failed to obtain PEXRC cache read lock: {err}"),
     };
-    let mut command = prepare_boot(python, python_args, pex, argv, search_path)?;
+    let mut command = prepare_boot(
+        python,
+        python_args,
+        pex,
+        argv,
+        search_path,
+        init_thread_pool,
+    )?;
     info!(
         "Booting with {exe} {args}",
         exe = command.get_program().to_string_lossy(),
@@ -139,16 +153,18 @@ pub fn boot(
 fn prepare_boot(
     python: Option<&Path>,
     python_args: Vec<String>,
-    pex: impl AsRef<Path>,
+    pex: Pex,
     argv: Vec<String>,
     search_path: Option<SearchPath>,
+    init_threadpool: bool,
 ) -> anyhow::Result<Command> {
     let venv = prepare_venv(
         python,
-        pex.as_ref(),
+        pex,
         search_path,
         #[cfg(unix)]
         env::var_os("_PEXRC_SH_BOOT_SEED_DIR").map(PathBuf::from),
+        init_threadpool,
     )?;
 
     let mut command = {
@@ -180,6 +196,10 @@ fn prepare_boot(
 
 pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
     let _flush_handles = logging::init_default()?;
+    let pex = Pex::load(pex)?;
+    if let Some(cache_root) = pex.info.raw().configured_cache_root() {
+        cache::set_cache_root(CacheRoot::Dir(cache_root.into_owned()))?;
+    }
     match cache::read_lock() {
         Ok(lock) => {
             // N.B.: We're being called from a Python program that lives longer than us via an
@@ -196,6 +216,7 @@ pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
         None,
         #[cfg(unix)]
         None,
+        true,
     )
     .map(|venv| venv.prefix().join(&venv.site_packages_relpath))
 }
@@ -203,12 +224,20 @@ pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
 #[instrument(level = "debug", skip_all)]
 fn prepare_venv<'a>(
     python: Option<&Path>,
-    pex: &Path,
+    pex: Pex,
     search_path: Option<SearchPath>,
     #[cfg(unix)] sh_boot_seed_dir: Option<PathBuf>,
+    init_threadpool: bool,
 ) -> anyhow::Result<Virtualenv<'a>> {
-    let pex = Pex::load(pex)?;
     let pex_info = pex.info.raw();
+    if init_threadpool && let Some(max_install_jobs) = pex_info.max_install_jobs {
+        rayon::ThreadPoolBuilder::default()
+            // N.B.: Pex supported -1 in its PEX-INFO to indicate a special form of 0 (all cores)
+            // with load pre-allocation heuristics. We just rely on rayon to load balance
+            // automatically via work stealing no matter how many threads are configured.
+            .num_threads(cmp::max(0, max_install_jobs) as usize)
+            .build_global()?;
+    }
     let pex_path = PexPath::from_pex_info(pex_info, true);
     let additional_pexes = pex_path.load_pexes()?;
     let search_path = if let Some(search_path) = search_path {
@@ -314,6 +343,18 @@ fn prepare_venv<'a>(
                 sh_boot_seed_dir.join(format!("pex-{python}")),
                 true,
             )?;
+            // N.B.: This is a "manual symlink" used by the --sh-boot script when it needs to pass
+            // python args.
+            let mut proxy_link_file = tempfile::NamedTempFile::new_in(&sh_boot_seed_dir)?;
+            <tempfile::NamedTempFile as std::io::Write>::write_all(
+                &mut proxy_link_file,
+                venv_interpreter.details.path.as_os_str().as_encoded_bytes(),
+            )?;
+            // N.B.: The trailing newline is critical for use by the --sh-boot script which uses
+            // `read var < /this/file` to read the contents and `read` terminates non-zero when it
+            // does not encounter a newline.
+            <tempfile::NamedTempFile as std::io::Write>::write_all(&mut proxy_link_file, b"\n")?;
+            proxy_link_file.persist(sh_boot_seed_dir.join(format!("proxy-{python}")))?;
         }
         Virtualenv::enclosing(venv_interpreter)
     } else {

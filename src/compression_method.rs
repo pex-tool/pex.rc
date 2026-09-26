@@ -21,6 +21,7 @@ impl From<CompressionMethod> for zip::CompressionMethod {
 }
 
 #[derive(Args, Debug)]
+#[command(next_help_heading = "Compression")]
 pub struct CompressionArgs {
     /// The compression method to use for wheels and other files stored in the PEX.
     #[arg(
@@ -28,12 +29,11 @@ pub struct CompressionArgs {
         long,
         value_enum,
         default_value_t = CompressionMethod::Zstd,
-        help_heading = "Compression"
     )]
     compression_method: CompressionMethod,
 
     /// The compression level to use.
-    #[arg(long, help_heading = "Compression")]
+    #[arg(long)]
     compression_level: Option<i64>,
 }
 

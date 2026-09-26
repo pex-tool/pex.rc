@@ -23,7 +23,7 @@ use serde_json::json;
 #[derive(Args)]
 pub(crate) struct InterpreterArgs {
     /// Print all compatible interpreters, preferred first.
-    #[arg(short = 'a', long, default_value_t = false)]
+    #[arg(short = 'a', long)]
     all: bool,
 
     /// Provide more information about the interpreter in JSON format.

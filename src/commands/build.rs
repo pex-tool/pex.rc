@@ -4,11 +4,13 @@
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter, Write as _};
-use std::io::{BufReader, Seek, Write};
+use std::io::{Seek, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::{io, process};
+use std::str::FromStr;
+use std::{env, io, process};
 
-use anyhow::{Error, anyhow, bail};
+use anyhow::{anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
 use cache::{CacheDir, DigestingWriter, Fingerprint, atomic_file};
 use clap::{ArgAction, Args};
@@ -21,7 +23,7 @@ use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
-use pex::{InheritPath, InterpreterSelectionStrategy, PexInfo, RawPexInfo};
+use pex::{BinPath, InheritPath, InterpreterSelectionStrategy, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -107,31 +109,35 @@ enum Shebang {
     ShBoot,
 }
 
-//  TODO:
-//
-//  "build_properties": {  # Maybe custom build properties?
-//     "pex_version": "2.103.2"
-//   },
-//
-//   "emit_warnings": true  # There is not yet a pex_warnings facility; just generic warn tracing.
-//
-//   "pex_root": "/home/jsirois/.cache/pex",
-//
-//   # Resolver:
-//   "pex_paths": []
-//
-//   # Entry point:
-//   "strip_pex_env": true
-//   "inject_env": {}
-//   "inject_args": []
-//   "inject_python_args": []
-//   "bind_resource_paths": {}
-//
-//   # Venv setup:
-//   "max_install_jobs": 1
-//   "venv_bin_path": "false"
-//   "venv_hermetic_scripts": true,
-//   "venv_system_site_packages": false
+#[derive(Clone, Debug)]
+struct KeyValue((String, String));
+
+impl KeyValue {
+    fn into_cow_tuple<'a>(self) -> (Cow<'a, str>, Cow<'a, str>) {
+        let (key, value) = self.0;
+        (Cow::Owned(key), Cow::Owned(value))
+    }
+}
+
+impl FromStr for KeyValue {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        if let Some((key, value)) = s.split_once('=') {
+            Ok(Self((key.to_owned(), value.to_owned())))
+        } else {
+            bail!("must be of the form `<key>=<value>`")
+        }
+    }
+}
+
+impl Deref for KeyValue {
+    type Target = (String, String);
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 const PYTHON_PLATFORM_HELP: &str = "The Python platforms the built PEX will target at runtime.";
 
@@ -143,6 +149,20 @@ If specified, the targets will be used to resolve any specified requirements fro
 configured wheels. If required wheels are not present, the build will error.
 "#,
     PYTHON_PLATFORM_LONG_HELP
+);
+
+const PEX_PATH_HELP: &str = concatcp!(
+    "A '",
+    platform::PATH_SEP,
+    "' separated list of other PEX files to merge into the runtime environment."
+);
+
+const PEX_PATH_LONG_HELP: &str = concatcp!(
+    PEX_PATH_HELP,
+    r#"
+
+N.B.: The paths specified must be valid paths at runtime. PEXes will not be merged at build time.
+"#,
 );
 
 #[derive(Args, Debug)]
@@ -223,13 +243,8 @@ pub struct Build {
     )]
     wheels: Vec<PathBuf>,
 
-    /// Existing PEX-INFO to use for the built PEX.
-    ///
-    /// If the PEX-INFO is from a traditional PEX it may be edited minimally to conform to the PEXrc
-    /// runtime and any specified requirements. If no PEX-INFO is supplied, it will be created from
-    /// the other given inputs.
-    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
-    pex_info: Option<PathBuf>,
+    #[arg(long, help_heading = "Contents", help = PEX_PATH_HELP, long_help = PEX_PATH_LONG_HELP)]
+    pex_path: String,
 
     /// Set the entry point to `module` or `module:symbol`.
     ///
@@ -249,7 +264,7 @@ pub struct Build {
     /// Set the entry point to the given script.
     ///
     /// The script must be either a console script, gui script or data script found in one of the
-    /// distributions in the PEX. For example: `pexrc build -c cowsay --venv venv/ cowsay`.
+    /// distributions in the PEX. For example: `pexrc build -c cowsay --venv /venv/dir cowsay`.
     #[arg(
         short = 'c',
         long,
@@ -260,13 +275,83 @@ pub struct Build {
     )]
     script: Option<String>,
 
+    /// Do not strip `PEX_*` environment variables when executing the PEX.
+    #[arg(long, help_heading = "Entry Point")]
+    no_strip_pex_env: bool,
+
+    /// Environment variables to freeze in to the application environment.
+    #[arg(long, help_heading = "Entry Point")]
+    inject_env: Vec<KeyValue>,
+
+    /// Command line arguments to the application to freeze in.
+    ///
+    /// Arguments that have `{pex.env.<env var name>}` placeholders will have them replaced with
+    /// the corresponding environment variable value if set and '' otherwise.
+    #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
+    inject_args: Vec<String>,
+
+    /// Command line arguments to the Python interpreter to freeze in.
+    ///
+    /// For example, `-u` to disable buffering of `sys.stdout` and `sys.stderr` or `-W <arg>` to
+    /// control Python warnings.
+    #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
+    inject_python_args: Vec<String>,
+
+    /// Specifies an environment variable to bind the path of a resource in the PEX.
+    ///
+    /// The binding is specified in the form `<env var name>=<resource rel path>`. For example
+    /// `WINDOWS_X64_CONSOLE_TRAMPOLINE=pex/windows/stubs/uv-trampoline-x86_64-console.exe` would
+    /// look up the path of the `pex/windows/stubs/uv-trampoline-x86_64-console.exe` file on the
+    /// `sys.path` and bind its absolute path to the `WINDOWS_X64_CONSOLE_TRAMPOLINE` environment
+    /// variable. N.B.: resource paths must use the Unix path separator of `/`. These will be
+    /// converted to the runtime host path separator as needed.
+    #[arg(
+        long = "bind-resource-path",
+        help_heading = "Entry Point",
+        verbatim_doc_comment
+    )]
+    bind_resource_paths: Vec<KeyValue>,
+
     /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
     /// PYTHONPATH) running the pex.
     ///
     /// Possible values: `false` (does not inherit `sys.path`), `fallback` (inherits `sys.path`
     /// after packaged dependencies), `prefer` (inherits `sys.path` before packaged dependencies).
-    #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
+    #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
     inherit_path: Option<InheritPath>,
+
+    /// Specify the PEX cache root directory to be used when the generated PEX file boots.
+    ///
+    /// If unspecified, the PEX will use a `pexrc` subdirectory of the default user cache directory
+    /// for the runtime OS; e.g.: `~/.cache/pexrc` on Linux, `~/Library/Caches/pexrc` on macOS and
+    /// `~\AppData\Local\pexrc` on Windows.
+    #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
+    runtime_pex_root: Option<String>,
+
+    /// The maximum number of threads to use when installing dependencies on first boot.
+    ///
+    /// Byt default, all cores will be utilized. This can be made explicit with
+    /// `--max-install-jobs 0`.
+    #[arg(long, help_heading = "Virtual Environment")]
+    max_install_jobs: Option<usize>,
+
+    /// Whether to add the PEX venv scripts dir to the `$PATH`.
+    ///
+    /// If `prepend` or `append` is specified, then all scripts and console scripts provided by
+    /// distributions in the pex file will be added to the `$PATH` in the corresponding position.
+    #[arg(long, help_heading = "Virtual Environment")]
+    venv_bin_path: Option<BinPath>,
+
+    /// Don't rewrite Python script shebangs to use Python isolated mode.
+    ///
+    /// This can be useful to, for example, to enable running the venv PEX itself or its Python
+    /// scripts with a custom `PYTHONPATH`.
+    #[arg(long, help_heading = "Virtual Environment")]
+    non_hermetic_venv_scripts: bool,
+
+    /// Give the PEX venv access to the system `site-packages` dir.
+    #[arg(long, help_heading = "Virtual Environment")]
+    venv_system_site_packages: bool,
 
     #[command(flatten)]
     interpreter_selection_args: InterpreterSelectionArgs,
@@ -323,6 +408,14 @@ pub struct Build {
         verbatim_doc_comment
     )]
     python_shebang: Option<String>,
+
+    // TODO: XXX: This is not currently wired up properly in a comprehensive way. It's currently
+    //  scattershot and needs a re-think.
+    /// Emit runtime warnings on stderr.
+    ///
+    /// By default, only emit them when PEX_VERBOSE is set.
+    #[arg(long, help_heading = "Boot Mode", verbatim_doc_comment)]
+    emit_warnings: bool,
 
     /// The name of the generated PEX file.
     ///
@@ -390,6 +483,7 @@ impl Build {
             Shebang::EnvCompatible
         };
 
+        let pex_paths = env::split_paths(&self.pex_path).map(Cow::Owned).collect();
         let entry_point = self
             .entry_point
             .map(PexEntryPoint::EntryPoint)
@@ -407,136 +501,82 @@ impl Build {
 
         let interpreter_selection = self.interpreter_selection_args.finalize();
 
-        if let Some(pex_info) = self.pex_info {
-            let pex_info_file = File::open(&pex_info)?;
-            let size = pex_info_file.metadata()?.len();
-            let mut pex_info = PexInfo::parse(
-                BufReader::new(pex_info_file),
-                size,
-                Some(|| Cow::Owned(pex_info.display().to_string())),
-            )?;
-            pex_info.with_raw_mut(|pi| {
-                pi.build_properties.insert("pexrc_version", json!(VERSION));
-
-                if !self.excluded.is_empty() {
-                    pi.excluded = self.excluded.into_iter().map(Cow::Owned).collect()
-                }
-                if !self.overridden.is_empty() {
-                    pi.overridden = self.overridden.into_iter().map(Cow::Owned).collect()
-                }
-                pi.ignore_errors |= self.ignore_errors;
-
-                if self.inherit_path.is_some() {
-                    pi.inherit_path = self.inherit_path;
-                }
-
-                if !interpreter_selection.constraints.is_empty() {
-                    pi.interpreter_constraints = interpreter_selection
-                        .constraints
-                        .into_constraints()
-                        .into_iter()
-                        .map(|ic| Cow::Owned(ic.to_string()))
-                        .collect()
-                }
-                if let Some(selection_strategy) = interpreter_selection.selection_strategy {
-                    pi.interpreter_selection_strategy = Some(selection_strategy.into())
-                }
-            });
-            let requirements = if self.requirements.is_empty() {
-                pex_info
-                    .raw()
-                    .requirements
-                    .iter()
-                    .map(|requirement| Ok(requirement.parse::<Requirement<Url>>()?))
-                    .collect::<anyhow::Result<Vec<_>>>()?
-            } else {
-                pex_info.with_raw_mut(|pi| {
-                    pi.requirements = self
-                        .requirements
-                        .iter()
-                        .map(ToString::to_string)
-                        .map(Cow::Owned)
-                        .collect()
-                });
-                self.requirements
-            };
-            let (preferred_python, wheels) = resolve_wheel_files(
-                &repository,
-                &platforms,
-                requirements,
-                pex_info.raw(),
-                &wheel_options,
-            )?;
-            pex_info.with_raw_mut(|raw_pex_info| {
-                adjust_requirements(raw_pex_info, &wheels)?;
-                if let Some(entry_point) = entry_point {
-                    resolve_entry_point(raw_pex_info, entry_point, &wheels)?;
-                }
-                build_pex(
-                    preferred_python,
-                    interpreter_selection.search_path,
-                    preferred_platform,
-                    wheels,
-                    wheel_options,
-                    raw_pex_info,
-                    self.packed,
-                    shebang,
-                    self.output,
-                    self.extra_args,
-                )
-            })
-        } else {
-            let mut pex_info = RawPexInfo {
-                build_properties: indexmap! {
-                    "pex_version" => json!(concatcp!("rc ", VERSION)),
-                    "pexrc_version" => json!(VERSION),
-                },
-                requirements: self
-                    .requirements
-                    .iter()
-                    .map(ToString::to_string)
-                    .map(Cow::Owned)
-                    .collect(),
-                excluded: self.excluded.into_iter().map(Cow::Owned).collect(),
-                overridden: self.overridden.into_iter().map(Cow::Owned).collect(),
-                ignore_errors: self.ignore_errors,
-                inherit_path: self.inherit_path,
-                interpreter_constraints: interpreter_selection
+        let mut pex_info = RawPexInfo {
+            build_properties: indexmap! {
+                "pex_version" => json!(concatcp!("rc ", VERSION)),
+                "pexrc_version" => json!(VERSION),
+            },
+            emit_warnings: self.emit_warnings,
+            pex_paths,
+            requirements: into_vec_of_cow(self.requirements.iter().map(ToString::to_string)),
+            excluded: into_vec_of_cow(self.excluded),
+            overridden: into_vec_of_cow(self.overridden),
+            ignore_errors: self.ignore_errors,
+            inherit_path: self.inherit_path,
+            interpreter_constraints: into_vec_of_cow(
+                interpreter_selection
                     .constraints
                     .into_constraints()
                     .into_iter()
-                    .map(|ic| Cow::Owned(ic.to_string()))
-                    .collect(),
-                interpreter_selection_strategy: interpreter_selection
-                    .selection_strategy
-                    .map(InterpreterSelectionStrategy::from),
-                ..Default::default()
-            };
-            let (preferred_python, wheels) = resolve_wheel_files(
-                &repository,
-                &platforms,
-                self.requirements,
-                &pex_info,
-                &wheel_options,
-            )?;
-            adjust_requirements(&mut pex_info, &wheels)?;
-            if let Some(entry_point) = entry_point {
-                resolve_entry_point(&mut pex_info, entry_point, &wheels)?;
-            }
-            build_pex(
-                preferred_python,
-                interpreter_selection.search_path,
-                preferred_platform,
-                wheels,
-                wheel_options,
-                &mut pex_info,
-                self.packed,
-                shebang,
-                self.output,
-                self.extra_args,
-            )
+                    .map(|ic| ic.to_string()),
+            ),
+            interpreter_selection_strategy: interpreter_selection
+                .selection_strategy
+                .map(InterpreterSelectionStrategy::from),
+            strip_pex_env: if self.no_strip_pex_env {
+                Some(false)
+            } else {
+                None
+            },
+            inject_args: into_vec_of_cow(self.inject_args),
+            inject_env: into_optional_index_map_of_cow_cow(self.inject_env),
+            inject_python_args: into_vec_of_cow(self.inject_python_args),
+            bind_resource_paths: into_optional_index_map_of_cow_cow(self.bind_resource_paths),
+            pexrc_root: self.runtime_pex_root.map(Cow::Owned),
+            max_install_jobs: self.max_install_jobs.map(|max| max as isize),
+            venv_bin_path: self.venv_bin_path,
+            venv_hermetic_scripts: !self.non_hermetic_venv_scripts,
+            venv_system_site_packages: self.venv_system_site_packages,
+            ..Default::default()
+        };
+        let (preferred_python, wheels) = resolve_wheel_files(
+            &repository,
+            &platforms,
+            self.requirements,
+            &pex_info,
+            &wheel_options,
+        )?;
+        adjust_requirements(&mut pex_info, &wheels)?;
+        if let Some(entry_point) = entry_point {
+            resolve_entry_point(&mut pex_info, entry_point, &wheels)?;
         }
+        build_pex(
+            preferred_python,
+            interpreter_selection.search_path,
+            preferred_platform,
+            wheels,
+            wheel_options,
+            &mut pex_info,
+            self.packed,
+            shebang,
+            self.output,
+            self.extra_args,
+        )
     }
+}
+
+fn into_optional_index_map_of_cow_cow<'a>(
+    items: Vec<KeyValue>,
+) -> Option<IndexMap<Cow<'a, str>, Cow<'a, str>>> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(items.into_iter().map(KeyValue::into_cow_tuple).collect())
+    }
+}
+
+fn into_vec_of_cow<'a>(items: impl IntoIterator<Item = String>) -> Vec<Cow<'a, str>> {
+    items.into_iter().map(Cow::Owned).collect()
 }
 
 #[instrument(level = "debug", skip_all)]
@@ -838,7 +878,7 @@ fn resolve_wheels_from_venvs<'a>(
         }
     }
     if !errors_by_platform.is_empty() {
-        struct ErrorsByPlatform<'a>(IndexMap<&'a Platform<'a>, Vec<Error>>);
+        struct ErrorsByPlatform<'a>(IndexMap<&'a Platform<'a>, Vec<anyhow::Error>>);
         impl<'a> Display for ErrorsByPlatform<'a> {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 let count = self.0.len();
@@ -1163,7 +1203,14 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(preferred_python, search_path, python_args, path, args)
+                execute_pex(
+                    preferred_python,
+                    search_path,
+                    python_args,
+                    path,
+                    args,
+                    pex_info.configured_cache_root(),
+                )
             } else {
                 let pex = NamedTempFile::new()?;
                 let path = pex.path();
@@ -1178,7 +1225,14 @@ fn build_pex(
                     shebang,
                     path,
                 )?;
-                execute_pex(preferred_python, search_path, python_args, path, args)
+                execute_pex(
+                    preferred_python,
+                    search_path,
+                    python_args,
+                    path,
+                    args,
+                    pex_info.configured_cache_root(),
+                )
             }
         }
     }
@@ -1408,7 +1462,7 @@ fn create_packed_pex(
     let mut shebang_buffer = sh_boot_buffer();
     write_shebang(preferred_python, pex_info, shebang, &mut shebang_buffer)?;
     let shebang = String::from_utf8(shebang_buffer)?;
-    write_boot(dest_dir.path(), shebang.as_ref())?;
+    write_boot(pex_info, dest_dir.path(), shebang.as_ref())?;
 
     if path.is_dir() {
         fs::remove_dir_all(path)?;
@@ -1476,7 +1530,7 @@ fn create_zipapp(
     dst_zip.start_file("PEX-INFO", deflated_file_options)?;
     pex_info.write(&mut dst_zip)?;
 
-    inject_boot(&mut dst_zip, deflate_options)?;
+    inject_boot(pex_info, &mut dst_zip, deflate_options)?;
 
     dst_zip.finish()?;
     mark_executable(dst_zip_fp.as_file_mut())?;
@@ -1542,8 +1596,28 @@ fn execute_pex(
     python_args: Vec<String>,
     pex: &Path,
     args: Vec<String>,
+    custom_pex_root: Option<Cow<Path>>,
 ) -> anyhow::Result<()> {
     let preferred_python = preferred_python.map(|interpreter| interpreter.realpath.as_path());
-    let exit_code = pexrs::boot(preferred_python, python_args, pex, args, search_path, false)?;
+    if let Some(custom_root) = custom_pex_root.as_deref()
+        && let Ok(root) = CacheDir::root()
+        && custom_root != root.as_ref()
+    {
+        warn!(
+            "The `--runtime-pex-root {custom_root}` will not be used for this ephemeral PEX run.",
+            custom_root = custom_root.display(),
+        );
+        warn!("The cache for builds is at {root}.", root = root.display())
+    }
+    let exit_code = pexrs::boot(
+        preferred_python,
+        python_args,
+        pex,
+        args,
+        search_path,
+        false,
+        false,
+        false,
+    )?;
     process::exit(exit_code)
 }

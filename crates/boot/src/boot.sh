@@ -50,7 +50,19 @@ if on_fast_path; then
           # embedded in the shebang of our venv pex script; so just execute that script directly.
           export PEX="$0"
 
-          exec "${VENV}/sh-boot/pex-${python}" "$@"
+          if [ -n "${PYTHON_ARGS}" ]; then
+              # N.B.: We implement a manual symlink here since the unix proxy-python relies on
+              # grabbing the parent dir of its argv 0 to resolve relative Python paths. If we used
+              # a real symlink, it would resolve the wrong dir, namely `${VENV}/sh-boot`.
+              # N.B. The relative Python path shenanigans is necessitated by macOS, where we need
+              # the proxy-python to be a symlink into a cached proxy-pythonX.Y to ensure we only
+              # incur XProtect virus scanning overhead once per proxy-python per Python X.Y on the
+              # host.
+              read proxy_python < "${VENV}/sh-boot/proxy-${python}"
+              exec "${proxy_python}" "${PYTHON_ARGS}" "${VENV}/sh-boot/pex-${python}" "$@"
+          else
+              exec "${VENV}/sh-boot/pex-${python}" "$@"
+          fi
       fi
   done
 fi

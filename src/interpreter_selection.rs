@@ -31,6 +31,7 @@ interpreter binaries.
 );
 
 #[derive(Args, Debug)]
+#[command(next_help_heading = "Interpreter Selection")]
 pub struct InterpreterSelectionArgs {
     #[cfg_attr(
         // N.B.: This prevents doctest from attempting to analyze the code blocks. Otherwise;
@@ -68,21 +69,17 @@ To find out the interpreter constraints of all Python interpreters on the `$PATH
 
 "#
     )]
-    #[arg(
-        long = "interpreter-constraint",
-        help_heading = "Interpreter Selection",
-        verbatim_doc_comment
-    )]
+    #[arg(long = "interpreter-constraint", verbatim_doc_comment)]
     interpreter_constraints: Vec<InterpreterConstraint>,
 
     /// Use this strategy to select between interpreters of differing major or minor version.
     ///
     /// N.B.: Whatever selection strategy is chosen, the highest available patch version is always
     /// selected as a tie-breaker when there is more than one compatible interpreter available.
-    #[arg(long, help_heading = "Interpreter Selection", verbatim_doc_comment)]
+    #[arg(long, verbatim_doc_comment)]
     interpreter_selection_strategy: Option<InterpreterSelectionStrategy>,
 
-    #[arg(long, help_heading = "Interpreter Selection", help=PYTHON_PATH_HELP, long_help=PYTHON_PATH_LONG_HELP)]
+    #[arg(long, help=PYTHON_PATH_HELP, long_help=PYTHON_PATH_LONG_HELP)]
     python_path: Option<OsString>,
 }
 
