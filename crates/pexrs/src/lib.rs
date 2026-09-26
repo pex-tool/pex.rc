@@ -19,7 +19,6 @@ use itertools::Itertools;
 use pex::{InheritPath, Pex, PexPath, RawPexInfo};
 use python_proxy::ProxySource;
 use regex::bytes::Regex;
-use tempfile::NamedTempFile;
 use tracing::{info, instrument, warn};
 use venv::{InstallScope, Linker, Provenance, Virtualenv, populate, populate_user_code_and_wheels};
 
@@ -347,14 +346,14 @@ fn prepare_venv<'a>(
             // N.B.: This is a "manual symlink" used by the --sh-boot script when it needs to pass
             // python args.
             let mut proxy_link_file = tempfile::NamedTempFile::new_in(&sh_boot_seed_dir)?;
-            <NamedTempFile as std::io::Write>::write_all(
+            <tempfile::NamedTempFile as std::io::Write>::write_all(
                 &mut proxy_link_file,
                 venv_interpreter.details.path.as_os_str().as_encoded_bytes(),
             )?;
             // N.B.: The trailing newline is critical for use by the --sh-boot script which uses
             // `read var < /this/file` to read the contents and `read` terminates non-zero when it
             // does not encounter a newline.
-            <NamedTempFile as std::io::Write>::write_all(&mut proxy_link_file, b"\n")?;
+            <tempfile::NamedTempFile as std::io::Write>::write_all(&mut proxy_link_file, b"\n")?;
             proxy_link_file.persist(sh_boot_seed_dir.join(format!("proxy-{python}")))?;
         }
         Virtualenv::enclosing(venv_interpreter)
