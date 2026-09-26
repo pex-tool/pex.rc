@@ -98,11 +98,138 @@ impl<'a> Repository<'a> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PyExecutable(PathBuf);
+
+impl From<OsString> for PyExecutable {
+    fn from(value: OsString) -> Self {
+        Self(value.into())
+    }
+}
+
+impl PyExecutable {
+    const EXE_PY: &str = "__pex_executable__.py";
+
+    fn entry_point() -> &'static str {
+        Self::EXE_PY
+            .strip_suffix(".py")
+            .expect("The constant ends in `.py`.")
+    }
+
+    fn write(&self, dest_dir: &Path) -> anyhow::Result<()> {
+        fs::copy(&self.0, dest_dir.join(Self::EXE_PY))?;
+        Ok(())
+    }
+
+    fn inject(
+        &self,
+        zip: &mut ZipWriter<impl Write + Seek>,
+        file_options: SimpleFileOptions,
+    ) -> anyhow::Result<()> {
+        zip.start_file(Self::EXE_PY, file_options)?;
+        io::copy(&mut File::open(&self.0)?, zip)?;
+        Ok(())
+    }
+}
+
 enum PexEntryPoint {
     EntryPoint(String),
+    Exe(PyExecutable),
     Script(String),
 }
 
+impl PexEntryPoint {
+    #[instrument(level = "debug", skip_all)]
+    fn resolve(
+        self,
+        pex_info: &mut RawPexInfo,
+        wheels: &[FingerprintedWheel],
+    ) -> anyhow::Result<Option<PyExecutable>> {
+        match self {
+            PexEntryPoint::EntryPoint(ep) => pex_info.entry_point = Some(Cow::Owned(ep)),
+            PexEntryPoint::Exe(py_executable) => {
+                pex_info.entry_point = Some(Cow::Borrowed(PyExecutable::entry_point()));
+                return Ok(Some(py_executable));
+            }
+            PexEntryPoint::Script(script) => {
+                let matches = wheels
+                    .into_par_iter()
+                    .map(|wheel| {
+                        let wheel_file = wheel
+                            .path
+                            .file_name()
+                            .and_then(OsStr::to_str)
+                            .ok_or_else(|| anyhow!("XXX"))
+                            .and_then(WheelFile::parse_file_name)?;
+                        let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
+                        let metadata_dirs = MetadataDirs::locate_in_zip(
+                            &whl,
+                            "",
+                            None,
+                            &wheel_file.project_name,
+                            &wheel_file.version,
+                        )?;
+                        match whl.by_name(&format!(
+                            "{dist_info_dir}/entry_points.txt",
+                            dist_info_dir = metadata_dirs.dist_info_dir()
+                        )) {
+                            Ok(file) => {
+                                let entry_points = EntryPoints::load(file)?;
+                                if let Some(entry_point) = entry_points.script(&script) {
+                                    Ok(Some((wheel, entry_point.to_string())))
+                                } else {
+                                    Ok(None)
+                                }
+                            }
+                            Err(ZipError::FileNotFound) => Ok(None),
+                            Err(err) => Err(anyhow!("{err}")),
+                        }
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
+                    pex_info.script = Some(Cow::Owned(script))
+                } else {
+                    let mut entry_points = IndexMap::with_capacity(matches.len());
+                    for (wheel, entry_point) in matches {
+                        entry_points
+                            .entry(entry_point)
+                            .or_insert_with(IndexSet::new)
+                            .insert(&wheel.path);
+                    }
+                    if entry_points.len() > 1 {
+                        let mut msg = format!(
+                            "Found {count} conflicting entry point definitions for script {script}:\n",
+                            count = entry_points.len()
+                        );
+                        for (index, (entry_point, wheel_paths)) in entry_points.iter().enumerate() {
+                            writeln!(&mut msg, "{index}. {entry_point}:")?;
+                            for wheel_path in wheel_paths {
+                                write!(
+                                    &mut msg,
+                                    "   {wheel}",
+                                    wheel = wheel_path
+                                        .file_name()
+                                        .expect("We already parsed a wheel file name to get here.")
+                                        .display()
+                                )?;
+                            }
+                        }
+                        bail!(msg)
+                    }
+                    let (entry_point, _) = entry_points
+                        .into_iter()
+                        .next()
+                        .expect("We ensured there was element with the checks above.");
+                    pex_info.entry_point = Some(Cow::Owned(entry_point))
+                }
+            }
+        }
+        Ok(None)
+    }
+}
 enum Shebang {
     Custom(String),
     EnvCompatible,
@@ -256,7 +383,7 @@ pub struct Build {
         visible_short_alias = 'm',
         long,
         help_heading = "Entry Point",
-        conflicts_with = "script",
+        conflicts_with_all = ["script", "exe"],
         verbatim_doc_comment
     )]
     entry_point: Option<String>,
@@ -270,10 +397,29 @@ pub struct Build {
         long,
         visible_alias = "console-script",
         help_heading = "Entry Point",
-        conflicts_with = "entry_point",
+        conflicts_with_all = ["entry_point", "exe"],
         verbatim_doc_comment
     )]
     script: Option<String>,
+
+    // TODO: XXX: Actually parse PEP-723 and apply!
+    /// Set the entry point to an existing local python script.
+    ///
+    /// For example: `pexrc -X build --exe bin/my-python-script`. If the script contains PEP-723
+    /// `dependencies` metadata, add these dependencies as requirements, which will be combined with
+    /// other requirements specified on the command line as positional arguments.
+    ///
+    /// If the script contains PEP-723 `requires-python` metadata, treat this as the primary
+    /// `--interpreter-constraint` and ensure all interpreters implied by any explicit `--target` or
+    /// `--interpreter-constraint` command line arguments comply or else fail.
+    #[arg(
+        long,
+        visible_aliases = ["--executable", "--python-script"],
+        help_heading = "Entry Point",
+        conflicts_with_all = ["entry_point", "script"],
+        verbatim_doc_comment
+    )]
+    exe: Option<PyExecutable>,
 
     /// Do not strip `PEX_*` environment variables when executing the PEX.
     #[arg(long, help_heading = "Entry Point")]
@@ -489,6 +635,7 @@ impl Build {
         let entry_point = self
             .entry_point
             .map(PexEntryPoint::EntryPoint)
+            .or_else(|| self.exe.map(PexEntryPoint::Exe))
             .or_else(|| self.script.map(PexEntryPoint::Script));
         let wheel_options = self.compression_args.into_wheel_options(None);
 
@@ -548,10 +695,6 @@ impl Build {
             &pex_info,
             &wheel_options,
         )?;
-        adjust_requirements(&mut pex_info, &wheels)?;
-        if let Some(entry_point) = entry_point {
-            resolve_entry_point(&mut pex_info, entry_point, &wheels)?;
-        }
         build_pex(
             preferred_python,
             interpreter_selection.search_path,
@@ -563,6 +706,7 @@ impl Build {
             shebang,
             self.output,
             self.extra_args,
+            entry_point,
         )
     }
 }
@@ -579,93 +723,6 @@ fn into_optional_index_map_of_cow_cow<'a>(
 
 fn into_vec_of_cow<'a>(items: impl IntoIterator<Item = String>) -> Vec<Cow<'a, str>> {
     items.into_iter().map(Cow::Owned).collect()
-}
-
-#[instrument(level = "debug", skip_all)]
-fn resolve_entry_point(
-    pex_info: &mut RawPexInfo,
-    entry_point: PexEntryPoint,
-    wheels: &[FingerprintedWheel],
-) -> anyhow::Result<()> {
-    match entry_point {
-        PexEntryPoint::EntryPoint(ep) => pex_info.entry_point = Some(Cow::Owned(ep)),
-        PexEntryPoint::Script(script) => {
-            let matches = wheels
-                .into_par_iter()
-                .map(|wheel| {
-                    let wheel_file = wheel
-                        .path
-                        .file_name()
-                        .and_then(OsStr::to_str)
-                        .ok_or_else(|| anyhow!("XXX"))
-                        .and_then(WheelFile::parse_file_name)?;
-                    let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
-                    let metadata_dirs = MetadataDirs::locate_in_zip(
-                        &whl,
-                        "",
-                        None,
-                        &wheel_file.project_name,
-                        &wheel_file.version,
-                    )?;
-                    match whl.by_name(&format!(
-                        "{dist_info_dir}/entry_points.txt",
-                        dist_info_dir = metadata_dirs.dist_info_dir()
-                    )) {
-                        Ok(file) => {
-                            let entry_points = EntryPoints::load(file)?;
-                            if let Some(entry_point) = entry_points.script(&script) {
-                                Ok(Some((wheel, entry_point.to_string())))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        Err(ZipError::FileNotFound) => Ok(None),
-                        Err(err) => Err(anyhow!("{err}")),
-                    }
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-            if matches.is_empty() {
-                pex_info.script = Some(Cow::Owned(script))
-            } else {
-                let mut entry_points = IndexMap::with_capacity(matches.len());
-                for (wheel, entry_point) in matches {
-                    entry_points
-                        .entry(entry_point)
-                        .or_insert_with(IndexSet::new)
-                        .insert(&wheel.path);
-                }
-                if entry_points.len() > 1 {
-                    let mut msg = format!(
-                        "Found {count} conflicting entry point definitions for script {script}:\n",
-                        count = entry_points.len()
-                    );
-                    for (index, (entry_point, wheel_paths)) in entry_points.iter().enumerate() {
-                        writeln!(&mut msg, "{index}. {entry_point}:")?;
-                        for wheel_path in wheel_paths {
-                            write!(
-                                &mut msg,
-                                "   {wheel}",
-                                wheel = wheel_path
-                                    .file_name()
-                                    .expect("We already parsed a wheel file name to get here.")
-                                    .display()
-                            )?;
-                        }
-                    }
-                    bail!(msg)
-                }
-                let (entry_point, _) = entry_points
-                    .into_iter()
-                    .next()
-                    .expect("We ensured there was element with the checks above.");
-                pex_info.entry_point = Some(Cow::Owned(entry_point))
-            }
-        }
-    }
-    Ok(())
 }
 
 fn adjust_requirements(
@@ -1168,6 +1225,7 @@ fn build_pex(
     shebang: Shebang,
     output: Option<PathBuf>,
     extra_args: Vec<String>,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
@@ -1182,6 +1240,7 @@ fn build_pex(
                 packed,
                 shebang,
                 &path,
+                entry_point,
             )
         }
         None => {
@@ -1204,6 +1263,7 @@ fn build_pex(
                     packed,
                     shebang,
                     path,
+                    entry_point,
                 )?;
                 execute_pex(
                     preferred_python,
@@ -1226,6 +1286,7 @@ fn build_pex(
                     packed,
                     shebang,
                     path,
+                    entry_point,
                 )?;
                 execute_pex(
                     preferred_python,
@@ -1334,6 +1395,7 @@ fn create_pex(
     packed: bool,
     shebang: Shebang,
     path: &Path,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     let wheel_files = file_names(wheels.iter().map(|wheel| wheel.path.as_path()))?
         .into_iter()
@@ -1399,6 +1461,7 @@ fn create_pex(
             proxies,
             shebang,
             path,
+            entry_point,
         )
     } else {
         create_zipapp(
@@ -1410,6 +1473,7 @@ fn create_pex(
             proxies,
             shebang,
             path,
+            entry_point,
         )
     }
 }
@@ -1423,12 +1487,20 @@ fn create_packed_pex(
     proxies: Vec<&Binary>,
     shebang: Shebang,
     path: &Path,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     let mut dest_dir = if let Some(parent_dir) = path.parent() {
         tempfile::tempdir_in(parent_dir)
     } else {
         tempfile::tempdir()
     }?;
+
+    adjust_requirements(pex_info, &wheels)?;
+    if let Some(entry_point) = entry_point
+        && let Some(exe) = entry_point.resolve(pex_info, &wheels)?
+    {
+        exe.write(dest_dir.path())?;
+    }
 
     let deps_dir = dest_dir.path().join(".deps");
     fs::create_dir(&deps_dir)?;
@@ -1486,6 +1558,7 @@ fn create_zipapp(
     proxies: Vec<&Binary>,
     shebang: Shebang,
     path: &Path,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
         NamedTempFile::new_in(parent_dir)?
@@ -1502,6 +1575,13 @@ fn create_zipapp(
         SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let stored_file_options =
         SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    adjust_requirements(pex_info, &wheels)?;
+    if let Some(entry_point) = entry_point
+        && let Some(exe) = entry_point.resolve(pex_info, &wheels)?
+    {
+        exe.inject(&mut dst_zip, file_options)?;
+    }
 
     for wheel in wheels {
         dst_zip.start_file(format!(".deps/{}", wheel.file_name), stored_file_options)?;
