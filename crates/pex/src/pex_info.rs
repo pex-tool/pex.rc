@@ -122,6 +122,7 @@ impl FromStr for InterpreterSelectionStrategy {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RawPexInfo<'a> {
+    #[serde(borrow)]
     pub bind_resource_paths: Option<IndexMap<Cow<'a, str>, Cow<'a, str>>>,
     pub build_properties: IndexMap<&'a str, Value>,
     pub code_hash: &'a str,
@@ -150,14 +151,13 @@ pub struct RawPexInfo<'a> {
     pub overridden: Vec<Cow<'a, str>>,
     #[serde(borrow)]
     pub pex_hash: Cow<'a, str>,
-    #[serde(borrow)]
-    pub pex_path: Option<Cow<'a, str>>,
+    pub pex_path: Option<&'a str>,
     #[serde(borrow)]
     pub pex_paths: Vec<Cow<'a, Path>>,
     #[serde(borrow)]
-    pub pex_root: Option<Cow<'a, str>>,
+    pub pex_root: Option<Cow<'a, Path>>,
     #[serde(borrow)]
-    pub pexrc_root: Option<Cow<'a, str>>,
+    pub pexrc_root: Option<Cow<'a, Path>>,
     #[serde(borrow)]
     pub requirements: Vec<Cow<'a, str>>,
     #[serde(borrow)]
