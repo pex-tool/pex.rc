@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.29.1
+
+This release fixes the `--pex-path` argument to `pexrc -X build` to be optional.
+
 ## 0.29.0
 
 This release wires all remaining un-plumbed PEX-INFO options through `pexrc -X build`:
