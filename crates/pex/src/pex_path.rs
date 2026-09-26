@@ -11,11 +11,16 @@ pub struct PexPath<'a>(Vec<Cow<'a, Path>>);
 
 impl<'a> PexPath<'a> {
     pub fn from_pex_info(pex_info: &'a RawPexInfo, allow_env_override: bool) -> Self {
-        let mut pex_path: Vec<Cow<'a, Path>> = Vec::with_capacity(pex_info.pex_paths.len());
+        let mut pex_path: Vec<Cow<'a, Path>> = if let Some(pex_paths) = pex_info.pex_paths.as_ref()
+        {
+            Vec::with_capacity(pex_paths.len())
+        } else {
+            vec![]
+        };
         if allow_env_override && let Some(path) = env::var_os("PEX_PATH") {
             pex_path.extend(env::split_paths(&path).map(Cow::Owned))
-        } else if !pex_info.pex_paths.is_empty() {
-            pex_path.extend(pex_info.pex_paths.iter().cloned())
+        } else if let Some(pex_paths) = pex_info.pex_paths.as_ref() {
+            pex_path.extend(pex_paths.iter().cloned())
         } else if let Some(legacy_pex_path) = pex_info.pex_path.as_ref()
             && !legacy_pex_path.is_empty()
         {

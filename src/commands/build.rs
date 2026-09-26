@@ -244,7 +244,7 @@ pub struct Build {
     wheels: Vec<PathBuf>,
 
     #[arg(long, help_heading = "Contents", help = PEX_PATH_HELP, long_help = PEX_PATH_LONG_HELP)]
-    pex_path: OsString,
+    pex_path: Option<OsString>,
 
     /// Set the entry point to `module` or `module:symbol`.
     ///
@@ -483,7 +483,9 @@ impl Build {
             Shebang::EnvCompatible
         };
 
-        let pex_paths = env::split_paths(&self.pex_path).map(Cow::Owned).collect();
+        let pex_paths = self
+            .pex_path
+            .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
         let entry_point = self
             .entry_point
             .map(PexEntryPoint::EntryPoint)
