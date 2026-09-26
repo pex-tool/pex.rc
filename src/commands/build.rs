@@ -1616,6 +1616,7 @@ fn execute_pex(
         python_args,
         pex,
         args,
+        Some([("__PEX_EPHEMERAL__", "1")]),
         search_path,
         false,
         false,

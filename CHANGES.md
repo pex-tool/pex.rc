@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.30.0
+
+This release adds special support for ephemeral PEXes to the Pex repl. You can now execute
+`pex.retain(<path>)` to retain the ephemeral PEX at the designated path (`ephemeral.pexrc` in the
+current directory by default).
+
 ## 0.29.1
 
 This release fixes the `--pex-path` argument to `pexrc -X build` to be optional.

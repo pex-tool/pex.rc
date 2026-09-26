@@ -13,7 +13,7 @@ TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     # Ruff doesn't understand Python 2 and thus the type comment usages.
-    from typing import Any, Callable, Dict, Mapping, Optional, Tuple  # noqa: F401
+    from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple  # noqa: F401
 
 
 _ANSI_RE = re.compile(r"\033\[[;?0-9]*[a-zA-Z]")
@@ -163,6 +163,72 @@ def repl_loop(
     return loop
 
 
+class Pex(object):
+    _ABOUT = "Type pex() for information about this PEX, or pex(json=True) for even more details."
+
+    def __init__(
+        self,
+        path,  # type: str
+        activation_details,  # type: str
+        pex_info,  # type: str
+    ):
+        # type: (...) -> None
+        self._path = path
+        self._activation_details = activation_details
+        self._pex_info = pex_info
+        self._retained_to = None  # type: Optional[str]
+
+    def __call__(self, json=False):
+        # type: (bool) -> None
+        """Print information about this PEX environment.
+
+        :param json: `True` to print this PEX's PEX-INFO.
+        """
+        import json as stdlib_json
+
+        if json:
+            with open(self._pex_info) as fp:
+                pex_info_data = stdlib_json.load(fp)
+            print(stdlib_json.dumps(pex_info_data, sort_keys=True, indent=2))
+        else:
+            print(
+                "Running from --venv PEX file: {pex}".format(pex=os.environ.get("PEX", self._path))
+            )
+            if self._activation_details:
+                print(self._activation_details, end="")
+
+
+class EphemeralPex(Pex):
+    _ABOUT = Pex._ABOUT + "\nYou can retain this ephemeral PEX with pex.retain(path)."
+
+    def retain(self, path="ephemeral.pexrc"):
+        # type: (str) -> None
+        """Retains this ephemeral PEX at `path`.
+
+        If no `path` is passed, the PEX is retained at `ephemeral.pexrc` in the current directory.
+
+        :param path: The path to retain this ephemeral PEX at.
+        """
+
+        if self._retained_to:
+            print("This PEX has already been retained at", self._retained_to)
+            return
+
+        import errno
+        import shutil
+
+        parent_dir = os.path.dirname(path)
+        if parent_dir:
+            try:
+                os.makedirs(parent_dir)
+            except OSError as e:
+                if e.errno != errno.EEXIST:
+                    raise
+        shutil.move(self._path, path)
+        self._retained_to = path
+        print("This PEX has been retained at", self._retained_to)
+
+
 def _create_pex_repl(
     ps1,  # type: str
     ps2,  # type: str
@@ -176,22 +242,10 @@ def _create_pex_repl(
 ):
     # type: (...) -> Callable[[], Dict[str, Any]]
 
-    def pex(json=False):
-        # type: (bool) -> None
-        """Print information about this PEX environment.
+    pex_type = EphemeralPex if os.environ.pop("__PEX_EPHEMERAL__", "0") == "1" else Pex
+    pex_about = pex_type._ABOUT
 
-        :param json: `True` to print this PEX's PEX-INFO.
-        """
-        import json as stdlib_json
-
-        if json:
-            with open(pex_info) as fp:
-                pex_info_data = stdlib_json.load(fp)
-            print(stdlib_json.dumps(pex_info_data, sort_keys=True, indent=2))
-        else:
-            print("Running from --venv PEX file: {pex}".format(pex=os.environ.get("PEX", seed_pex)))
-            if activation_details:
-                print(activation_details, end="")
+    pex = pex_type(path=seed_pex, activation_details=activation_details, pex_info=pex_info)
 
     return repl_loop(
         banner="\n".join(
@@ -218,13 +272,7 @@ def _create_pex_repl(
         ),
         ps1=ps1,
         ps2=ps2,
-        custom_commands={
-            "pex": (
-                pex,
-                "Type pex() for information about this PEX, or pex(json=True) for even more "
-                "details.",
-            )
-        },
+        custom_commands={"pex": (pex, pex_about)},
         history=history,
         history_file=history_file,
     )

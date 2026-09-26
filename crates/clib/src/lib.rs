@@ -112,6 +112,7 @@ pub unsafe extern "C" fn boot(
         python_argv,
         pex_path,
         argv,
+        None::<[(&str, &str); 0]>,
         None,
         true,
         true,
