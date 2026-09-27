@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail};
 use cache::{Fingerprint, default_digest, fingerprint_file};
 use fs_err as fs;
 use fs_err::File;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use pex::{
     BinPath,
     Layout,
@@ -1366,7 +1366,7 @@ fn write_repl(
     };
 
     struct ActivationDetails<'a> {
-        requirements: &'a Vec<Cow<'a, str>>,
+        requirements: &'a IndexSet<Cow<'a, str>>,
         selected_wheels: &'a Vec<&'a str>,
     }
 

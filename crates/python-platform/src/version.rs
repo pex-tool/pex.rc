@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use anyhow::bail;
-use pep440_rs::Version;
+use pep508_rs::MarkerEnvironment;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
@@ -69,15 +69,15 @@ pub struct PythonVersion {
     pub serial: u8,
 }
 
-impl TryFrom<&Version> for PythonVersion {
+impl TryFrom<&MarkerEnvironment> for PythonVersion {
     type Error = anyhow::Error;
 
-    fn try_from(value: &Version) -> anyhow::Result<Self> {
-        let release = value.release();
+    fn try_from(value: &MarkerEnvironment) -> anyhow::Result<Self> {
+        let python_full_version = value.python_full_version().version.release();
         Ok(Self {
-            major: u8::try_from(release[0])?,
-            minor: u8::try_from(release[1])?,
-            micro: u8::try_from(release[2])?,
+            major: u8::try_from(python_full_version[0])?,
+            minor: u8::try_from(python_full_version[1])?,
+            micro: u8::try_from(python_full_version[2])?,
             releaselevel: ReleaseLevel::Final,
             serial: 0,
         })

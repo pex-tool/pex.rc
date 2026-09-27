@@ -22,8 +22,8 @@ use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
+use pep508_rs::MarkerEnvironment;
 use pep508_rs::pep440_rs::Version;
-use pep508_rs::{MarkerEnvironment, MarkerValueVersion};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
@@ -82,15 +82,13 @@ pub struct PlatformDetails<'a> {
     #[serde(borrow)]
     source: Cow<'a, str>,
     marker_env: MarkerEnvironment,
+    #[serde(borrow)]
     supported_tags: NonEmptyVec<Cow<'a, str>>,
 }
 
 impl<'a> PlatformDetails<'a> {
     pub fn python_implementation(&self) -> anyhow::Result<PythonImplementation> {
-        let version = self
-            .marker_env
-            .get_version(&MarkerValueVersion::PythonFullVersion)
-            .try_into()?;
+        let version = PythonVersion::try_from(&self.marker_env)?;
         if self.marker_env.platform_python_implementation() == "PyPy" {
             Ok(PythonImplementation::PyPy(PyPyImplementation {
                 version,

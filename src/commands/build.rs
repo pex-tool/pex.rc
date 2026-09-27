@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Display, Formatter, Write as _};
+use std::fmt::{Debug, Display, Formatter, Write as _};
 use std::io::{Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
+use pep508_rs::pep440_rs::VersionSpecifiers;
 use pex::{BinPath, InheritPath, InterpreterSelectionStrategy, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
@@ -31,6 +32,7 @@ use repackage::{WheelOptions, recompress_zipped_whl_to_file};
 use resolver::dependency_configuration::DependencyConfiguration;
 use resolver::resolve_wheels;
 use scripts::{IdentifyInterpreter, Scripts};
+use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
 use target::SimplifiedTarget;
@@ -47,7 +49,7 @@ use zip_ext::ZipArchiveExt;
 use crate::VERSION;
 use crate::compression_method::CompressionArgs;
 use crate::embeds::{AVAILABLE_TARGETS, Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
-use crate::interpreter_selection::InterpreterSelectionArgs;
+use crate::interpreter_selection::{InterpreterSelection, InterpreterSelectionArgs};
 use crate::target::{PythonPlatform, RequiredTargets};
 
 #[self_referencing]
@@ -98,16 +100,122 @@ impl<'a> Repository<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
-struct PyExecutable(PathBuf);
+#[instrument(level = "debug", skip(code))]
+fn parse_pep_723_content(path: &Path, code: &str) -> anyhow::Result<Option<String>> {
+    // N.B.: This is all to avoid ever falling into the PEP-723 recommended regex known hole:
+    //  https://packaging.python.org/en/latest/specifications/inline-script-metadata/#specification
 
-impl From<OsString> for PyExecutable {
-    fn from(value: OsString) -> Self {
-        Self(value.into())
+    // TODO: This is a ridiculously large (in space) set of dependencies. They add ~1.4MB to the
+    //  pexrc binary on Linux x86_64 for example. Consider hand-rolling a parser that only
+    //  handles comments and multiline strings, since its only within a multiline string that
+    //  a fake script block could hide.
+    use ruff_python_ast::token::TokenKind;
+    use ruff_python_parser::parse_module;
+    use ruff_source_file::LineIndex;
+    use ruff_text_size::Ranged as _;
+
+    let parsed = parse_module(code)?;
+    let line_index = LineIndex::from_source_text(code);
+
+    let mut top_level_comments = vec![];
+    let mut current_comment: Option<(usize, usize, String)> = None;
+    let mut maybe_add_top_level_comment = |start_line, mut contents: String| {
+        if let Some(index) = contents.rfind("\n///") {
+            contents.truncate(index);
+            if contents.starts_with("\n") {
+                contents.drain(..1);
+            }
+            top_level_comments.push((start_line, contents));
+        }
+    };
+
+    for (line, comment) in parsed.tokens().iter().filter_map(|token| {
+        if matches!(token.kind(), TokenKind::Comment) {
+            let line_column = line_index.line_column(token.start(), code);
+            if line_column.column.get() == 1 {
+                return Some((line_column.line.get(), &code[token.range()]));
+            }
+        }
+        None
+    }) {
+        if let Some((first_line, last_line, mut contents)) = current_comment.take() {
+            if line == last_line + 1 && (comment == "#" || comment.starts_with("# ")) {
+                contents.push('\n');
+                if comment.len() > 2 {
+                    contents.push_str(&comment[2..]);
+                }
+                current_comment = Some((first_line, line, contents));
+                continue;
+            }
+            maybe_add_top_level_comment(first_line, contents);
+        }
+        if comment == "# /// script" {
+            // N.B.: This trick gets downstream parsing of content by toml to report correct line
+            // numbers on error.
+            let initial_content = "\n".repeat(line);
+            current_comment = Some((line, line, initial_content))
+        }
+    }
+    if let Some((first_line, _, contents)) = current_comment.take() {
+        maybe_add_top_level_comment(first_line, contents);
+    }
+
+    if top_level_comments.len() > 1 {
+        let mut message = format!(
+            "Found multiple PEP-723 script blocks in {path} but only one is allowed:\n",
+            path = path.display()
+        );
+        for (index, (mut line, contents)) in top_level_comments.into_iter().enumerate() {
+            if index > 0 {
+                writeln!(&mut message)?;
+            }
+            writeln!(&mut message, "Block {index}:", index = index + 1)?;
+            writeln!(&mut message, "{line:>4}: # /// script")?;
+            for text in contents.lines() {
+                line += 1;
+                if text.is_empty() {
+                    writeln!(&mut message, "{line:>4}: #")?;
+                } else {
+                    writeln!(&mut message, "{line:>4}: # {text}")?;
+                }
+            }
+            line += 1;
+            writeln!(&mut message, "{line:>4}: # ///")?;
+        }
+        bail!(message)
+    } else {
+        Ok(top_level_comments
+            .into_iter()
+            .map(|(_, content)| content)
+            .next())
     }
 }
 
-impl PyExecutable {
+#[derive(Clone, Debug, Deserialize)]
+struct ScriptMetadata {
+    #[serde(default, rename = "requires-python")]
+    requires_python: VersionSpecifiers,
+    #[serde(default)]
+    dependencies: Vec<Requirement<Url>>,
+}
+
+impl ScriptMetadata {
+    fn is_empty(&self) -> bool {
+        self.requires_python.is_empty() && self.dependencies.is_empty()
+    }
+}
+
+struct PythonScript(String);
+
+impl Deref for PythonScript {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_str()
+    }
+}
+
+impl PythonScript {
     const EXE_PY: &str = "__pex_executable__.py";
 
     fn entry_point() -> &'static str {
@@ -116,25 +224,58 @@ impl PyExecutable {
             .expect("The constant ends in `.py`.")
     }
 
-    fn write(&self, dest_dir: &Path) -> anyhow::Result<()> {
-        fs::copy(&self.0, dest_dir.join(Self::EXE_PY))?;
+    fn write(self, dest_dir: &Path) -> anyhow::Result<()> {
+        fs::write(dest_dir.join(Self::EXE_PY), &self.0)?;
         Ok(())
     }
 
     fn inject(
-        &self,
+        self,
         zip: &mut ZipWriter<impl Write + Seek>,
         file_options: SimpleFileOptions,
     ) -> anyhow::Result<()> {
         zip.start_file(Self::EXE_PY, file_options)?;
-        io::copy(&mut File::open(&self.0)?, zip)?;
+        zip.write_all(self.0.as_bytes())?;
         Ok(())
+    }
+}
+
+struct Exe {
+    path: PathBuf,
+    content: PythonScript,
+    metadata: Option<ScriptMetadata>,
+}
+
+impl TryFrom<PathBuf> for Exe {
+    type Error = anyhow::Error;
+
+    fn try_from(path: PathBuf) -> anyhow::Result<Self> {
+        let content = PythonScript(fs::read_to_string(&path)?);
+        let metadata = if let Some(script_metadata) = parse_pep_723_content(&path, &content)? {
+            match toml::from_str::<ScriptMetadata>(&script_metadata) {
+                Ok(metadata) => {
+                    if metadata.is_empty() {
+                        None
+                    } else {
+                        Some(metadata)
+                    }
+                }
+                Err(err) => bail!("{err}"),
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            path,
+            content,
+            metadata,
+        })
     }
 }
 
 enum PexEntryPoint {
     EntryPoint(String),
-    Exe(PyExecutable),
+    Exe(PythonScript),
     Script(String),
 }
 
@@ -144,12 +285,12 @@ impl PexEntryPoint {
         self,
         pex_info: &mut RawPexInfo,
         wheels: &[FingerprintedWheel],
-    ) -> anyhow::Result<Option<PyExecutable>> {
+    ) -> anyhow::Result<Option<PythonScript>> {
         match self {
             PexEntryPoint::EntryPoint(ep) => pex_info.entry_point = Some(Cow::Owned(ep)),
-            PexEntryPoint::Exe(py_executable) => {
-                pex_info.entry_point = Some(Cow::Borrowed(PyExecutable::entry_point()));
-                return Ok(Some(py_executable));
+            PexEntryPoint::Exe(python_script) => {
+                pex_info.entry_point = Some(Cow::Borrowed(PythonScript::entry_point()));
+                return Ok(Some(python_script));
             }
             PexEntryPoint::Script(script) => {
                 let matches = wheels
@@ -402,7 +543,6 @@ pub struct Build {
     )]
     script: Option<String>,
 
-    // TODO: XXX: Actually parse PEP-723 and apply!
     /// Set the entry point to an existing local python script.
     ///
     /// For example: `pexrc -X build --exe bin/my-python-script`. If the script contains PEP-723
@@ -419,7 +559,7 @@ pub struct Build {
         conflicts_with_all = ["entry_point", "script"],
         verbatim_doc_comment
     )]
-    exe: Option<PyExecutable>,
+    exe: Option<PathBuf>,
 
     /// Do not strip `PEX_*` environment variables when executing the PEX.
     #[arg(long, help_heading = "Entry Point")]
@@ -629,26 +769,31 @@ impl Build {
             Shebang::EnvCompatible
         };
 
-        let pex_paths = self
-            .pex_path
-            .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
-        let entry_point = self
-            .entry_point
-            .map(PexEntryPoint::EntryPoint)
-            .or_else(|| self.exe.map(PexEntryPoint::Exe))
-            .or_else(|| self.script.map(PexEntryPoint::Script));
-        let wheel_options = self.compression_args.into_wheel_options(None);
+        let mut requirements = self.requirements;
+        let mut interpreter_selection = self.interpreter_selection_args.finalize();
+        let entry_point = if let Some(entry_point) = self.entry_point {
+            Some(PexEntryPoint::EntryPoint(entry_point))
+        } else if let Some(exe) = self.exe {
+            let exe = Exe::try_from(exe)?;
+            if let Some(mut metadata) = exe.metadata {
+                requirements.append(&mut metadata.dependencies);
+                interpreter_selection.merge(exe.path.display(), metadata.requires_python)?;
+            }
+            Some(PexEntryPoint::Exe(exe.content))
+        } else {
+            self.script.map(PexEntryPoint::Script)
+        };
 
         let platforms = self
             .targets
             .into_iter()
             .map(Platform::try_from)
             .collect::<anyhow::Result<Vec<_>>>()?;
+        check_valid_platforms(&interpreter_selection, &platforms)?;
 
-        // N.B.: Determines shebang for PEX.
-        let preferred_platform = platforms.first();
-
-        let interpreter_selection = self.interpreter_selection_args.finalize();
+        let pex_paths = self
+            .pex_path
+            .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
 
         let mut pex_info = RawPexInfo {
             build_properties: indexmap! {
@@ -657,7 +802,11 @@ impl Build {
             },
             emit_warnings: self.emit_warnings,
             pex_paths,
-            requirements: into_vec_of_cow(self.requirements.iter().map(ToString::to_string)),
+            requirements: requirements
+                .iter()
+                .map(ToString::to_string)
+                .map(Cow::Owned)
+                .collect(),
             excluded: into_vec_of_cow(self.excluded),
             overridden: into_vec_of_cow(self.overridden),
             ignore_errors: self.ignore_errors,
@@ -688,13 +837,19 @@ impl Build {
             venv_system_site_packages: self.venv_system_site_packages,
             ..Default::default()
         };
+        let wheel_options = self.compression_args.into_wheel_options(None);
+
         let (preferred_python, wheels) = resolve_wheel_files(
             &repository,
             &platforms,
-            self.requirements,
+            requirements,
             &pex_info,
             &wheel_options,
         )?;
+
+        // N.B.: Determines shebang for PEX.
+        let preferred_platform = platforms.first();
+
         build_pex(
             preferred_python,
             interpreter_selection.search_path,
@@ -709,6 +864,49 @@ impl Build {
             entry_point,
         )
     }
+}
+
+fn check_valid_platforms(
+    interpreter_selection: &InterpreterSelection,
+    platforms: &[Platform],
+) -> anyhow::Result<()> {
+    let mut invalid_targets = Vec::with_capacity(platforms.len());
+    for platform in platforms.iter().filter_map(|platform| match platform {
+        Platform::Details(platform) => Some(platform),
+        _ => None,
+    }) {
+        if !interpreter_selection
+            .constraints
+            .contains(platform.python_implementation()?)
+        {
+            invalid_targets.push(platform);
+        }
+    }
+    if invalid_targets.is_empty() {
+        return Ok(());
+    }
+
+    let mut message = format!(
+        "The following {targets_do} not satisfy {ics}:",
+        targets_do = if invalid_targets.len() == 1 {
+            "target does"
+        } else {
+            "targets do"
+        },
+        ics = interpreter_selection.constraints
+    );
+    match invalid_targets.as_slice() {
+        &[target] => {
+            writeln!(&mut message, " {target}")?;
+        }
+        _ => {
+            for target in invalid_targets {
+                writeln!(&mut message)?;
+                write!(&mut message, "- {target}")?;
+            }
+        }
+    }
+    bail!(message)
 }
 
 fn into_optional_index_map_of_cow_cow<'a>(
@@ -786,6 +984,17 @@ fn resolve_wheel_files<'a>(
 enum Platform<'a> {
     Details(PlatformDetails<'a>),
     Interpreter(Cow<'a, Interpreter>),
+}
+
+impl<'a> Display for Platform<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Platform::Details(platform) => write!(f, "{}", platform),
+            Platform::Interpreter(interpreter) => {
+                write!(f, "{}", interpreter.details.path.display())
+            }
+        }
+    }
 }
 
 impl<'a> Platform<'a> {

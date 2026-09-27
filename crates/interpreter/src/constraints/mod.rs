@@ -116,7 +116,7 @@ impl InterpreterImplementation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InterpreterConstraint {
     implementation: Option<InterpreterImplementation>,
-    version_specifiers: Option<VersionSpecifiers>,
+    pub version_specifiers: Option<VersionSpecifiers>,
 }
 
 impl InterpreterConstraint {
@@ -239,6 +239,15 @@ impl Display for InterpreterConstraint {
     }
 }
 
+impl From<VersionSpecifiers> for InterpreterConstraint {
+    fn from(value: VersionSpecifiers) -> Self {
+        Self {
+            implementation: None,
+            version_specifiers: Some(value),
+        }
+    }
+}
+
 static SUPPORTED_VERSIONS: LazyLock<Vec<(u8, u8)>> = LazyLock::new(|| {
     let max_minor = {
         let (_, minor) = crate::version::LATEST_STABLE.deref();
@@ -272,6 +281,18 @@ pub enum VersionSpec {
 #[derive(Debug)]
 pub struct InterpreterConstraints(Vec<InterpreterConstraint>);
 
+impl Display for InterpreterConstraints {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (index, ic) in self.0.iter().enumerate() {
+            if index > 0 {
+                write!(f, " OR ")?;
+            }
+            write!(f, "{ic}")?;
+        }
+        Ok(())
+    }
+}
+
 impl InterpreterConstraints {
     pub const EMPTY: Self = Self(vec![]);
 
@@ -294,6 +315,10 @@ impl InterpreterConstraints {
 
     pub fn as_slice(&self) -> &[InterpreterConstraint] {
         self.0.as_slice()
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [InterpreterConstraint] {
+        self.0.as_mut_slice()
     }
 
     pub fn contains(&self, python_implementation: PythonImplementation) -> bool {
@@ -330,6 +355,12 @@ impl InterpreterConstraints {
 impl From<Vec<InterpreterConstraint>> for InterpreterConstraints {
     fn from(value: Vec<InterpreterConstraint>) -> Self {
         Self(value)
+    }
+}
+
+impl From<VersionSpecifiers> for InterpreterConstraints {
+    fn from(value: VersionSpecifiers) -> Self {
+        Self(vec![value.into()])
     }
 }
 
