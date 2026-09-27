@@ -101,10 +101,10 @@ impl<'a> Repository<'a> {
 }
 
 #[instrument(level = "debug", skip(code))]
-fn parse_pep_723_content(path: &Path, code: &str) -> anyhow::Result<Option<String>> {
-    // N.B.: This is all to avoid ever falling into the PEP-723 recommended regex known hole:
-    //  https://packaging.python.org/en/latest/specifications/inline-script-metadata/#specification
-
+fn parse_top_level_comments<'a>(
+    path: &Path,
+    code: &'a str,
+) -> anyhow::Result<Vec<(usize, &'a str)>> {
     // TODO: This is a ridiculously large (in space) set of dependencies. They add ~1.4MB to the
     //  pexrc binary on Linux x86_64 for example. Consider hand-rolling a parser that only
     //  handles comments and multiline strings, since its only within a multiline string that
@@ -116,9 +116,27 @@ fn parse_pep_723_content(path: &Path, code: &str) -> anyhow::Result<Option<Strin
 
     let parsed = parse_module(code)?;
     let line_index = LineIndex::from_source_text(code);
+    Ok(parsed
+        .tokens()
+        .iter()
+        .filter_map(|token| {
+            if matches!(token.kind(), TokenKind::Comment) {
+                let line_column = line_index.line_column(token.start(), code);
+                if line_column.column.get() == 1 {
+                    return Some((line_column.line.get(), &code[token.range()]));
+                }
+            }
+            None
+        })
+        .collect())
+}
+
+#[instrument(level = "debug", skip(code))]
+fn parse_pep_723_content(path: &Path, code: &str) -> anyhow::Result<Option<String>> {
+    // N.B.: This is all to avoid ever falling into the PEP-723 recommended regex known hole:
+    //  https://packaging.python.org/en/latest/specifications/inline-script-metadata/#specification
 
     let mut top_level_comments = vec![];
-    let mut current_comment: Option<(usize, usize, String)> = None;
     let mut maybe_add_top_level_comment = |start_line, mut contents: String| {
         if let Some(index) = contents.rfind("\n///") {
             contents.truncate(index);
@@ -128,16 +146,9 @@ fn parse_pep_723_content(path: &Path, code: &str) -> anyhow::Result<Option<Strin
             top_level_comments.push((start_line, contents));
         }
     };
+    let mut current_comment: Option<(usize, usize, String)> = None;
 
-    for (line, comment) in parsed.tokens().iter().filter_map(|token| {
-        if matches!(token.kind(), TokenKind::Comment) {
-            let line_column = line_index.line_column(token.start(), code);
-            if line_column.column.get() == 1 {
-                return Some((line_column.line.get(), &code[token.range()]));
-            }
-        }
-        None
-    }) {
+    for (line, comment) in parse_top_level_comments(path, code)? {
         if let Some((first_line, last_line, mut contents)) = current_comment.take() {
             if line == last_line + 1 && (comment == "#" || comment.starts_with("# ")) {
                 contents.push('\n');
