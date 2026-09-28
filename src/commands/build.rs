@@ -266,8 +266,6 @@ fn parse_script_block(path: &Path, code: &str) -> anyhow::Result<Option<ScriptBl
     let mut script_blocks = vec![];
     for comment in parse_top_level_comments(code) {
         for capture in SCRIPT_BLOCK_RE.captures_iter(comment.content) {
-            let process_capture = debug_span!("process capture");
-            let _timer = process_capture.enter();
             if let Some(script_type) = capture.name("type")
                 && script_type.as_str() != "script"
             {
@@ -406,7 +404,6 @@ impl TryFrom<PathBuf> for Exe {
                 ),
             }
         } else {
-            eprintln!("No script block in {}", path.display());
             None
         };
         Ok(Self {
