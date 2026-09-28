@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.31.0
+
+This release adds support for `--exe` to `pexrc -X build`. As with Pex, there is full support for
+PEP-723 script metadata.
+
 ## 0.30.0
 
 This release adds special support for ephemeral PEXes to the Pex repl. You can now execute
