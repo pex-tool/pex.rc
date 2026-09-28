@@ -265,11 +265,12 @@ platform = { path = "crates/platform", features = ["reflink"] }
 python-platform = { path = "crates/python-platform" }
 python-proxy = { path = "crates/python-proxy" }
 rayon = { workspace = true }
+regex = { workspace = true }
 request = { path = "crates/request" }
 repackage = { path = "crates/repackage" }
 resolver = { path = "crates/resolver" }
 scripts = { path = "crates/scripts", features = ["embedded"] }
-serde = { version = "1.0.229", features = ["derive"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 shlex = { workspace = true }
@@ -286,7 +287,6 @@ wheel = { path = "crates/wheel" }
 zip = { workspace = true }
 zip-ext = { path = "crates/zip-ext" }
 zstd = { workspace = true }
-regex = "1.13.1"
 
 [features]
 tools = []
