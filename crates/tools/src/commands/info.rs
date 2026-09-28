@@ -7,6 +7,7 @@ use pex::Pex;
 use tracing::instrument;
 
 #[derive(Args)]
+#[group(skip)]
 pub(crate) struct InfoArgs {
     #[command(flatten)]
     json: Json,

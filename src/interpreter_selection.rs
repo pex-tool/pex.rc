@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::OsString;
+use std::fmt::Display;
 use std::path::PathBuf;
 
+use anyhow::bail;
 use clap::Args;
 use const_format::concatcp;
 use interpreter::{
@@ -13,7 +15,9 @@ use interpreter::{
     SearchPath,
     SelectionStrategy,
 };
+use pep508_rs::pep440_rs::{Version, VersionSpecifiers};
 use pex::InterpreterSelectionStrategy;
+use version_ranges::Ranges;
 
 const PYTHON_PATH_HELP: &str = concatcp!(
     "A '",
@@ -32,6 +36,7 @@ interpreter binaries.
 
 #[derive(Args, Debug)]
 #[command(next_help_heading = "Interpreter Selection")]
+#[group(skip)]
 pub struct InterpreterSelectionArgs {
     #[cfg_attr(
         // N.B.: This prevents doctest from attempting to analyze the code blocks. Otherwise;
@@ -112,6 +117,45 @@ pub struct InterpreterSelection {
 }
 
 impl InterpreterSelection {
+    pub fn merge(
+        &mut self,
+        source: impl Display,
+        requires_python: VersionSpecifiers,
+    ) -> anyhow::Result<()> {
+        if requires_python.is_empty() {
+            return Ok(());
+        }
+
+        if self.constraints.is_empty() {
+            self.constraints = requires_python.into();
+        } else {
+            let requires_python_ranges: Ranges<Version> = requires_python.clone().into();
+            for ic in self.constraints.as_mut_slice() {
+                if let Some(version_specifiers) = ic.version_specifiers() {
+                    let version_specifiers_ranges: Ranges<Version> =
+                        version_specifiers.clone().into();
+                    let intersection =
+                        requires_python_ranges.intersection(&version_specifiers_ranges);
+                    if intersection.is_empty() {
+                        bail!(
+                            "The Python requirement of {requires_python} from {source} is violated \
+                            by {version_specifiers}"
+                        )
+                    }
+                    if let Some((start, end)) = intersection.bounding_range() {
+                        let intersection = VersionSpecifiers::from_release_only_bounds(
+                            [(&start.cloned(), &end.cloned())].into_iter(),
+                        );
+                        ic.version_specifiers = intersection.into();
+                    }
+                } else {
+                    ic.version_specifiers = requires_python.clone().into();
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn iter_possibly_compatible_python_exes(
         &self,
         include_pex_compatible: bool,

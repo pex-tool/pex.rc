@@ -30,6 +30,7 @@ impl Display for PathOutputStyle {
 
 #[derive(Args)]
 #[command(next_help_heading = "Output")]
+#[group(skip)]
 pub struct Output {
     /// A file to send output to; STDOUT by default.
     #[arg(short = 'o', long)]

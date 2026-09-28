@@ -100,6 +100,7 @@ enum RemoveScope {
 }
 
 #[derive(Args)]
+#[group(skip)]
 pub(crate) struct VenvArgs {
     /// The scope of code contained in the Pex that is installed in the venv.
     #[arg(

@@ -3,11 +3,12 @@
 
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Display, Formatter, Write as _};
+use std::fmt::{Debug, Display, Formatter, Write as _};
 use std::io::{Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::{env, io, process};
 
 use anyhow::{anyhow, bail};
@@ -23,14 +24,17 @@ use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
+use pep508_rs::pep440_rs::VersionSpecifiers;
 use pex::{BinPath, InheritPath, InterpreterSelectionStrategy, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use regex::Regex;
 use repackage::{WheelOptions, recompress_zipped_whl_to_file};
 use resolver::dependency_configuration::DependencyConfiguration;
 use resolver::resolve_wheels;
 use scripts::{IdentifyInterpreter, Scripts};
+use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
 use target::SimplifiedTarget;
@@ -47,7 +51,7 @@ use zip_ext::ZipArchiveExt;
 use crate::VERSION;
 use crate::compression_method::CompressionArgs;
 use crate::embeds::{AVAILABLE_TARGETS, Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
-use crate::interpreter_selection::InterpreterSelectionArgs;
+use crate::interpreter_selection::{InterpreterSelection, InterpreterSelectionArgs};
 use crate::target::{PythonPlatform, RequiredTargets};
 
 #[self_referencing]
@@ -98,11 +102,416 @@ impl<'a> Repository<'a> {
     }
 }
 
+#[derive(Copy, Clone)]
+enum ParseState {
+    FindTopLevelComments,
+    InMultilineString(&'static str),
+}
+
+impl ParseState {
+    fn advance(self, line: &str) -> ParseState {
+        let mut parse_state = self;
+        let mut index = 0;
+        loop {
+            let remaining_content = &line[index..];
+            if remaining_content.is_empty() {
+                return parse_state;
+            }
+            match parse_state {
+                ParseState::FindTopLevelComments => {
+                    if let Some(start_token) = {
+                        let mut start_token = None;
+                        for token in [r#"""""#, "'''"] {
+                            if let Some(start) = remaining_content.find(token) {
+                                index += start + token.len();
+                                start_token = Some(token);
+                                break;
+                            }
+                        }
+                        start_token
+                    } {
+                        parse_state = ParseState::InMultilineString(start_token)
+                    } else {
+                        return parse_state;
+                    }
+                }
+                ParseState::InMultilineString(end_token) => {
+                    if let Some(end) = remaining_content.find(end_token) {
+                        index += end + end_token.len();
+                        parse_state = ParseState::FindTopLevelComments
+                    } else {
+                        return parse_state;
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct Comment<'a> {
+    content: &'a str,
+    start_line: usize,
+}
+
+struct Indexes {
+    start_idx: usize,
+    start_line: usize,
+    end_idx: usize,
+    end_line: usize,
+}
+
+impl Indexes {
+    fn start(start_idx: usize, start_line: usize, line: &str) -> Self {
+        Self {
+            start_idx,
+            start_line,
+            end_idx: start_idx + line.len(),
+            end_line: start_line,
+        }
+    }
+
+    fn to_comment<'a>(&self, text: &'a str) -> Comment<'a> {
+        Comment {
+            content: &text[self.start_idx..self.end_idx],
+            start_line: self.start_line,
+        }
+    }
+}
+
+#[instrument(level = "debug", skip(code))]
+fn parse_top_level_comments(code: &str) -> Vec<Comment<'_>> {
+    // N.B.: This is all to avoid ever falling into the PEP-723 recommended regex known hole:
+    //  https://packaging.python.org/en/latest/specifications/inline-script-metadata/#specification
+
+    let mut top_level_comments = vec![];
+    let mut comment_indexes: Option<Indexes> = None;
+
+    let mut parse_state = ParseState::FindTopLevelComments;
+    let mut current_idx = 0;
+    for (idx, content) in code.split_inclusive('\n').enumerate() {
+        let line = idx + 1;
+        match (parse_state, comment_indexes.take()) {
+            (ParseState::FindTopLevelComments, Some(mut indexes)) => {
+                if content.starts_with('#') {
+                    if line == indexes.end_line + 1 {
+                        indexes.end_idx += content.len();
+                        indexes.end_line += 1;
+                        comment_indexes = Some(indexes)
+                    } else {
+                        comment_indexes = Some(Indexes::start(current_idx, line, content))
+                    }
+                } else {
+                    top_level_comments.push(indexes.to_comment(code));
+                    parse_state = parse_state.advance(content);
+                }
+            }
+            (ParseState::FindTopLevelComments, None) => {
+                if content.starts_with('#') {
+                    comment_indexes = Some(Indexes::start(current_idx, line, content))
+                } else {
+                    parse_state = parse_state.advance(content);
+                }
+            }
+            (ParseState::InMultilineString(_), Some(indexes)) => {
+                top_level_comments.push(indexes.to_comment(code));
+                parse_state = parse_state.advance(content);
+            }
+            _ => parse_state = parse_state.advance(content),
+        }
+        current_idx += content.len();
+    }
+    if let Some(indexes) = comment_indexes {
+        top_level_comments.push(indexes.to_comment(code))
+    }
+
+    top_level_comments
+}
+
+struct ScriptBlock {
+    content: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+impl ScriptBlock {
+    fn start(start_line: usize) -> Self {
+        // N.B.: This trick gets downstream parsing of `content` by toml to report correct line
+        // numbers on error. The column number will still be off by 2, but that is probably
+        // easier to work out from context once on the line.
+        let content = "\n".repeat(start_line);
+        Self {
+            content,
+            start_line,
+            end_line: start_line,
+        }
+    }
+
+    fn lines(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.content
+            .split_inclusive('\n')
+            .enumerate()
+            .map(|(idx, line)| (idx + 1, line))
+            // N.B.: This strips out the content prefix we added in `Self::start`.
+            .skip(self.start_line)
+    }
+}
+
+static SCRIPT_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$")
+        .expect("This is a known-good re.")
+});
+
+#[instrument(level = "debug", skip(code))]
+fn parse_script_block(path: &Path, code: &str) -> anyhow::Result<Option<ScriptBlock>> {
+    let mut script_blocks = vec![];
+    for comment in parse_top_level_comments(code) {
+        for capture in SCRIPT_BLOCK_RE.captures_iter(comment.content) {
+            if let Some(script_type) = capture.name("type")
+                && script_type.as_str() != "script"
+            {
+                continue;
+            }
+            let content_match = capture.name("content").expect("A capture was required.");
+            let start_idx = content_match.start();
+            let end_idx = content_match.end();
+            let raw_content = &comment.content[start_idx..end_idx];
+            let start_line = comment.start_line
+                + comment.content[..start_idx]
+                    .chars()
+                    .filter(|c| *c == '\n')
+                    .count()
+                - 1;
+            let mut script_block = ScriptBlock::start(start_line);
+            for line in raw_content.split_inclusive('\n') {
+                script_block.end_line += 1;
+                if let Some(line) = line.strip_prefix("# ") {
+                    script_block.content.push_str(line)
+                } else {
+                    script_block.content.push_str(&line[1..])
+                }
+            }
+            script_block.end_line += 1; // For `# ///`
+            script_blocks.push(script_block);
+        }
+    }
+
+    if script_blocks.len() > 1 {
+        let mut message = format!(
+            "Found multiple PEP-723 script blocks in {path} but only one is allowed:\n",
+            path = path.display()
+        );
+        for (index, comment) in script_blocks.into_iter().enumerate() {
+            if index > 0 {
+                writeln!(&mut message)?;
+            }
+            writeln!(&mut message, "Block {index}:", index = index + 1)?;
+            writeln!(
+                &mut message,
+                "{line:>4} | # /// script",
+                line = comment.start_line
+            )?;
+            for (line, text) in comment.lines() {
+                if text.is_empty() {
+                    write!(&mut message, "{line:>4} | #")?;
+                } else {
+                    write!(&mut message, "{line:>4} | # {text}")?;
+                }
+            }
+            writeln!(&mut message, "{line:>4} | # ///", line = comment.end_line)?;
+        }
+        bail!(message)
+    } else {
+        Ok(script_blocks.into_iter().next())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ScriptMetadata {
+    #[serde(default, rename = "requires-python")]
+    requires_python: VersionSpecifiers,
+    #[serde(default)]
+    dependencies: Vec<Requirement<Url>>,
+}
+
+impl ScriptMetadata {
+    fn is_empty(&self) -> bool {
+        self.requires_python.is_empty() && self.dependencies.is_empty()
+    }
+}
+
+struct PythonScript(String);
+
+impl Deref for PythonScript {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_str()
+    }
+}
+
+impl PythonScript {
+    const EXE_PY: &str = "__pex_executable__.py";
+
+    fn entry_point() -> &'static str {
+        Self::EXE_PY
+            .strip_suffix(".py")
+            .expect("The constant ends in `.py`.")
+    }
+
+    fn write(self, dest_dir: &Path) -> anyhow::Result<()> {
+        fs::write(dest_dir.join(Self::EXE_PY), &self.0)?;
+        Ok(())
+    }
+
+    fn inject(
+        self,
+        zip: &mut ZipWriter<impl Write + Seek>,
+        file_options: SimpleFileOptions,
+    ) -> anyhow::Result<()> {
+        zip.start_file(Self::EXE_PY, file_options)?;
+        zip.write_all(self.0.as_bytes())?;
+        Ok(())
+    }
+}
+
+struct Exe {
+    path: PathBuf,
+    content: PythonScript,
+    metadata: Option<ScriptMetadata>,
+}
+
+impl TryFrom<PathBuf> for Exe {
+    type Error = anyhow::Error;
+
+    fn try_from(path: PathBuf) -> anyhow::Result<Self> {
+        let content = PythonScript(fs::read_to_string(&path)?);
+        let metadata = if let Some(script_metadata) = parse_script_block(&path, &content)? {
+            match toml::from_str::<ScriptMetadata>(&script_metadata.content) {
+                Ok(metadata) => {
+                    if metadata.is_empty() {
+                        None
+                    } else {
+                        Some(metadata)
+                    }
+                }
+                Err(err) => bail!(
+                    "Failed to parse script metadata block found in {script} lines \
+                    {start_line}-{end_line}:\n\
+                    {err}",
+                    script = path.display(),
+                    start_line = script_metadata.start_line,
+                    end_line = script_metadata.end_line,
+                ),
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            path,
+            content,
+            metadata,
+        })
+    }
+}
+
 enum PexEntryPoint {
     EntryPoint(String),
+    Exe(PythonScript),
     Script(String),
 }
 
+impl PexEntryPoint {
+    #[instrument(level = "debug", skip_all)]
+    fn resolve(
+        self,
+        pex_info: &mut RawPexInfo,
+        wheels: &[FingerprintedWheel],
+    ) -> anyhow::Result<Option<PythonScript>> {
+        match self {
+            PexEntryPoint::EntryPoint(ep) => pex_info.entry_point = Some(Cow::Owned(ep)),
+            PexEntryPoint::Exe(python_script) => {
+                pex_info.entry_point = Some(Cow::Borrowed(PythonScript::entry_point()));
+                return Ok(Some(python_script));
+            }
+            PexEntryPoint::Script(script) => {
+                let matches = wheels
+                    .into_par_iter()
+                    .map(|wheel| {
+                        let wheel_file = wheel
+                            .path
+                            .file_name()
+                            .and_then(OsStr::to_str)
+                            .ok_or_else(|| anyhow!("XXX"))
+                            .and_then(WheelFile::parse_file_name)?;
+                        let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
+                        let metadata_dirs = MetadataDirs::locate_in_zip(
+                            &whl,
+                            "",
+                            None,
+                            &wheel_file.project_name,
+                            &wheel_file.version,
+                        )?;
+                        match whl.by_name(&format!(
+                            "{dist_info_dir}/entry_points.txt",
+                            dist_info_dir = metadata_dirs.dist_info_dir()
+                        )) {
+                            Ok(file) => {
+                                let entry_points = EntryPoints::load(file)?;
+                                if let Some(entry_point) = entry_points.script(&script) {
+                                    Ok(Some((wheel, entry_point.to_string())))
+                                } else {
+                                    Ok(None)
+                                }
+                            }
+                            Err(ZipError::FileNotFound) => Ok(None),
+                            Err(err) => Err(anyhow!("{err}")),
+                        }
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
+                    pex_info.script = Some(Cow::Owned(script))
+                } else {
+                    let mut entry_points = IndexMap::with_capacity(matches.len());
+                    for (wheel, entry_point) in matches {
+                        entry_points
+                            .entry(entry_point)
+                            .or_insert_with(IndexSet::new)
+                            .insert(&wheel.path);
+                    }
+                    if entry_points.len() > 1 {
+                        let mut msg = format!(
+                            "Found {count} conflicting entry point definitions for script {script}:\n",
+                            count = entry_points.len()
+                        );
+                        for (index, (entry_point, wheel_paths)) in entry_points.iter().enumerate() {
+                            writeln!(&mut msg, "{index}. {entry_point}:")?;
+                            for wheel_path in wheel_paths {
+                                write!(
+                                    &mut msg,
+                                    "   {wheel}",
+                                    wheel = wheel_path
+                                        .file_name()
+                                        .expect("We already parsed a wheel file name to get here.")
+                                        .display()
+                                )?;
+                            }
+                        }
+                        bail!(msg)
+                    }
+                    let (entry_point, _) = entry_points
+                        .into_iter()
+                        .next()
+                        .expect("We ensured there was element with the checks above.");
+                    pex_info.entry_point = Some(Cow::Owned(entry_point))
+                }
+            }
+        }
+        Ok(None)
+    }
+}
 enum Shebang {
     Custom(String),
     EnvCompatible,
@@ -256,7 +665,7 @@ pub struct Build {
         visible_short_alias = 'm',
         long,
         help_heading = "Entry Point",
-        conflicts_with = "script",
+        conflicts_with_all = ["script", "exe"],
         verbatim_doc_comment
     )]
     entry_point: Option<String>,
@@ -270,10 +679,28 @@ pub struct Build {
         long,
         visible_alias = "console-script",
         help_heading = "Entry Point",
-        conflicts_with = "entry_point",
+        conflicts_with_all = ["entry_point", "exe"],
         verbatim_doc_comment
     )]
     script: Option<String>,
+
+    /// Set the entry point to an existing local python script.
+    ///
+    /// For example: `pexrc -X build --exe bin/my-python-script`. If the script contains PEP-723
+    /// `dependencies` metadata, add these dependencies as requirements, which will be combined with
+    /// other requirements specified on the command line as positional arguments.
+    ///
+    /// If the script contains PEP-723 `requires-python` metadata, treat this as the primary
+    /// `--interpreter-constraint` and ensure all interpreters implied by any explicit `--target` or
+    /// `--interpreter-constraint` command line arguments comply or else fail.
+    #[arg(
+        long,
+        visible_aliases = ["--executable", "--python-script"],
+        help_heading = "Entry Point",
+        conflicts_with_all = ["entry_point", "script"],
+        verbatim_doc_comment
+    )]
+    exe: Option<PathBuf>,
 
     /// Do not strip `PEX_*` environment variables when executing the PEX.
     #[arg(long, help_heading = "Entry Point")]
@@ -483,25 +910,31 @@ impl Build {
             Shebang::EnvCompatible
         };
 
-        let pex_paths = self
-            .pex_path
-            .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
-        let entry_point = self
-            .entry_point
-            .map(PexEntryPoint::EntryPoint)
-            .or_else(|| self.script.map(PexEntryPoint::Script));
-        let wheel_options = self.compression_args.into_wheel_options(None);
+        let mut requirements = self.requirements;
+        let mut interpreter_selection = self.interpreter_selection_args.finalize();
+        let entry_point = if let Some(entry_point) = self.entry_point {
+            Some(PexEntryPoint::EntryPoint(entry_point))
+        } else if let Some(exe) = self.exe {
+            let exe = Exe::try_from(exe)?;
+            if let Some(mut metadata) = exe.metadata {
+                requirements.append(&mut metadata.dependencies);
+                interpreter_selection.merge(exe.path.display(), metadata.requires_python)?;
+            }
+            Some(PexEntryPoint::Exe(exe.content))
+        } else {
+            self.script.map(PexEntryPoint::Script)
+        };
 
         let platforms = self
             .targets
             .into_iter()
             .map(Platform::try_from)
             .collect::<anyhow::Result<Vec<_>>>()?;
+        check_valid_platforms(&interpreter_selection, &platforms)?;
 
-        // N.B.: Determines shebang for PEX.
-        let preferred_platform = platforms.first();
-
-        let interpreter_selection = self.interpreter_selection_args.finalize();
+        let pex_paths = self
+            .pex_path
+            .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
 
         let mut pex_info = RawPexInfo {
             build_properties: indexmap! {
@@ -510,7 +943,11 @@ impl Build {
             },
             emit_warnings: self.emit_warnings,
             pex_paths,
-            requirements: into_vec_of_cow(self.requirements.iter().map(ToString::to_string)),
+            requirements: requirements
+                .iter()
+                .map(ToString::to_string)
+                .map(Cow::Owned)
+                .collect(),
             excluded: into_vec_of_cow(self.excluded),
             overridden: into_vec_of_cow(self.overridden),
             ignore_errors: self.ignore_errors,
@@ -541,17 +978,19 @@ impl Build {
             venv_system_site_packages: self.venv_system_site_packages,
             ..Default::default()
         };
+        let wheel_options = self.compression_args.into_wheel_options(None);
+
         let (preferred_python, wheels) = resolve_wheel_files(
             &repository,
             &platforms,
-            self.requirements,
+            requirements,
             &pex_info,
             &wheel_options,
         )?;
-        adjust_requirements(&mut pex_info, &wheels)?;
-        if let Some(entry_point) = entry_point {
-            resolve_entry_point(&mut pex_info, entry_point, &wheels)?;
-        }
+
+        // N.B.: Determines shebang for PEX.
+        let preferred_platform = platforms.first();
+
         build_pex(
             preferred_python,
             interpreter_selection.search_path,
@@ -563,8 +1002,52 @@ impl Build {
             shebang,
             self.output,
             self.extra_args,
+            entry_point,
         )
     }
+}
+
+fn check_valid_platforms(
+    interpreter_selection: &InterpreterSelection,
+    platforms: &[Platform],
+) -> anyhow::Result<()> {
+    let mut invalid_targets = Vec::with_capacity(platforms.len());
+    for platform in platforms.iter().filter_map(|platform| match platform {
+        Platform::Details(platform) => Some(platform),
+        _ => None,
+    }) {
+        if !interpreter_selection
+            .constraints
+            .contains(platform.python_implementation()?)
+        {
+            invalid_targets.push(platform);
+        }
+    }
+    if invalid_targets.is_empty() {
+        return Ok(());
+    }
+
+    let mut message = format!(
+        "The following {targets_do} not satisfy {ics}:",
+        targets_do = if invalid_targets.len() == 1 {
+            "target does"
+        } else {
+            "targets do"
+        },
+        ics = interpreter_selection.constraints
+    );
+    match invalid_targets.as_slice() {
+        &[target] => {
+            writeln!(&mut message, " {target}")?;
+        }
+        _ => {
+            for target in invalid_targets {
+                writeln!(&mut message)?;
+                write!(&mut message, "- {target}")?;
+            }
+        }
+    }
+    bail!(message)
 }
 
 fn into_optional_index_map_of_cow_cow<'a>(
@@ -579,93 +1062,6 @@ fn into_optional_index_map_of_cow_cow<'a>(
 
 fn into_vec_of_cow<'a>(items: impl IntoIterator<Item = String>) -> Vec<Cow<'a, str>> {
     items.into_iter().map(Cow::Owned).collect()
-}
-
-#[instrument(level = "debug", skip_all)]
-fn resolve_entry_point(
-    pex_info: &mut RawPexInfo,
-    entry_point: PexEntryPoint,
-    wheels: &[FingerprintedWheel],
-) -> anyhow::Result<()> {
-    match entry_point {
-        PexEntryPoint::EntryPoint(ep) => pex_info.entry_point = Some(Cow::Owned(ep)),
-        PexEntryPoint::Script(script) => {
-            let matches = wheels
-                .into_par_iter()
-                .map(|wheel| {
-                    let wheel_file = wheel
-                        .path
-                        .file_name()
-                        .and_then(OsStr::to_str)
-                        .ok_or_else(|| anyhow!("XXX"))
-                        .and_then(WheelFile::parse_file_name)?;
-                    let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
-                    let metadata_dirs = MetadataDirs::locate_in_zip(
-                        &whl,
-                        "",
-                        None,
-                        &wheel_file.project_name,
-                        &wheel_file.version,
-                    )?;
-                    match whl.by_name(&format!(
-                        "{dist_info_dir}/entry_points.txt",
-                        dist_info_dir = metadata_dirs.dist_info_dir()
-                    )) {
-                        Ok(file) => {
-                            let entry_points = EntryPoints::load(file)?;
-                            if let Some(entry_point) = entry_points.script(&script) {
-                                Ok(Some((wheel, entry_point.to_string())))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        Err(ZipError::FileNotFound) => Ok(None),
-                        Err(err) => Err(anyhow!("{err}")),
-                    }
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-            if matches.is_empty() {
-                pex_info.script = Some(Cow::Owned(script))
-            } else {
-                let mut entry_points = IndexMap::with_capacity(matches.len());
-                for (wheel, entry_point) in matches {
-                    entry_points
-                        .entry(entry_point)
-                        .or_insert_with(IndexSet::new)
-                        .insert(&wheel.path);
-                }
-                if entry_points.len() > 1 {
-                    let mut msg = format!(
-                        "Found {count} conflicting entry point definitions for script {script}:\n",
-                        count = entry_points.len()
-                    );
-                    for (index, (entry_point, wheel_paths)) in entry_points.iter().enumerate() {
-                        writeln!(&mut msg, "{index}. {entry_point}:")?;
-                        for wheel_path in wheel_paths {
-                            write!(
-                                &mut msg,
-                                "   {wheel}",
-                                wheel = wheel_path
-                                    .file_name()
-                                    .expect("We already parsed a wheel file name to get here.")
-                                    .display()
-                            )?;
-                        }
-                    }
-                    bail!(msg)
-                }
-                let (entry_point, _) = entry_points
-                    .into_iter()
-                    .next()
-                    .expect("We ensured there was element with the checks above.");
-                pex_info.entry_point = Some(Cow::Owned(entry_point))
-            }
-        }
-    }
-    Ok(())
 }
 
 fn adjust_requirements(
@@ -729,6 +1125,17 @@ fn resolve_wheel_files<'a>(
 enum Platform<'a> {
     Details(PlatformDetails<'a>),
     Interpreter(Cow<'a, Interpreter>),
+}
+
+impl<'a> Display for Platform<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Platform::Details(platform) => write!(f, "{}", platform),
+            Platform::Interpreter(interpreter) => {
+                write!(f, "{}", interpreter.details.path.display())
+            }
+        }
+    }
 }
 
 impl<'a> Platform<'a> {
@@ -1168,6 +1575,7 @@ fn build_pex(
     shebang: Shebang,
     output: Option<PathBuf>,
     extra_args: Vec<String>,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
@@ -1182,6 +1590,7 @@ fn build_pex(
                 packed,
                 shebang,
                 &path,
+                entry_point,
             )
         }
         None => {
@@ -1204,6 +1613,7 @@ fn build_pex(
                     packed,
                     shebang,
                     path,
+                    entry_point,
                 )?;
                 execute_pex(
                     preferred_python,
@@ -1226,6 +1636,7 @@ fn build_pex(
                     packed,
                     shebang,
                     path,
+                    entry_point,
                 )?;
                 execute_pex(
                     preferred_python,
@@ -1334,6 +1745,7 @@ fn create_pex(
     packed: bool,
     shebang: Shebang,
     path: &Path,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     let wheel_files = file_names(wheels.iter().map(|wheel| wheel.path.as_path()))?
         .into_iter()
@@ -1399,6 +1811,7 @@ fn create_pex(
             proxies,
             shebang,
             path,
+            entry_point,
         )
     } else {
         create_zipapp(
@@ -1410,6 +1823,7 @@ fn create_pex(
             proxies,
             shebang,
             path,
+            entry_point,
         )
     }
 }
@@ -1423,12 +1837,20 @@ fn create_packed_pex(
     proxies: Vec<&Binary>,
     shebang: Shebang,
     path: &Path,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     let mut dest_dir = if let Some(parent_dir) = path.parent() {
         tempfile::tempdir_in(parent_dir)
     } else {
         tempfile::tempdir()
     }?;
+
+    adjust_requirements(pex_info, &wheels)?;
+    if let Some(entry_point) = entry_point
+        && let Some(exe) = entry_point.resolve(pex_info, &wheels)?
+    {
+        exe.write(dest_dir.path())?;
+    }
 
     let deps_dir = dest_dir.path().join(".deps");
     fs::create_dir(&deps_dir)?;
@@ -1486,6 +1908,7 @@ fn create_zipapp(
     proxies: Vec<&Binary>,
     shebang: Shebang,
     path: &Path,
+    entry_point: Option<PexEntryPoint>,
 ) -> anyhow::Result<()> {
     let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
         NamedTempFile::new_in(parent_dir)?
@@ -1502,6 +1925,13 @@ fn create_zipapp(
         SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let stored_file_options =
         SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    adjust_requirements(pex_info, &wheels)?;
+    if let Some(entry_point) = entry_point
+        && let Some(exe) = entry_point.resolve(pex_info, &wheels)?
+    {
+        exe.inject(&mut dst_zip, file_options)?;
+    }
 
     for wheel in wheels {
         dst_zip.start_file(format!(".deps/{}", wheel.file_name), stored_file_options)?;

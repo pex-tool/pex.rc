@@ -150,6 +150,7 @@ impl ExperimentalCommands {
 }
 
 #[derive(Args)]
+#[group(skip)]
 struct Jobs {
     /// The maximum number of parallel jobs to use.
     #[arg(short = 'j', long, help_heading = "Parallelism")]

@@ -2282,7 +2282,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2315,19 +2315,23 @@ dependencies = [
  "python-platform",
  "python-proxy",
  "rayon",
+ "regex",
  "repackage",
  "request",
  "resolver",
  "scripts",
+ "serde",
  "serde_json",
  "sha2",
  "shlex",
  "strum",
  "target",
  "tempfile",
+ "toml",
  "tracing",
  "url",
  "venv",
+ "version-ranges",
  "walkdir",
  "wheel",
  "zip",

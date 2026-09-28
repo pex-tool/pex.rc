@@ -36,6 +36,7 @@ use tracing::warn;
 use zip::{CompressionMethod, ZipArchive};
 
 #[derive(Args)]
+#[group(skip)]
 pub(crate) struct ExtractArgs {
     /// The path to extract distribution as wheels to.
     #[arg(short = 'f', long, visible_aliases = ["find-links", "repo"])]
@@ -273,7 +274,10 @@ build-backend = "setuptools.build_meta"
         "packages",
         sources.packages.into_iter().map(Cow::Owned).collect(),
     );
-    let install_requires = IniList("install_requires", pex_info.requirements.to_vec());
+    let install_requires = IniList(
+        "install_requires",
+        pex_info.requirements.iter().cloned().collect(),
+    );
 
     let mut console_scripts = Vec::with_capacity(1);
     if let Some(entry_point) = pex_info.entry_point.as_deref()

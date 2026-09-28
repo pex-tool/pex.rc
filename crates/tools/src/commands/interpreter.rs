@@ -21,6 +21,7 @@ use scripts::IdentifyInterpreter;
 use serde_json::json;
 
 #[derive(Args)]
+#[group(skip)]
 pub(crate) struct InterpreterArgs {
     /// Print all compatible interpreters, preferred first.
     #[arg(short = 'a', long)]

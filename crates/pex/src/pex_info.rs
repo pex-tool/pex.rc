@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
 use cache::Fingerprint;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use interpreter::SelectionStrategy;
 use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
@@ -159,7 +159,7 @@ pub struct RawPexInfo<'a> {
     #[serde(borrow)]
     pub pexrc_root: Option<Cow<'a, Path>>,
     #[serde(borrow)]
-    pub requirements: Vec<Cow<'a, str>>,
+    pub requirements: IndexSet<Cow<'a, str>>,
     #[serde(borrow)]
     pub script: Option<Cow<'a, str>>,
     pub strip_pex_env: Option<bool>,
