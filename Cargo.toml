@@ -196,10 +196,6 @@ reflink-copy = "0.1"
 regex = "1.12"
 rfc2047-decoder = "1.1"
 rstest = "0.27"
-ruff_python_ast = { version = "0.0.15", default-features = false }
-ruff_python_parser = { version = "0.0.15", default-features = false }
-ruff_source_file = { version = "0.0.15", default-features = false }
-ruff_text_size = { version = "0.0.15", default-features = false }
 rust-ini = "0.21"
 rustix = { version = "1.1", features = ["fs", "system"]}
 same-file = "1.0"
@@ -272,10 +268,6 @@ rayon = { workspace = true }
 request = { path = "crates/request" }
 repackage = { path = "crates/repackage" }
 resolver = { path = "crates/resolver" }
-ruff_python_ast = { workspace = true }
-ruff_python_parser = { workspace = true }
-ruff_source_file = { workspace = true }
-ruff_text_size = { workspace = true }
 scripts = { path = "crates/scripts", features = ["embedded"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { workspace = true }
@@ -294,6 +286,7 @@ wheel = { path = "crates/wheel" }
 zip = { workspace = true }
 zip-ext = { path = "crates/zip-ext" }
 zstd = { workspace = true }
+regex = "1.13.1"
 
 [features]
 tools = []

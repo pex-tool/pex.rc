@@ -8,6 +8,7 @@ use std::io::{Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::{env, io, process};
 
 use anyhow::{anyhow, bail};
@@ -28,6 +29,7 @@ use pex::{BinPath, InheritPath, InterpreterSelectionStrategy, RawPexInfo};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use regex::Regex;
 use repackage::{WheelOptions, recompress_zipped_whl_to_file};
 use resolver::dependency_configuration::DependencyConfiguration;
 use resolver::resolve_wheels;
@@ -100,105 +102,228 @@ impl<'a> Repository<'a> {
     }
 }
 
-#[instrument(level = "debug", skip(code))]
-fn parse_top_level_comments<'a>(
-    path: &Path,
-    code: &'a str,
-) -> anyhow::Result<Vec<(usize, &'a str)>> {
-    // TODO: This is a ridiculously large (in space) set of dependencies. They add ~1.4MB to the
-    //  pexrc binary on Linux x86_64 for example. Consider hand-rolling a parser that only
-    //  handles comments and multiline strings, since its only within a multiline string that
-    //  a fake script block could hide.
-    use ruff_python_ast::token::TokenKind;
-    use ruff_python_parser::parse_module;
-    use ruff_source_file::LineIndex;
-    use ruff_text_size::Ranged as _;
+#[derive(Copy, Clone)]
+enum ParseState {
+    FindTopLevelComments,
+    InMultilineString(&'static str),
+}
 
-    let parsed = parse_module(code)?;
-    let line_index = LineIndex::from_source_text(code);
-    Ok(parsed
-        .tokens()
-        .iter()
-        .filter_map(|token| {
-            if matches!(token.kind(), TokenKind::Comment) {
-                let line_column = line_index.line_column(token.start(), code);
-                if line_column.column.get() == 1 {
-                    return Some((line_column.line.get(), &code[token.range()]));
+impl ParseState {
+    fn advance(self, line: &str) -> ParseState {
+        let mut parse_state = self;
+        let mut index = 0;
+        loop {
+            let remaining_content = &line[index..];
+            if remaining_content.is_empty() {
+                return parse_state;
+            }
+            match parse_state {
+                ParseState::FindTopLevelComments => {
+                    if let Some(start_token) = {
+                        let mut start_token = None;
+                        for token in [r#"""""#, "'''"] {
+                            if let Some(start) = remaining_content.find(token) {
+                                index += start + token.len();
+                                start_token = Some(token);
+                                break;
+                            }
+                        }
+                        start_token
+                    } {
+                        parse_state = ParseState::InMultilineString(start_token)
+                    } else {
+                        return parse_state;
+                    }
+                }
+                ParseState::InMultilineString(end_token) => {
+                    if let Some(end) = remaining_content.find(end_token) {
+                        index += end + end_token.len();
+                        parse_state = ParseState::FindTopLevelComments
+                    } else {
+                        return parse_state;
+                    }
                 }
             }
-            None
-        })
-        .collect())
+        }
+    }
+}
+
+struct Comment<'a> {
+    content: &'a str,
+    start_line: usize,
+}
+
+struct Indexes {
+    start_idx: usize,
+    start_line: usize,
+    end_idx: usize,
+    end_line: usize,
+}
+
+impl Indexes {
+    fn start(start_idx: usize, start_line: usize, line: &str) -> Self {
+        Self {
+            start_idx,
+            start_line,
+            end_idx: start_idx + line.len(),
+            end_line: start_line,
+        }
+    }
+
+    fn to_comment<'a>(&self, text: &'a str) -> Comment<'a> {
+        Comment {
+            content: &text[self.start_idx..self.end_idx],
+            start_line: self.start_line,
+        }
+    }
 }
 
 #[instrument(level = "debug", skip(code))]
-fn parse_pep_723_content(path: &Path, code: &str) -> anyhow::Result<Option<String>> {
+fn parse_top_level_comments(code: &str) -> Vec<Comment<'_>> {
     // N.B.: This is all to avoid ever falling into the PEP-723 recommended regex known hole:
     //  https://packaging.python.org/en/latest/specifications/inline-script-metadata/#specification
 
     let mut top_level_comments = vec![];
-    let mut maybe_add_top_level_comment = |start_line, mut contents: String| {
-        if let Some(index) = contents.rfind("\n///") {
-            contents.truncate(index);
-            if contents.starts_with("\n") {
-                contents.drain(..1);
-            }
-            top_level_comments.push((start_line, contents));
-        }
-    };
-    let mut current_comment: Option<(usize, usize, String)> = None;
+    let mut comment_indexes: Option<Indexes> = None;
 
-    for (line, comment) in parse_top_level_comments(path, code)? {
-        if let Some((first_line, last_line, mut contents)) = current_comment.take() {
-            if line == last_line + 1 && (comment == "#" || comment.starts_with("# ")) {
-                contents.push('\n');
-                if comment.len() > 2 {
-                    contents.push_str(&comment[2..]);
+    let mut parse_state = ParseState::FindTopLevelComments;
+    let mut current_idx = 0;
+    for (idx, content) in code.split_inclusive('\n').enumerate() {
+        let line = idx + 1;
+        match (parse_state, comment_indexes.take()) {
+            (ParseState::FindTopLevelComments, Some(mut indexes)) => {
+                if content.starts_with('#') {
+                    if line == indexes.end_line + 1 {
+                        indexes.end_idx += content.len();
+                        indexes.end_line += 1;
+                        comment_indexes = Some(indexes)
+                    } else {
+                        comment_indexes = Some(Indexes::start(current_idx, line, content))
+                    }
+                } else {
+                    top_level_comments.push(indexes.to_comment(code));
+                    parse_state = parse_state.advance(content);
                 }
-                current_comment = Some((first_line, line, contents));
+            }
+            (ParseState::FindTopLevelComments, None) => {
+                if content.starts_with('#') {
+                    comment_indexes = Some(Indexes::start(current_idx, line, content))
+                } else {
+                    parse_state = parse_state.advance(content);
+                }
+            }
+            (ParseState::InMultilineString(_), Some(indexes)) => {
+                top_level_comments.push(indexes.to_comment(code));
+                parse_state = parse_state.advance(content);
+            }
+            _ => parse_state = parse_state.advance(content),
+        }
+        current_idx += content.len();
+    }
+    if let Some(indexes) = comment_indexes {
+        top_level_comments.push(indexes.to_comment(code))
+    }
+
+    top_level_comments
+}
+
+struct ScriptBlock {
+    content: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+impl ScriptBlock {
+    fn start(start_line: usize) -> Self {
+        // N.B.: This trick gets downstream parsing of `content` by toml to report correct line
+        // numbers on error. The column number will still be off by 2, but that is probably
+        // easier to work out from context once on the line.
+        let content = "\n".repeat(start_line);
+        Self {
+            content,
+            start_line,
+            end_line: start_line,
+        }
+    }
+
+    fn lines(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.content
+            .split_inclusive('\n')
+            .enumerate()
+            .map(|(idx, line)| (idx + 1, line))
+            // N.B.: This strips out the content prefix we added in `Self::start`.
+            .skip(self.start_line)
+    }
+}
+
+static SCRIPT_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$")
+        .expect("This is a known-good re.")
+});
+
+#[instrument(level = "debug", skip(code))]
+fn parse_script_block(path: &Path, code: &str) -> anyhow::Result<Option<ScriptBlock>> {
+    let mut script_blocks = vec![];
+    for comment in parse_top_level_comments(code) {
+        for capture in SCRIPT_BLOCK_RE.captures_iter(comment.content) {
+            let process_capture = debug_span!("process capture");
+            let _timer = process_capture.enter();
+            if let Some(script_type) = capture.name("type")
+                && script_type.as_str() != "script"
+            {
                 continue;
             }
-            maybe_add_top_level_comment(first_line, contents);
+            let content_match = capture.name("content").expect("A capture was required.");
+            let start_idx = content_match.start();
+            let end_idx = content_match.end();
+            let raw_content = &comment.content[start_idx..end_idx];
+            let start_line = comment.start_line
+                + comment.content[..start_idx]
+                    .chars()
+                    .filter(|c| *c == '\n')
+                    .count()
+                - 1;
+            let mut script_block = ScriptBlock::start(start_line);
+            for line in raw_content.split_inclusive('\n') {
+                script_block.end_line += 1;
+                if let Some(line) = line.strip_prefix("# ") {
+                    script_block.content.push_str(line)
+                } else {
+                    script_block.content.push_str(&line[1..])
+                }
+            }
+            script_block.end_line += 1; // For `# ///`
+            script_blocks.push(script_block);
         }
-        if comment == "# /// script" {
-            // N.B.: This trick gets downstream parsing of content by toml to report correct line
-            // numbers on error.
-            let initial_content = "\n".repeat(line);
-            current_comment = Some((line, line, initial_content))
-        }
-    }
-    if let Some((first_line, _, contents)) = current_comment.take() {
-        maybe_add_top_level_comment(first_line, contents);
     }
 
-    if top_level_comments.len() > 1 {
+    if script_blocks.len() > 1 {
         let mut message = format!(
             "Found multiple PEP-723 script blocks in {path} but only one is allowed:\n",
             path = path.display()
         );
-        for (index, (mut line, contents)) in top_level_comments.into_iter().enumerate() {
+        for (index, comment) in script_blocks.into_iter().enumerate() {
             if index > 0 {
                 writeln!(&mut message)?;
             }
             writeln!(&mut message, "Block {index}:", index = index + 1)?;
-            writeln!(&mut message, "{line:>4}: # /// script")?;
-            for text in contents.lines() {
-                line += 1;
+            writeln!(
+                &mut message,
+                "{line:>4} | # /// script",
+                line = comment.start_line
+            )?;
+            for (line, text) in comment.lines() {
                 if text.is_empty() {
-                    writeln!(&mut message, "{line:>4}: #")?;
+                    write!(&mut message, "{line:>4} | #")?;
                 } else {
-                    writeln!(&mut message, "{line:>4}: # {text}")?;
+                    write!(&mut message, "{line:>4} | # {text}")?;
                 }
             }
-            line += 1;
-            writeln!(&mut message, "{line:>4}: # ///")?;
+            writeln!(&mut message, "{line:>4} | # ///", line = comment.end_line)?;
         }
         bail!(message)
     } else {
-        Ok(top_level_comments
-            .into_iter()
-            .map(|(_, content)| content)
-            .next())
+        Ok(script_blocks.into_iter().next())
     }
 }
 
@@ -262,8 +387,8 @@ impl TryFrom<PathBuf> for Exe {
 
     fn try_from(path: PathBuf) -> anyhow::Result<Self> {
         let content = PythonScript(fs::read_to_string(&path)?);
-        let metadata = if let Some(script_metadata) = parse_pep_723_content(&path, &content)? {
-            match toml::from_str::<ScriptMetadata>(&script_metadata) {
+        let metadata = if let Some(script_metadata) = parse_script_block(&path, &content)? {
+            match toml::from_str::<ScriptMetadata>(&script_metadata.content) {
                 Ok(metadata) => {
                     if metadata.is_empty() {
                         None
@@ -271,9 +396,17 @@ impl TryFrom<PathBuf> for Exe {
                         Some(metadata)
                     }
                 }
-                Err(err) => bail!("{err}"),
+                Err(err) => bail!(
+                    "Failed to parse script metadata block found in {script} lines \
+                    {start_line}-{end_line}:\n\
+                    {err}",
+                    script = path.display(),
+                    start_line = script_metadata.start_line,
+                    end_line = script_metadata.end_line,
+                ),
             }
         } else {
+            eprintln!("No script block in {}", path.display());
             None
         };
         Ok(Self {
