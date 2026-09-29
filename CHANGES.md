@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.32.0
+
+This release adds sources support with:
++ `-D` / `--sources-directory`
++ `-P` / `--package`
++ `-M` / `--module`
+
 ## 0.31.0
 
 This release adds support for `--exe` to `pexrc -X build`. As with Pex, there is full support for

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use clap::Args;
 use cli::{Json, Output};
-use pex::{Pex, PexPath};
+use pex::{DEPS_DIR, Pex, PexPath};
 use serde_json::json;
 
 use crate::resolve::resolve;
@@ -34,7 +34,7 @@ pub(crate) fn display(python: Option<&Path>, pex: Pex, args: InfoArgs) -> anyhow
 
     let mut output = args.output.writer()?;
     for (project_name, wheel_info) in wheels {
-        let location = pex.path.join(".deps").join(wheel_info.file_name);
+        let location = pex.path.join(DEPS_DIR).join(wheel_info.file_name);
         if args.verbose {
             args.json.serialize(
                 &mut output,

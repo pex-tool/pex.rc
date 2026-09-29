@@ -17,7 +17,7 @@ use anyhow::bail;
 use chrono::{DateTime, Utc};
 use fs_err as fs;
 use fs_err::File;
-use pex::{Layout, Pex};
+use pex::{DEPS_DIR, Layout, Pex};
 use platform::PosixPath;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::instrument;
@@ -61,7 +61,7 @@ impl WheelOptions {
 
     pub fn file_options(&self) -> anyhow::Result<SimpleFileOptions> {
         self.add_timestamp(
-            SimpleFileOptions::default()
+            SimpleFileOptions::DEFAULT
                 .compression_method(self.compression_method)
                 .compression_level(self.compression_level),
         )
@@ -168,7 +168,7 @@ fn repackage_directory_pex_wheel(
     options: &WheelOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<File> {
-    let wheel_path = pex_dir.join(".deps").join(wheel_file.file_name);
+    let wheel_path = pex_dir.join(DEPS_DIR).join(wheel_file.file_name);
     match dep_type {
         DirPexDepType::Chroot => compress_whl_chroot(&wheel_path, wheel_file, options, dest_dir),
         DirPexDepType::OriginalWhl => recompress_zipped_whl(

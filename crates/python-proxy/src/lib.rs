@@ -164,7 +164,7 @@ fn create_proxy(
         let mut script_zip = ZipWriter::new(&target_python);
         script_zip.start_file(
             "__main__.py",
-            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Deflated),
         )?;
         script_zip.write_all(script.as_ref())?;
         script_zip.set_comment(format!(

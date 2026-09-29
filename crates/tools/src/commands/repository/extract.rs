@@ -25,13 +25,14 @@ use pex::{
     Pex,
     PexPath,
     RawPexInfo,
+    SRCS_DIR,
+    SRCS_ZIP_DIR,
     collect_loose_user_source,
     collect_zipped_user_source_indexes,
 };
 use platform::path_for_terminal_output;
 use repackage::{WheelOptions, repackage_wheels};
 use scripts::IdentifyInterpreter;
-use tar::Header;
 use tracing::warn;
 use zip::{CompressionMethod, ZipArchive};
 
@@ -72,7 +73,7 @@ pub(crate) struct ExtractArgs {
     /// If this timeout is reached, the command will exit with an error instead of
     /// waiting indefinitely. The wait is indefinite by default.
     #[arg(long, verbatim_doc_comment)]
-    timeout: f32,
+    timeout: Option<f32>,
 
     #[command(flatten)]
     output: Output,
@@ -352,7 +353,7 @@ fn create_header(
     size: u64,
     is_executable: bool,
     timestamp: Option<DateTime<Utc>>,
-) -> anyhow::Result<Header> {
+) -> anyhow::Result<tar::Header> {
     let mut header = tar::Header::new_ustar();
     header.set_path(path.as_ref())?;
     header.set_size(size);
@@ -394,12 +395,13 @@ fn add_zipped_source(
                         .name()
                         .strip_suffix(".py")
                         .expect("We confirmed the file name ended with .py above")
+                        .trim_prefix(SRCS_ZIP_DIR)
                         .to_string(),
                 );
             } else {
                 let mut package = String::new();
                 let mut last_component_len = 0;
-                for component in entry.name().split("/") {
+                for component in entry.name().trim_prefix(SRCS_ZIP_DIR).split("/") {
                     last_component_len = component.len();
                     if !package.is_empty() {
                         last_component_len += 1;
@@ -410,9 +412,11 @@ fn add_zipped_source(
                 package.truncate(package.len() - last_component_len);
                 sources.packages.insert(package);
             }
+        } else if entry.is_dir() && entry.name() == SRCS_ZIP_DIR {
+            continue;
         }
         let mut header = tar::Header::new_ustar();
-        header.set_path(src_dir.join(entry.name()))?;
+        header.set_path(src_dir.join(entry.name().trim_prefix(SRCS_ZIP_DIR)))?;
         header.set_size(entry.size());
         if let Some(unix_mode) = entry.unix_mode() {
             header.set_mode(unix_mode)
@@ -438,12 +442,15 @@ fn add_loose_source(
     timestamp: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Sources> {
     let mut sources = Sources::new();
-    for entry in collect_loose_user_source(pex)? {
-        let entry_relpath = entry
-            .path()
+    for path in collect_loose_user_source(pex)? {
+        let entry_relpath = path
             .strip_prefix(pex)
-            .expect("Walker paths of a PEX directory are always sub-paths");
-        if entry.file_type().is_file()
+            .expect("Walker paths of a PEX directory are always sub-paths")
+            .trim_prefix(SRCS_DIR);
+        if entry_relpath.is_empty() {
+            continue;
+        }
+        if path.is_file()
             && !entry_relpath.as_os_str().as_encoded_bytes().contains(&b'/')
             && let Some(file_name) = entry_relpath.file_name()
             && file_name.as_encoded_bytes().ends_with(b".py")
@@ -455,14 +462,14 @@ fn add_loose_source(
                     .ok_or_else(|| {
                         anyhow!(
                             "Python file name is not UTF-8: {module}",
-                            module = entry.path().display()
+                            module = path.display()
                         )
                     })?
                     .strip_suffix(".py")
                     .expect("We confirmed the file name ended with .py above")
                     .to_string(),
             );
-        } else if entry.file_type().is_dir() {
+        } else if path.is_dir() {
             let mut package = String::new();
             for component in entry_relpath.components() {
                 if let Component::Normal(name) = component {
@@ -472,7 +479,7 @@ fn add_loose_source(
                     package.push_str(name.to_str().ok_or_else(|| {
                         anyhow!(
                             "Python package path is not UTF-8: {module}",
-                            module = entry.path().display()
+                            module = path.display()
                         )
                     })?);
                 }
@@ -482,12 +489,12 @@ fn add_loose_source(
         }
         let dst = src_dir.join(entry_relpath);
         if timestamp.is_some() {
-            let size = entry.metadata()?.len();
-            let is_executable = platform::is_executable(entry.path())?;
+            let size = path.metadata()?.len();
+            let is_executable = platform::is_executable(&path)?;
             let header = create_header(dst, size, is_executable, timestamp)?;
-            tar.append(&header, File::open(entry.path())?)?
+            tar.append(&header, File::open(&path)?)?
         } else {
-            tar.append_path_with_name(entry.path(), dst)?
+            tar.append_path_with_name(&path, dst)?
         }
     }
     Ok(sources)
@@ -499,7 +506,7 @@ fn serve(
     root_dir: &Path,
     port: Option<u16>,
     pid_file: Option<&Path>,
-    timeout: f32,
+    timeout: Option<f32>,
 ) -> anyhow::Result<()> {
     let module = if interpreter.details.version.major == 3 {
         "http.server"
@@ -548,7 +555,9 @@ fn serve(
         }
         Ok::<_, anyhow::Error>(())
     });
-    let port = if timeout > 0.0 {
+    let port = if let Some(timeout) = timeout
+        && timeout > 0.0
+    {
         recv.recv_timeout(Duration::from_secs_f32(timeout))?
     } else {
         recv.recv()?

@@ -10,6 +10,7 @@ publish = false
 anyhow = { workspace = true }
 cache = { path = "../cache" }
 chrono = { workspace = true }
+const_format = { workspace = true }
 csv = { workspace = true }
 dashmap = { workspace = true }
 fs-err = { workspace = true }

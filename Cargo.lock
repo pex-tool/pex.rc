@@ -2243,6 +2243,7 @@ dependencies = [
  "anyhow",
  "cache",
  "chrono",
+ "const_format",
  "csv",
  "dashmap",
  "fs-err",
@@ -2282,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.31.0"
+version = "0.32.0"
 dependencies = [
  "anstream",
  "anyhow",

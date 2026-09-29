@@ -199,6 +199,19 @@ impl<'a> Virtualenv<'a> {
             .join(rel_path)
     }
 
+    pub fn headers_prefix(&self) -> PathBuf {
+        self.interpreter
+            .details
+            .prefix
+            .join("include")
+            .join("site")
+            .join(format!(
+                "python{major}.{minor}",
+                major = self.interpreter.details.version.major,
+                minor = self.interpreter.details.version.minor
+            ))
+    }
+
     pub fn create_additional_pythons(&self) -> anyhow::Result<()> {
         for rel_path in self.interpreter.prefix_rel_paths() {
             let dest = self.interpreter.details.prefix.join(rel_path.as_ref());

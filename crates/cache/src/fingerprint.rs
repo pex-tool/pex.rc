@@ -179,7 +179,7 @@ impl HashOptions {
 #[instrument(level = "debug", skip(options))]
 pub fn hash_file(path: &Path, options: &HashOptions) -> anyhow::Result<Fingerprint> {
     let mut digest = default_digest();
-    digest_file(path, options, &mut digest)?;
+    digest_file(path, options, &mut digest, None)?;
     Ok(Fingerprint::new(digest))
 }
 
@@ -187,13 +187,18 @@ pub(crate) fn digest_file<D>(
     path: &Path,
     options: &HashOptions,
     digest: &mut D,
+    prefix: Option<&Path>,
 ) -> anyhow::Result<()>
 where
     D: Digest,
 {
     if options.path {
         digest.update(b"path:");
-        digest.update(path.as_os_str().as_encoded_bytes());
+        if let Some(prefix) = prefix {
+            digest.update(path.strip_prefix(prefix)?.as_os_str().as_encoded_bytes());
+        } else {
+            digest.update(path.as_os_str().as_encoded_bytes());
+        }
     }
     if options.mtime || options.size {
         let metadata = path.metadata()?;

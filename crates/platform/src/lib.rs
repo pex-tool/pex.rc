@@ -67,7 +67,30 @@ pub fn os_str_as_str(text: &OsStr) -> io::Result<&str> {
     })
 }
 
+pub fn reflink_or_copy(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    reflink_or_link_or_copy(src, dst, false)
+}
+
 pub fn link_or_copy(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    reflink_or_link_or_copy(src, dst, true)
+}
+
+fn reflink_or_link_or_copy(
+    src: impl AsRef<Path>,
+    dst: impl AsRef<Path>,
+    hardlink_ok: bool,
+) -> io::Result<()> {
+    let enrich_error = |err: io::Error, action: &str| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "Failed to {action} {src} -> {dst}: {err}",
+                src = src.as_ref().display(),
+                dst = dst.as_ref().display()
+            ),
+        )
+    };
+
     #[cfg(feature = "reflink")]
     match reflink_copy::reflink(src.as_ref(), dst.as_ref()) {
         Ok(()) => return Ok(()),
@@ -79,22 +102,29 @@ pub fn link_or_copy(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<
                     | io::ErrorKind::AlreadyExists
             ) =>
         {
-            return Err(err);
+            return Err(enrich_error(err, "reflink"));
         }
         _ => {}
     }
-    fs::hard_link(src.as_ref(), dst.as_ref())
-        .or_else(|_| fs::copy(src.as_ref(), dst.as_ref()).map(|_| ()))
-        .map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!(
-                    "Failed to link or copy {src} -> {dst}: {err}",
-                    src = src.as_ref().display(),
-                    dst = dst.as_ref().display()
-                ),
-            )
-        })
+    if hardlink_ok {
+        match fs::hard_link(src.as_ref(), dst.as_ref()) {
+            Ok(_) => return Ok(()),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                        | io::ErrorKind::AlreadyExists
+                ) =>
+            {
+                return Err(enrich_error(err, "link"));
+            }
+            _ => {}
+        }
+    }
+    fs::copy(src.as_ref(), dst.as_ref())
+        .map(|_| ())
+        .map_err(|err| enrich_error(err, "copy"))
 }
 
 pub fn spawn(command: &mut Command) -> io::Result<i32> {

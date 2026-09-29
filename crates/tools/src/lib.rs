@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![deny(clippy::all)]
+#![feature(trim_prefix_suffix)]
 
 mod commands;
 mod resolve;
