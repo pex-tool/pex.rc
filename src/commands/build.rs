@@ -869,7 +869,7 @@ pub struct Build {
     /// `--interpreter-constraint` command line arguments comply or else fail.
     #[arg(
         long,
-        visible_aliases = ["--executable", "--python-script"],
+        visible_aliases = ["executable", "python-script"],
         help_heading = "Entry Point",
         conflicts_with_all = ["entry_point", "script"],
         verbatim_doc_comment
