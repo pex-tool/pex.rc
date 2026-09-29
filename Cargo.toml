@@ -13,13 +13,11 @@ publish = false
 members = [
     ".",
     "crates/boot",
-    "crates/build-system",
     "crates/cache",
     "crates/cli",
     "crates/clib",
     "crates/interpreter",
     "crates/logging",
-    "crates/package",
     "crates/pex",
     "crates/pexrs",
     "crates/platform",
@@ -35,6 +33,8 @@ members = [
     "crates/venv",
     "crates/wheel",
     "crates/zip-ext",
+    "tooling/build",
+    "tooling/package",
 ]
 
 [package.metadata.build]
@@ -230,7 +230,7 @@ zstd = "0.14"
 [build-dependencies]
 anyhow = { workspace = true }
 bstr = { workspace = true }
-build-system = { path = "crates/build-system" }
+build = { path = "tooling/build" }
 env_logger = { workspace = true }
 fs-err = { workspace = true }
 itertools = { workspace = true }

@@ -11,7 +11,7 @@ use std::{env, io, vec};
 
 use anyhow::{anyhow, bail};
 use bstr::ByteSlice;
-use build_system::{
+use build::{
     BuildTarget,
     EmbedsConfiguration,
     FoundTool,

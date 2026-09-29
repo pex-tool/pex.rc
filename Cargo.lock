@@ -216,7 +216,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "build-system"
+name = "build"
 version = "0.0.0"
 dependencies = [
  "anyhow",
@@ -2091,7 +2091,7 @@ version = "0.0.0"
 dependencies = [
  "anstream",
  "anyhow",
- "build-system",
+ "build",
  "cache",
  "clap",
  "clap-verbosity-flag",
@@ -2289,7 +2289,7 @@ dependencies = [
  "anyhow",
  "boot",
  "bstr",
- "build-system",
+ "build",
  "cache",
  "chrono",
  "clap",
@@ -3081,7 +3081,7 @@ name = "scripts"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build-system",
+ "build",
  "const_format",
  "env_logger",
  "fs-err",

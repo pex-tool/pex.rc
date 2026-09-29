@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use std::{cmp, env, io};
 
 use anyhow::{anyhow, bail};
-use build_system::{BuildTarget, all_targets, classify_targets, ensure_tools_installed};
+use build::{BuildTarget, all_targets, classify_targets, ensure_tools_installed};
 use cache::fingerprint_file;
 use clap::builder::Str;
 use clap::{ArgAction, Parser, ValueEnum};
@@ -141,12 +141,13 @@ fn main() -> anyhow::Result<()> {
     let target_dir: PathBuf = if let Some(custom_target_dir) = env::var_os("CARGO_TARGET_DIR") {
         custom_target_dir.into()
     } else {
-        cargo_manifest_dir.join("target")
+        cargo_manifest_dir.join("../../../target")
     };
     let (_, glibc, found_tools) =
         ensure_tools_installed(&cargo_manifest_contents, &target_dir, false)?;
 
-    let rust_toolchain_contents = fs::read_to_string(cargo_manifest_dir.join("rust-toolchain"))?;
+    let rust_toolchain_contents =
+        fs::read_to_string(cargo_manifest_dir.join("../../../rust-toolchain"))?;
     let classified_targets = classify_targets(&rust_toolchain_contents, &glibc)?;
 
     if let Some(print_format) = cli.print_targets {

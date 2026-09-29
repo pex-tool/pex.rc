@@ -21,6 +21,6 @@ zip-ext = { path = "../zip-ext" }
 
 [build-dependencies]
 anyhow = { workspace = true }
-build-system = { path = "../build-system" }
+build = { path = "../../tooling/build" }
 env_logger = { workspace = true }
 fs-err = { workspace = true }
