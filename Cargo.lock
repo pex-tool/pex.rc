@@ -2309,6 +2309,7 @@ dependencies = [
  "logging",
  "ouroboros",
  "owo-colors",
+ "pep440_rs",
  "pep508_rs",
  "pex",
  "pexrs",

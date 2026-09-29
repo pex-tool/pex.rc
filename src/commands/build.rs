@@ -23,8 +23,8 @@ use fs_err::File;
 use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
+use pep440_rs::VersionSpecifiers;
 use pep508_rs::Requirement;
-use pep508_rs::pep440_rs::VersionSpecifiers;
 use pex::{
     BinPath,
     DEPS_DIR,
