@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail};
+use const_format::concatcp;
 use fs_err as fs;
 use fs_err::File;
 use indexmap::{IndexMap, indexmap};
@@ -25,7 +26,7 @@ use scripts::{IdentifyInterpreter, Scripts};
 use strum_macros::{AsRefStr, EnumString};
 use tracing::{debug, debug_span, instrument, warn};
 use url::Url;
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 use wheel::{MetadataDirs, MetadataReader, WheelFile};
 use zip::ZipArchive;
 use zip_ext::ZipArchiveExt;
@@ -42,12 +43,20 @@ pub enum Layout {
     ZipApp,
 }
 
+pub const DEPS_DIR: &str = ".deps";
+pub const DEPS_ZIP_DIR: &str = concatcp!(DEPS_DIR, "/");
+
+pub const SRCS_DIR: &str = ".srcs";
+pub const SRCS_ZIP_DIR: &str = concatcp!(SRCS_DIR, "/");
+
+pub const PEX_INFO_FILE: &str = "PEX-INFO";
+
 impl Layout {
     pub fn load(pex: &Path) -> anyhow::Result<Self> {
         let layout = if pex.is_file() {
             Layout::ZipApp
         } else {
-            let deps_dir = pex.join(".deps");
+            let deps_dir = pex.join(DEPS_DIR);
             if deps_dir.is_dir()
                 && let Some(wheel) = fs::read_dir(&deps_dir)?
                     .filter_map(|entry| {
@@ -72,10 +81,24 @@ impl Layout {
     }
 }
 
-pub fn collect_loose_user_source(pex: &Path) -> anyhow::Result<Vec<DirEntry>> {
+pub fn collect_loose_user_source(pex: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let srcs_dir = pex.join(SRCS_DIR);
+    if srcs_dir.is_dir() {
+        let mut sources = WalkDir::new(srcs_dir)
+            .min_depth(1)
+            .into_iter()
+            .map(|result| result.map(|entry| entry.into_path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let exe = pex.join("__pex_executable__.py");
+        if exe.is_file() {
+            sources.push(exe);
+        }
+        return Ok(sources);
+    }
+
     let excludes: HashSet<PathBuf> = [
-        ".deps",
-        "PEX-INFO",
+        DEPS_DIR,
+        PEX_INFO_FILE,
         "__main__.py",
         "__pex__",
         "__pycache__",
@@ -89,21 +112,33 @@ pub fn collect_loose_user_source(pex: &Path) -> anyhow::Result<Vec<DirEntry>> {
         .min_depth(1)
         .into_iter()
         .filter_entry(|entry| !excludes.contains(entry.path()))
+        .map(|result| result.map(|entry| entry.into_path()))
         .collect::<Result<Vec<_>, _>>()?)
 }
 
-pub fn filter_zipped_user_source(file_name: &str) -> bool {
-    ![".deps/", "__pex__/"]
+fn filter_zipped_srcs(file_name: &str) -> bool {
+    file_name == SRCS_ZIP_DIR
+        || file_name.starts_with(SRCS_ZIP_DIR)
+        || file_name == "__pex_executable__.py"
+}
+
+fn filter_zipped_user_source(file_name: &str) -> bool {
+    ![DEPS_ZIP_DIR, "__pex__/"]
         .iter()
         .any(|dir_prefix| file_name.starts_with(dir_prefix))
-        && ![".deps/", "__pex__/", "PEX-INFO", "__main__.py"].contains(&file_name)
+        && ![DEPS_ZIP_DIR, "__pex__/", PEX_INFO_FILE, "__main__.py"].contains(&file_name)
 }
 
 pub fn collect_zipped_user_source_indexes(pex: &ZipArchive<impl Read + Seek>) -> Vec<usize> {
+    let is_user_source = if pex.index_for_name(SRCS_ZIP_DIR).is_some() {
+        filter_zipped_srcs
+    } else {
+        filter_zipped_user_source
+    };
     pex.file_names()
         .enumerate()
         .filter_map(|(idx, name)| {
-            if filter_zipped_user_source(name) {
+            if is_user_source(name) {
                 Some(idx)
             } else {
                 None
@@ -140,7 +175,7 @@ impl<'a> Pex<'a> {
     pub fn load(path: &'a Path) -> anyhow::Result<Self> {
         match Layout::load(path)? {
             layout @ (Layout::Loose | Layout::Packed) => {
-                let pex_info_path = path.join("PEX-INFO");
+                let pex_info_path = path.join(PEX_INFO_FILE);
                 let pex_info_fp = File::open(&pex_info_path)?;
                 let size = pex_info_fp.metadata()?.len();
                 let pex_info =
@@ -158,9 +193,10 @@ impl<'a> Pex<'a> {
                     debug_span!("Open PEX zip", path=%path.display())
                         .in_scope(|| ZipArchive::new(BufReader::new(zip_fp)))?
                 };
-                let zip_file = zip.by_name_ex("PEX-INFO")?;
+                let zip_file = zip.by_name_ex(PEX_INFO_FILE)?;
                 let size = zip_file.size();
-                let pex_info = PexInfo::parse(zip_file, size, Some(|| Cow::Borrowed("PEX-INFO")))?;
+                let pex_info =
+                    PexInfo::parse(zip_file, size, Some(|| Cow::Borrowed(PEX_INFO_FILE)))?;
                 Ok(Self {
                     path,
                     info: pex_info,
@@ -491,7 +527,7 @@ impl<'a> MetadataReader for ZipAppPexMetadataReader<'a> {
         if self.deps_are_wheel_files {
             let whl = self
                 .pex_zip
-                .by_name_seek(&[".deps", wheel_file.file_name].join("/"))?;
+                .by_name_seek(&[DEPS_DIR, wheel_file.file_name].join("/"))?;
             let mut whl_zip = ZipArchive::new(whl)?;
             let dist_info_dir = metadata_dirs.dist_info_dir();
             Ok(io::read_to_string(
@@ -514,7 +550,7 @@ struct LoosePexMetadataReader<'a>(&'a Path);
 
 impl<'a> MetadataReader for LoosePexMetadataReader<'a> {
     fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
-        wheel_file.metadata_dirs(&self.0.join(".deps").join(wheel_file.file_name))
+        wheel_file.metadata_dirs(&self.0.join(DEPS_DIR).join(wheel_file.file_name))
     }
 
     fn read(
@@ -523,7 +559,7 @@ impl<'a> MetadataReader for LoosePexMetadataReader<'a> {
         wheel_file: &WheelFile,
         file_name: &str,
     ) -> anyhow::Result<String> {
-        let mut read_path = self.0.join(".deps").join(wheel_file.file_name);
+        let mut read_path = self.0.join(DEPS_DIR).join(wheel_file.file_name);
         read_path.push(metadata_dirs.dist_info_dir().as_path());
         read_path.push(file_name);
         Ok(fs::read_to_string(read_path)?)
@@ -534,7 +570,7 @@ struct PackedPexMetadataReader<'a>(&'a Path);
 
 impl<'a> MetadataReader for PackedPexMetadataReader<'a> {
     fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
-        let wheel_file_path = self.0.join(".deps").join(wheel_file.file_name);
+        let wheel_file_path = self.0.join(DEPS_DIR).join(wheel_file.file_name);
         let zip = ZipArchive::new(File::open(&wheel_file_path)?)?;
         wheel_file.metadata_dirs_from_zip(&zip, wheel_file_path.display(), None)
     }
@@ -545,7 +581,7 @@ impl<'a> MetadataReader for PackedPexMetadataReader<'a> {
         wheel_file: &WheelFile,
         file_name: &str,
     ) -> anyhow::Result<String> {
-        let wheel_file_path = self.0.join(".deps").join(wheel_file.file_name);
+        let wheel_file_path = self.0.join(DEPS_DIR).join(wheel_file.file_name);
         let mut zip = ZipArchive::new(File::open(&wheel_file_path)?)?;
         let dist_info_dir = metadata_dirs.dist_info_dir();
         Ok(io::read_to_string(
@@ -634,7 +670,7 @@ mod tests {
             ZipWriter::new_append(File::options().read(true).write(true).open(&pex).unwrap())
                 .unwrap();
         let file_options =
-            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Deflated);
         embedded_scripts.inject(&mut zip, file_options).unwrap();
         zip.finish().unwrap();
 

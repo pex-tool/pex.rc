@@ -125,7 +125,8 @@ pub struct RawPexInfo<'a> {
     #[serde(borrow)]
     pub bind_resource_paths: Option<IndexMap<Cow<'a, str>, Cow<'a, str>>>,
     pub build_properties: IndexMap<&'a str, Value>,
-    pub code_hash: &'a str,
+    #[serde(borrow)]
+    pub code_hash: Cow<'a, str>,
     pub deps_are_wheel_files: bool,
     #[serde(borrow)]
     pub distributions: IndexMap<Cow<'a, str>, Cow<'a, str>>,

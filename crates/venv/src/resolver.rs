@@ -58,11 +58,7 @@ impl<'a> InstallPaths<'a> {
         Ok(Self {
             python_version: venv.interpreter.details.version,
             data: get_sysconfig_path("data")?,
-            headers_base: Cow::Owned(venv.prefix().join("include").join("site").join(format!(
-                "python{major}.{minor}",
-                major = venv.interpreter.details.version.major,
-                minor = venv.interpreter.details.version.minor
-            ))),
+            headers_base: Cow::Owned(venv.headers_prefix()),
             platlib: get_sysconfig_path("platlib")?,
             purelib: get_sysconfig_path("purelib")?,
             scripts: get_sysconfig_path("scripts")?,

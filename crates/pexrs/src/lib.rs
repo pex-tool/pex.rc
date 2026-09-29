@@ -406,11 +406,11 @@ pub fn venv_dir(
         && search_path.is_empty()
         && let Some(python_exe) = ambient_python
     {
-        key.file(python_exe, &INTERPRETER_HASH_OPTIONS)?;
+        key.file(python_exe, &INTERPRETER_HASH_OPTIONS, None)?;
     } else if let Some(python_exe) = search_path.unique_interpreter() {
         // The user chose a unique interpreter (via PEX_PYTHON or PEX_PYTHON_PATH or a combination
         // of the two). It may not match the ICs, if any, but the choice is respected.
-        key.file(python_exe, &INTERPRETER_HASH_OPTIONS)?;
+        key.file(python_exe, &INTERPRETER_HASH_OPTIONS, None)?;
     } else {
         // Otherwise, we do our best.
         if let Some(python) = search_path.pex_python() {

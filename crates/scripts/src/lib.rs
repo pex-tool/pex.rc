@@ -161,7 +161,7 @@ impl Scripts {
         zip: &'a mut ZipWriter<impl Write + Seek>,
         file_options: FileOptions<'a, T>,
     ) -> anyhow::Result<()> {
-        let directory_options = SimpleFileOptions::default();
+        let directory_options = SimpleFileOptions::DEFAULT;
         zip.add_directory(ZIP_REL_PATH, directory_options)?;
         for resource_path in Script::iter() {
             let text = self.read(resource_path)?;

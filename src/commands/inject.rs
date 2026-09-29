@@ -15,7 +15,7 @@ use fs_err as fs;
 use fs_err::File;
 use indexmap::IndexSet;
 use interpreter::Interpreter;
-use pex::{Layout, Pex};
+use pex::{DEPS_DIR, DEPS_ZIP_DIR, Layout, PEX_INFO_FILE, Pex};
 use platform::mark_executable;
 use python_platform::PythonImplementation;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -178,8 +178,8 @@ fn inject_pex_dir(
     let mut dest_pex = tempfile::tempdir_in(pex.path.parent().unwrap_or_else(|| Path::new(".")))?;
     let excludes: HashSet<PathBuf> = [
         ".bootstrap",
-        ".deps",
-        "PEX-INFO",
+        DEPS_DIR,
+        PEX_INFO_FILE,
         "__main__.py",
         "__pex__",
         "__pycache__",
@@ -202,7 +202,7 @@ fn inject_pex_dir(
             fs::copy(entry.path(), dst)?;
         }
     }
-    let deps_dir = dest_pex.path().join(".deps");
+    let deps_dir = dest_pex.path().join(DEPS_DIR);
     repackage_wheels(&pex, options, &deps_dir)?;
     let wheel_file_names = pex.info.raw().distributions.keys().collect::<Vec<_>>();
     let fingerprints = wheel_file_names
@@ -241,7 +241,7 @@ fn inject_pex_dir(
     }
 
     pex.info
-        .write(&mut File::create_new(dest_pex.path().join("PEX-INFO"))?)?;
+        .write(&mut File::create_new(dest_pex.path().join(PEX_INFO_FILE))?)?;
 
     write_boot(pex.info.raw(), dest_pex.path(), &shebang)?;
 
@@ -298,12 +298,12 @@ fn inject_pex_zip(
 
     let file_options = options.file_options()?;
     let deflated_file_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    let directory_options = SimpleFileOptions::default();
+        SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Deflated);
+    let directory_options = SimpleFileOptions::DEFAULT;
     for index in 0..src_zip.len() {
         let mut src_file = src_zip.by_index(index)?;
         let entry_name = src_file.name();
-        if [".bootstrap/", ".deps/", "PEX-INFO", "__pex__/"]
+        if [".bootstrap/", DEPS_ZIP_DIR, PEX_INFO_FILE, "__pex__/"]
             .into_iter()
             .any(|prefix| entry_name.starts_with(prefix))
             || entry_name == "__main__.py"
@@ -313,7 +313,7 @@ fn inject_pex_zip(
         if src_file.is_dir() {
             dst_zip.add_directory(entry_name, directory_options)?
         } else {
-            let options = if entry_name == "PEX-INFO" {
+            let options = if entry_name == PEX_INFO_FILE {
                 deflated_file_options
             } else {
                 file_options
@@ -325,7 +325,7 @@ fn inject_pex_zip(
 
     let deps_dir = tempfile::tempdir_in(pex.path.parent().unwrap_or_else(|| Path::new(".")))?;
     let stored_file_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Stored);
     repackage_wheels(&pex, options, deps_dir.path())?;
     let mut fingerprints = Vec::with_capacity(pex_info.distributions.len());
     for wheel_file_name in pex_info.distributions.keys() {
@@ -356,7 +356,7 @@ fn inject_pex_zip(
         proxy.embed_in_zip(&mut dst_zip, "__pex__/.proxies", file_options)?;
     }
 
-    dst_zip.start_file("PEX-INFO", deflated_file_options)?;
+    dst_zip.start_file(PEX_INFO_FILE, deflated_file_options)?;
     pex.info.write(&mut dst_zip)?;
 
     inject_boot(pex.info.raw(), &mut dst_zip, deflated_file_options)?;

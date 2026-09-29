@@ -13,7 +13,7 @@ use std::{env, io, process};
 
 use anyhow::{anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
-use cache::{CacheDir, DigestingWriter, Fingerprint, atomic_file};
+use cache::{CacheDir, DigestingWriter, Fingerprint, HashOptions, Key, atomic_file};
 use clap::{ArgAction, Args};
 use const_format::concatcp;
 use digest::Digest;
@@ -25,7 +25,17 @@ use interpreter::{Interpreter, SearchPath};
 use ouroboros::self_referencing;
 use pep508_rs::Requirement;
 use pep508_rs::pep440_rs::VersionSpecifiers;
-use pex::{BinPath, InheritPath, InterpreterSelectionStrategy, RawPexInfo};
+use pex::{
+    BinPath,
+    DEPS_DIR,
+    DEPS_ZIP_DIR,
+    InheritPath,
+    InterpreterSelectionStrategy,
+    PEX_INFO_FILE,
+    RawPexInfo,
+    SRCS_DIR,
+    SRCS_ZIP_DIR,
+};
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -358,7 +368,8 @@ impl PythonScript {
             .expect("The constant ends in `.py`.")
     }
 
-    fn write(self, dest_dir: &Path) -> anyhow::Result<()> {
+    fn write(self, dest_dir: &Path, code_hash: &mut Key) -> anyhow::Result<()> {
+        code_hash.file_contents(Self::EXE_PY, self.0.as_bytes())?;
         fs::write(dest_dir.join(Self::EXE_PY), &self.0)?;
         Ok(())
     }
@@ -367,7 +378,9 @@ impl PythonScript {
         self,
         zip: &mut ZipWriter<impl Write + Seek>,
         file_options: SimpleFileOptions,
+        code_hash: &mut Key,
     ) -> anyhow::Result<()> {
+        code_hash.file_contents(Self::EXE_PY, self.0.as_bytes())?;
         zip.start_file(Self::EXE_PY, file_options)?;
         zip.write_all(self.0.as_bytes())?;
         Ok(())
@@ -446,7 +459,7 @@ impl PexEntryPoint {
                         let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
                         let metadata_dirs = MetadataDirs::locate_in_zip(
                             &whl,
-                            "",
+                            wheel.path.display(),
                             None,
                             &wheel_file.project_name,
                             &wheel_file.version,
@@ -574,6 +587,164 @@ N.B.: The paths specified must be valid paths at runtime. PEXes will not be merg
 "#,
 );
 
+#[derive(Clone, Debug)]
+struct Source {
+    prefix: PathBuf,
+    suffix: PathBuf,
+}
+
+impl FromStr for Source {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let (prefix, suffix) = if let Some((source, subdirectory)) = s.rsplit_once('@') {
+            let mut subdirectory = Cow::Borrowed(Path::new(subdirectory));
+            if subdirectory.is_relative() {
+                subdirectory = Cow::Owned(env::current_dir()?.join(subdirectory));
+            }
+            let prefix = subdirectory.normalize_lexically()?;
+            (prefix, source)
+        } else {
+            let prefix = env::current_dir()?;
+            (prefix, s)
+        };
+        Ok(Source {
+            prefix,
+            suffix: suffix.split('.').collect(),
+        })
+    }
+}
+
+#[derive(Args, Debug)]
+#[command(next_help_heading = "Contents")]
+#[group(skip)]
+struct Sources {
+    /// Source code to include in the PEX.
+    ///
+    /// All files in the directory tree will be added to the root of the PEX `sys.path`; i.e.: they
+    /// will be installed in the site packages directory of the PEX venv at runtime.
+    #[arg(short = 'D', long, value_name = "DIR", verbatim_doc_comment)]
+    sources_directory: Vec<PathBuf>,
+
+    /// Add a package and all its sub-packages to the PEX.
+    ///
+    /// The package is expected to be found relative to the current directory. If the package is
+    /// housed in a subdirectory, indicate that by appending `@<subdirectory>`. For example, to add
+    /// the top-level package `foo` housed in the current directory, use `-P foo`. If the top-level
+    /// `foo` package is in the `src` subdirectory use `-P foo@src`. If you wish to just use the
+    /// `foo.bar` package in the `src` subdirectory, use `-P foo.bar@src`.
+    #[arg(
+        short = 'P',
+        long = "package",
+        value_name = "PACKAGE_SPEC",
+        verbatim_doc_comment
+    )]
+    packages: Vec<Source>,
+
+    /// Add an individual module to the PEX.
+    ///
+    /// The module is expected to be found relative to the current directory. If the module is
+    /// housed in a subdirectory, indicate that by appending `@<subdirectory>`. For example, to add
+    /// the top-level module `foo` housed in the current directory, use `-M foo`. If the top-level
+    /// `foo` module is in the `src` subdirectory use `-M foo@src`. If you wish to just use the
+    /// `foo.bar` module in the `src` subdirectory, use `-M foo.bar@src`.
+    #[arg(
+        short = 'M',
+        long = "module",
+        value_name = "MODULE_SPEC",
+        verbatim_doc_comment
+    )]
+    modules: Vec<Source>,
+}
+
+impl Sources {
+    #[instrument(level = "debug", skip_all)]
+    fn copy(&self, dest_dir: &Path, code_hash: &mut Key) -> anyhow::Result<()> {
+        let hash_options = HashOptions::new().path(true).contents(true);
+        for (src, prefix) in self.sources()? {
+            let dst = dest_dir.join(SRCS_DIR).join(src.strip_prefix(prefix)?);
+            if src.is_dir() {
+                fs::create_dir_all(dst)?;
+            } else {
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                platform::reflink_or_copy(src, &dst)?;
+                code_hash.file(dst, &hash_options, Some(dest_dir))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[instrument(level = "debug", skip_all)]
+    fn inject(
+        self,
+        zip: &mut ZipWriter<impl Write + Seek>,
+        file_options: SimpleFileOptions,
+        code_hash: &mut Key,
+    ) -> anyhow::Result<()> {
+        zip.add_directory(SRCS_ZIP_DIR, SimpleFileOptions::DEFAULT)?;
+        for (src, prefix) in self.sources()? {
+            let dst = Path::new(SRCS_DIR).join(src.strip_prefix(prefix)?);
+            if src.is_dir() {
+                zip.add_directory_from_path(dst, SimpleFileOptions::DEFAULT)?;
+            } else {
+                zip.start_file_from_path(&dst, file_options)?;
+                code_hash.file_stream(dst, &mut File::open(src)?, zip)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[instrument(level = "debug", skip_all)]
+    fn sources(&self) -> anyhow::Result<Vec<(PathBuf, &Path)>> {
+        let directories = self
+            .sources_directory
+            .iter()
+            .map(|src| (src, None))
+            .chain(
+                self.packages
+                    .iter()
+                    .map(|source| (&source.prefix, Some(&source.suffix))),
+            )
+            .collect::<Vec<_>>();
+
+        let mut sources = vec![];
+        for (prefix, suffix) in directories {
+            let src_dir = if let Some(suffix) = suffix {
+                Cow::Owned(prefix.join(suffix))
+            } else {
+                Cow::Borrowed(prefix)
+            };
+            for entry in walkdir::WalkDir::new(src_dir.as_ref()) {
+                let entry = entry?;
+                if let Some(file_name) = entry.file_name().to_str() {
+                    if file_name == "__pycache__" {
+                        if entry.metadata()?.is_dir() {
+                            continue;
+                        }
+                    } else if [".pyc", ".pyd", ".pyo"]
+                        .into_iter()
+                        .any(|ext| file_name.ends_with(ext))
+                        && entry.metadata()?.is_file()
+                    {
+                        continue;
+                    }
+                }
+                sources.push((entry.into_path(), prefix.as_path()));
+            }
+        }
+        for module in self.modules.iter() {
+            sources.push((
+                module.prefix.join(&module.suffix).with_extension("py"),
+                module.prefix.as_path(),
+            ))
+        }
+        sources.sort();
+        Ok(sources)
+    }
+}
+
 #[derive(Args, Debug)]
 #[group(skip)]
 pub struct Build {
@@ -586,39 +757,6 @@ pub struct Build {
         verbatim_doc_comment
     )]
     requirements: Vec<Requirement<Url>>,
-
-    /// Specifies a requirement to exclude from the built PEX.
-    ///
-    /// Any distribution included in the PEX's resolve that matches the requirement is excluded
-    /// from the built PEX along with all of its transitive dependencies that are not also required
-    /// by other non-excluded distributions. At runtime, the PEX will boot without checking the
-    /// excluded dependencies are available (say, via `--inherit-path`).
-    #[arg(long = "exclude", help_heading = "Contents", verbatim_doc_comment)]
-    excluded: Vec<String>,
-
-    /// Specifies a transitive requirement to override when resolving.
-    ///
-    /// Overrides can either modify an existing dependency on a project name by changing extras,
-    /// version constraints or markers or else they can completely swap out the dependency for a
-    /// dependency on another project altogether. For the former, simply supply the requirement you
-    /// wish. For example, specifying `--override cowsay==5.0` will override any transitive
-    /// dependency on cowsay that has any combination of extras, version constraints or markers with
-    /// the requirement `cowsay==5.0`. To completely replace cowsay with another library altogether,
-    /// you can specify an override like `--override cowsay=my-cowsay>2`. This will replace any
-    /// transitive dependency on cowsay that has any combination of extras, version constraints or
-    /// markers with the requirement `my-cowsay>2`.
-    #[arg(long = "override", help_heading = "Contents", verbatim_doc_comment)]
-    overridden: Vec<String>,
-
-    /// Ignore requirement resolution solver errors when building PEXes and later invoking them.
-    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
-    ignore_errors: bool,
-
-    /// Ensure the PEX is built with included tools.
-    ///
-    /// If this `pexrc` does not include tools, the build will fail fast.
-    #[arg(long, help_heading = "Contents", verbatim_doc_comment)]
-    include_tools: bool,
 
     /// Venvs containing distributions to include in the PEX.
     ///
@@ -651,6 +789,42 @@ pub struct Build {
         verbatim_doc_comment
     )]
     wheels: Vec<PathBuf>,
+
+    #[command(flatten)]
+    sources: Sources,
+
+    /// Specifies a requirement to exclude from the built PEX.
+    ///
+    /// Any distribution included in the PEX's resolve that matches the requirement is excluded
+    /// from the built PEX along with all of its transitive dependencies that are not also required
+    /// by other non-excluded distributions. At runtime, the PEX will boot without checking the
+    /// excluded dependencies are available (say, via `--inherit-path`).
+    #[arg(long = "exclude", help_heading = "Contents", verbatim_doc_comment)]
+    excluded: Vec<String>,
+
+    /// Specifies a transitive requirement to override when resolving.
+    ///
+    /// Overrides can either modify an existing dependency on a project name by changing extras,
+    /// version constraints or markers or else they can completely swap out the dependency for a
+    /// dependency on another project altogether. For the former, simply supply the requirement you
+    /// wish. For example, specifying `--override cowsay==5.0` will override any transitive
+    /// dependency on cowsay that has any combination of extras, version constraints or markers with
+    /// the requirement `cowsay==5.0`. To completely replace cowsay with another library altogether,
+    /// you can specify an override like `--override cowsay=my-cowsay>2`. This will replace any
+    /// transitive dependency on cowsay that has any combination of extras, version constraints or
+    /// markers with the requirement `my-cowsay>2`.
+    #[arg(long = "override", help_heading = "Contents", verbatim_doc_comment)]
+    overridden: Vec<String>,
+
+    /// Ignore requirement resolution solver errors when building PEXes and later invoking them.
+    #[arg(long, help_heading = "Contents")]
+    ignore_errors: bool,
+
+    /// Ensure the PEX is built with included tools.
+    ///
+    /// If this `pexrc` does not include tools, the build will fail fast.
+    #[arg(long, help_heading = "Contents")]
+    include_tools: bool,
 
     #[arg(long, help_heading = "Contents", help = PEX_PATH_HELP, long_help = PEX_PATH_LONG_HELP)]
     pex_path: Option<OsString>,
@@ -702,6 +876,21 @@ pub struct Build {
     )]
     exe: Option<PathBuf>,
 
+    /// Specifies an environment variable to bind the path of a resource in the PEX.
+    ///
+    /// The binding is specified in the form `<env var name>=<resource rel path>`. For example
+    /// `WINDOWS_X64_CONSOLE_TRAMPOLINE=pex/windows/stubs/uv-trampoline-x86_64-console.exe` would
+    /// look up the path of the `pex/windows/stubs/uv-trampoline-x86_64-console.exe` file on the
+    /// `sys.path` and bind its absolute path to the `WINDOWS_X64_CONSOLE_TRAMPOLINE` environment
+    /// variable. N.B.: resource paths must use the Unix path separator of `/`. These will be
+    /// converted to the runtime host path separator as needed.
+    #[arg(
+        long = "bind-resource-path",
+        help_heading = "Entry Point",
+        verbatim_doc_comment
+    )]
+    bind_resource_paths: Vec<KeyValue>,
+
     /// Do not strip `PEX_*` environment variables when executing the PEX.
     #[arg(long, help_heading = "Entry Point")]
     no_strip_pex_env: bool,
@@ -724,21 +913,6 @@ pub struct Build {
     #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
     inject_python_args: Vec<String>,
 
-    /// Specifies an environment variable to bind the path of a resource in the PEX.
-    ///
-    /// The binding is specified in the form `<env var name>=<resource rel path>`. For example
-    /// `WINDOWS_X64_CONSOLE_TRAMPOLINE=pex/windows/stubs/uv-trampoline-x86_64-console.exe` would
-    /// look up the path of the `pex/windows/stubs/uv-trampoline-x86_64-console.exe` file on the
-    /// `sys.path` and bind its absolute path to the `WINDOWS_X64_CONSOLE_TRAMPOLINE` environment
-    /// variable. N.B.: resource paths must use the Unix path separator of `/`. These will be
-    /// converted to the runtime host path separator as needed.
-    #[arg(
-        long = "bind-resource-path",
-        help_heading = "Entry Point",
-        verbatim_doc_comment
-    )]
-    bind_resource_paths: Vec<KeyValue>,
-
     /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
     /// PYTHONPATH) running the pex.
     ///
@@ -759,21 +933,21 @@ pub struct Build {
     ///
     /// Byt default, all cores will be utilized. This can be made explicit with
     /// `--max-install-jobs 0`.
-    #[arg(long, help_heading = "Virtual Environment")]
+    #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
     max_install_jobs: Option<usize>,
 
     /// Whether to add the PEX venv scripts dir to the `$PATH`.
     ///
     /// If `prepend` or `append` is specified, then all scripts and console scripts provided by
     /// distributions in the pex file will be added to the `$PATH` in the corresponding position.
-    #[arg(long, help_heading = "Virtual Environment")]
+    #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
     venv_bin_path: Option<BinPath>,
 
     /// Don't rewrite Python script shebangs to use Python isolated mode.
     ///
     /// This can be useful to, for example, to enable running the venv PEX itself or its Python
     /// scripts with a custom `PYTHONPATH`.
-    #[arg(long, help_heading = "Virtual Environment")]
+    #[arg(long, help_heading = "Virtual Environment", verbatim_doc_comment)]
     non_hermetic_venv_scripts: bool,
 
     /// Give the PEX venv access to the system `site-packages` dir.
@@ -996,13 +1170,13 @@ impl Build {
             interpreter_selection.search_path,
             preferred_platform,
             wheels,
-            wheel_options,
             &mut pex_info,
             self.packed,
             shebang,
             self.output,
             self.extra_args,
             entry_point,
+            self.sources,
         )
     }
 }
@@ -1569,13 +1743,13 @@ fn build_pex(
     search_path: Option<SearchPath>,
     preferred_platform: Option<&Platform>,
     wheels: Vec<FingerprintedWheel>,
-    wheel_options: WheelOptions,
     pex_info: &mut RawPexInfo,
     packed: bool,
     shebang: Shebang,
     output: Option<PathBuf>,
     extra_args: Vec<String>,
     entry_point: Option<PexEntryPoint>,
+    sources: Sources,
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
@@ -1585,12 +1759,12 @@ fn build_pex(
                 false,
                 preferred_platform,
                 wheels,
-                wheel_options,
                 pex_info,
                 packed,
                 shebang,
                 &path,
                 entry_point,
+                sources,
             )
         }
         None => {
@@ -1608,12 +1782,12 @@ fn build_pex(
                     true,
                     preferred_platform,
                     wheels,
-                    wheel_options,
                     pex_info,
                     packed,
                     shebang,
                     path,
                     entry_point,
+                    sources,
                 )?;
                 execute_pex(
                     preferred_python,
@@ -1631,12 +1805,12 @@ fn build_pex(
                     true,
                     preferred_platform,
                     wheels,
-                    wheel_options,
                     pex_info,
                     packed,
                     shebang,
                     path,
                     entry_point,
+                    sources,
                 )?;
                 execute_pex(
                     preferred_python,
@@ -1740,12 +1914,12 @@ fn create_pex(
     ephemeral: bool,
     preferred_python: Option<&Platform>,
     wheels: Vec<FingerprintedWheel>,
-    wheel_options: WheelOptions,
     pex_info: &mut RawPexInfo,
     packed: bool,
     shebang: Shebang,
     path: &Path,
     entry_point: Option<PexEntryPoint>,
+    sources: Sources,
 ) -> anyhow::Result<()> {
     let wheel_files = file_names(wheels.iter().map(|wheel| wheel.path.as_path()))?
         .into_iter()
@@ -1812,18 +1986,19 @@ fn create_pex(
             shebang,
             path,
             entry_point,
+            sources,
         )
     } else {
         create_zipapp(
             preferred_python,
             wheels,
-            wheel_options,
             pex_info,
             clibs,
             proxies,
             shebang,
             path,
             entry_point,
+            sources,
         )
     }
 }
@@ -1838,6 +2013,7 @@ fn create_packed_pex(
     shebang: Shebang,
     path: &Path,
     entry_point: Option<PexEntryPoint>,
+    sources: Sources,
 ) -> anyhow::Result<()> {
     let mut dest_dir = if let Some(parent_dir) = path.parent() {
         tempfile::tempdir_in(parent_dir)
@@ -1846,13 +2022,16 @@ fn create_packed_pex(
     }?;
 
     adjust_requirements(pex_info, &wheels)?;
+    let mut code_hash = Key::new();
+    sources.copy(dest_dir.path(), &mut code_hash)?;
     if let Some(entry_point) = entry_point
         && let Some(exe) = entry_point.resolve(pex_info, &wheels)?
     {
-        exe.write(dest_dir.path())?;
+        exe.write(dest_dir.path(), &mut code_hash)?;
     }
+    pex_info.code_hash = Cow::Owned(code_hash.fingerprint().hex_digest());
 
-    let deps_dir = dest_dir.path().join(".deps");
+    let deps_dir = dest_dir.path().join(DEPS_DIR);
     fs::create_dir(&deps_dir)?;
     for wheel in wheels {
         platform::link_or_copy(wheel.path, deps_dir.join(&wheel.file_name))?;
@@ -1866,8 +2045,6 @@ fn create_packed_pex(
     Scripts::Embedded.write(dest_dir.path())?;
 
     let pex_dir = dest_dir.path().join("__pex__");
-    let _deflate_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let clibs_dir = pex_dir.join(".clibs");
     fs::create_dir_all(&clibs_dir)?;
     for clib in clibs {
@@ -1880,7 +2057,7 @@ fn create_packed_pex(
     }
 
     pex_info.finalize_pex_hash()?;
-    let mut pex_info_fp = File::create_new(dest_dir.path().join("PEX-INFO"))?;
+    let mut pex_info_fp = File::create_new(dest_dir.path().join(PEX_INFO_FILE))?;
     pex_info.write(&mut pex_info_fp)?;
 
     let mut shebang_buffer = sh_boot_buffer();
@@ -1902,13 +2079,13 @@ fn create_packed_pex(
 fn create_zipapp(
     preferred_python: Option<&Platform>,
     wheels: Vec<FingerprintedWheel>,
-    wheel_options: WheelOptions,
     pex_info: &mut RawPexInfo,
     clibs: Vec<&Binary>,
     proxies: Vec<&Binary>,
     shebang: Shebang,
     path: &Path,
     entry_point: Option<PexEntryPoint>,
+    sources: Sources,
 ) -> anyhow::Result<()> {
     let mut dst_zip_fp = if let Some(parent_dir) = path.parent() {
         NamedTempFile::new_in(parent_dir)?
@@ -1919,22 +2096,28 @@ fn create_zipapp(
 
     let mut dst_zip = ZipWriter::new(&dst_zip_fp);
 
-    let directory_options = SimpleFileOptions::default();
-    let file_options = wheel_options.file_options()?;
+    let directory_options = SimpleFileOptions::DEFAULT;
     let deflated_file_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Deflated);
     let stored_file_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Stored);
 
     adjust_requirements(pex_info, &wheels)?;
+    let mut code_hash = Key::new();
+    sources.inject(&mut dst_zip, deflated_file_options, &mut code_hash)?;
     if let Some(entry_point) = entry_point
         && let Some(exe) = entry_point.resolve(pex_info, &wheels)?
     {
-        exe.inject(&mut dst_zip, file_options)?;
+        exe.inject(&mut dst_zip, deflated_file_options, &mut code_hash)?;
     }
+    pex_info.code_hash = Cow::Owned(code_hash.fingerprint().hex_digest());
 
+    dst_zip.add_directory(DEPS_ZIP_DIR, directory_options)?;
     for wheel in wheels {
-        dst_zip.start_file(format!(".deps/{}", wheel.file_name), stored_file_options)?;
+        dst_zip.start_file(
+            format!("{DEPS_DIR}/{}", wheel.file_name),
+            stored_file_options,
+        )?;
         let mut src = File::open(wheel.path)?;
         io::copy(&mut src, &mut dst_zip)?;
         pex_info.distributions.insert(
@@ -1945,24 +2128,23 @@ fn create_zipapp(
     pex_info.deps_are_wheel_files = true;
 
     dst_zip.add_directory("__pex__", directory_options)?;
-    Scripts::Embedded.inject(&mut dst_zip, file_options)?;
+    Scripts::Embedded.inject(&mut dst_zip, deflated_file_options)?;
 
-    let deflate_options =
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    dst_zip.add_directory("__pex__/.clibs", directory_options)?;
-    for clib in clibs {
-        clib.embed_in_zip(&mut dst_zip, "__pex__/.clibs", deflate_options)?;
-    }
     dst_zip.add_directory("__pex__/.proxies", directory_options)?;
     for proxy in proxies {
-        proxy.embed_in_zip(&mut dst_zip, "__pex__/.proxies", file_options)?;
+        proxy.embed_in_zip(&mut dst_zip, "__pex__/.proxies", deflated_file_options)?;
     }
+
+    dst_zip.add_directory("__pex__/.clibs", directory_options)?;
+    for clib in clibs {
+        clib.embed_in_zip(&mut dst_zip, "__pex__/.clibs", deflated_file_options)?;
+    }
+
+    inject_boot(pex_info, &mut dst_zip, deflated_file_options)?;
 
     pex_info.finalize_pex_hash()?;
     dst_zip.start_file("PEX-INFO", deflated_file_options)?;
     pex_info.write(&mut dst_zip)?;
-
-    inject_boot(pex_info, &mut dst_zip, deflate_options)?;
 
     dst_zip.finish()?;
     mark_executable(dst_zip_fp.as_file_mut())?;

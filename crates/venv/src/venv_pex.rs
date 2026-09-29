@@ -17,12 +17,15 @@ use fs_err::File;
 use indexmap::{IndexMap, IndexSet};
 use pex::{
     BinPath,
+    DEPS_DIR,
     Layout,
+    PEX_INFO_FILE,
     Pex,
     RawPexInfo,
+    SRCS_DIR,
+    SRCS_ZIP_DIR,
     collect_loose_user_source,
     collect_zipped_user_source_indexes,
-    filter_zipped_user_source,
 };
 use platform::{Perms, mark_executable, path_as_bytes, path_as_str, symlink_or_link_or_copy};
 use python_platform::PythonVersion;
@@ -41,6 +44,7 @@ use serde_json::Value;
 use tracing::instrument;
 use wheel::{EntryPoint, EntryPoints, MetadataDirs, Record, WheelDir, WheelLayout};
 use zip::ZipArchive;
+use zip::read::ZipArchiveMetadata;
 use zip_ext::ZipArchiveExt;
 
 use crate::Provenance;
@@ -117,7 +121,7 @@ fn collect_wheels_from_directory_pex<'a>(
     resolved_wheels: &'a IndexMap<&'a str, ResolvedWheel<'a>>,
 ) -> anyhow::Result<Vec<(&'a str, WheelPaths<'a>)>> {
     let mut wheels = Vec::with_capacity(resolved_wheels.len());
-    let deps_dir = pex.path.join(".deps");
+    let deps_dir = pex.path.join(DEPS_DIR);
     if deps_dir.is_dir() {
         for entry in fs::read_dir(deps_dir)? {
             let entry = entry?;
@@ -370,14 +374,7 @@ fn calculate_spread(
                 //
                 // Both discussions died out with no path resolved to clean up the mess.
                 Ok(Some(Spread::Move(
-                    venv.prefix()
-                        .join("include")
-                        .join("site")
-                        .join(format!(
-                            "python{major}.{minor}",
-                            major = venv.interpreter.details.version.major,
-                            minor = venv.interpreter.details.version.minor
-                        ))
+                    venv.headers_prefix()
                         .join(wheel_details.project_name)
                         .join(components.collect::<PathBuf>()),
                 )))
@@ -527,25 +524,15 @@ fn populate_wheel_dir(
                         }
                         Spread::Script(dst) => {
                             provenance.record(source, dst);
-                            if let Some(python_script) =
-                                PythonScript::detect(&mut src, size, python_version)?
-                            {
-                                let reified_script = python_script
-                                    .reified_contents(shebang_interpreter, &mut src)?;
-                                write_script(
-                                    proxy_source,
-                                    shebang_interpreter,
-                                    dst_file,
-                                    reified_script,
-                                    python_script.is_windowed,
-                                )?;
-                            } else {
-                                src.rewind()?;
-                                io::copy(&mut src, &mut dst_file)?;
-                                if let Some(perms) = perms {
-                                    platform::set_permissions(dst_file.file_mut(), perms)?;
-                                }
-                            }
+                            reify_script(
+                                shebang_interpreter,
+                                proxy_source,
+                                dst_file,
+                                python_version,
+                                &mut src,
+                                perms,
+                                size,
+                            )?;
                         }
                     };
                 }
@@ -563,6 +550,34 @@ fn populate_wheel_dir(
         }
         Ok(())
     })
+}
+
+fn reify_script(
+    shebang_interpreter: &Path,
+    proxy_source: &ProxySource,
+    mut dst_file: File,
+    python_version: PythonVersion,
+    src: &mut (impl Read + Seek),
+    perms: Option<Perms>,
+    size: u64,
+) -> anyhow::Result<()> {
+    if let Some(python_script) = PythonScript::detect(src, size, python_version)? {
+        let reified_script = python_script.reified_contents(shebang_interpreter, src)?;
+        write_script(
+            proxy_source,
+            shebang_interpreter,
+            dst_file,
+            reified_script,
+            python_script.is_windowed,
+        )?;
+    } else {
+        src.rewind()?;
+        io::copy(src, &mut dst_file)?;
+        if let Some(perms) = perms {
+            platform::set_permissions(dst_file.file_mut(), perms)?;
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -649,12 +664,12 @@ fn populate_user_code_from_directory_pex<'a>(
     provenance: Arc<Provenance>,
 ) -> anyhow::Result<()> {
     let user_code = collect_loose_user_source(directory_pex.path)?;
-    user_code.into_par_iter().try_for_each(|entry| {
+    user_code.into_par_iter().try_for_each(|path| {
         let dst_path =
-            venv.site_packages_path(entry.path().strip_prefix(directory_pex.path).expect(
+            venv.site_packages_path(path.strip_prefix(directory_pex.path).expect(
                 "Walked directory PEX paths should be child paths of the directory PEX root dir.",
-            ));
-        if entry.file_type().is_dir() {
+            ).trim_prefix(SRCS_DIR));
+        if path.is_dir() {
             fs::create_dir_all(dst_path)?;
         } else {
             if let Some(parent) = dst_path.parent() {
@@ -662,17 +677,12 @@ fn populate_user_code_from_directory_pex<'a>(
             }
             match File::create_new(&dst_path) {
                 Ok(mut dst) => {
-                    provenance.record(entry.path().display(), dst_path);
-                    io::copy(&mut File::open(entry.path())?, &mut dst)?;
+                    provenance.record(path.display(), dst_path);
+                    io::copy(&mut File::open(&path)?, &mut dst)?;
                 }
                 Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                    let (size, fingerprint) = fingerprint_file(entry.path(), default_digest())?;
-                    provenance.record_collision(
-                        entry.path().display(),
-                        fingerprint,
-                        size,
-                        dst_path,
-                    );
+                    let (size, fingerprint) = fingerprint_file(&path, default_digest())?;
+                    provenance.record_collision(path.display(), fingerprint, size, dst_path);
                 }
                 Err(err) => bail!("{err}"),
             }
@@ -681,8 +691,8 @@ fn populate_user_code_from_directory_pex<'a>(
     })?;
     if populate_pex_info {
         fs::copy(
-            directory_pex.path.join("PEX-INFO"),
-            venv.prefix().join("PEX-INFO"),
+            directory_pex.path.join(PEX_INFO_FILE),
+            venv.prefix().join(PEX_INFO_FILE),
         )?;
     }
     Ok(())
@@ -709,7 +719,7 @@ fn populate_from_zip_app_with_whl_deps<'a>(
                 let zip_fp = File::open(zip_app_pex.path)?;
                 let mut zip =
                     unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
-                let whl_name = [".deps", wheel_file_name].join("/");
+                let whl_name = [DEPS_DIR, wheel_file_name].join("/");
                 let whl_file = zip.by_name_seek(&whl_name)?;
                 let mut whl_zip = ZipArchive::new(whl_file)?;
                 let whl_zip_metadata = whl_zip.metadata();
@@ -753,32 +763,68 @@ fn populate_from_zip_app_with_whl_deps<'a>(
             })?;
     }
     if matches!(scope, InstallScope::All | InstallScope::Srcs) {
-        let extract_indexes = collect_zipped_user_source_indexes(&pex_zip);
-        extract_indexes
-            .into_par_iter()
-            .try_for_each(|index| -> anyhow::Result<()> {
-                let zip_fp = File::open(zip_app_pex.path)?;
-                let mut zip =
-                    unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
-                extract_idx(
-                    venv,
-                    shebang_interpreter,
-                    index,
-                    None,
-                    &mut zip,
-                    proxy_source,
-                    zip_app_pex.path.display(),
-                    provenance.clone(),
-                )?;
-                Ok(())
-            })?;
+        populate_user_sources_from_zip(
+            venv,
+            shebang_interpreter,
+            zip_app_pex,
+            proxy_source,
+            provenance,
+            &pex_zip,
+            metadata,
+        )?;
         if populate_pex_info {
             let mut pex_zip = ZipArchive::new(File::open(zip_app_pex.path)?)?;
-            let mut pex_info_src_fp = pex_zip.by_name_ex("PEX-INFO")?;
-            let mut pex_info_dst_fp = File::create_new(venv.prefix().join("PEX-INFO"))?;
+            let mut pex_info_src_fp = pex_zip.by_name_ex(PEX_INFO_FILE)?;
+            let mut pex_info_dst_fp = File::create_new(venv.prefix().join(PEX_INFO_FILE))?;
             io::copy(&mut pex_info_src_fp, &mut pex_info_dst_fp)?;
         }
     }
+    Ok(())
+}
+
+fn populate_user_sources_from_zip(
+    venv: &Virtualenv,
+    shebang_interpreter: &Path,
+    zip_app_pex: &Pex,
+    proxy_source: &ProxySource,
+    provenance: Arc<Provenance>,
+    pex_zip: &ZipArchive<File>,
+    metadata: Arc<ZipArchiveMetadata>,
+) -> anyhow::Result<()> {
+    let extract_indexes = collect_zipped_user_source_indexes(pex_zip);
+    extract_indexes
+        .into_par_iter()
+        .try_for_each(|index| -> anyhow::Result<()> {
+            let zip_fp = File::open(zip_app_pex.path)?;
+            let mut zip = unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
+            let spread = if let Some(name) = zip.name_for_index(index)
+                && name.starts_with(SRCS_ZIP_DIR)
+            {
+                if name == SRCS_ZIP_DIR {
+                    return Ok(());
+                }
+                Some(Spread::Move(
+                    venv.site_packages_path(
+                        name.trim_prefix(SRCS_ZIP_DIR)
+                            .split("/")
+                            .collect::<PathBuf>(),
+                    ),
+                ))
+            } else {
+                None
+            };
+            extract_idx(
+                venv,
+                shebang_interpreter,
+                index,
+                spread,
+                &mut zip,
+                proxy_source,
+                zip_app_pex.path.display(),
+                provenance.clone(),
+            )?;
+            Ok(())
+        })?;
     Ok(())
 }
 
@@ -874,40 +920,20 @@ fn populate_from_zip_app<'a>(
         )?;
     }
     if matches!(scope, InstallScope::All | InstallScope::Srcs) {
-        let extract_indexes = pex_zip
-            .file_names()
-            .enumerate()
-            .filter_map(|(idx, name)| {
-                if filter_zipped_user_source(name) {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        extract_indexes
-            .into_par_iter()
-            .try_for_each(|index| -> anyhow::Result<()> {
-                let zip_fp = File::open(zip_app_pex.path)?;
-                let mut zip =
-                    unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
-                extract_idx(
-                    venv,
-                    shebang_interpreter,
-                    index,
-                    None,
-                    &mut zip,
-                    proxy_source,
-                    zip_app_pex.path.display(),
-                    provenance.clone(),
-                )?;
-                Ok(())
-            })?;
-    }
-    if populate_pex_info && matches!(scope, InstallScope::All | InstallScope::Srcs) {
-        let mut pex_info_src_fp = pex_zip.by_name_ex("PEX-INFO")?;
-        let mut pex_info_dst_fp = File::create_new(venv.prefix().join("PEX-INFO"))?;
-        io::copy(&mut pex_info_src_fp, &mut pex_info_dst_fp)?;
+        populate_user_sources_from_zip(
+            venv,
+            shebang_interpreter,
+            zip_app_pex,
+            proxy_source,
+            provenance,
+            &pex_zip,
+            metadata,
+        )?;
+        if populate_pex_info {
+            let mut pex_info_src_fp = pex_zip.by_name_ex(PEX_INFO_FILE)?;
+            let mut pex_info_dst_fp = File::create_new(venv.prefix().join(PEX_INFO_FILE))?;
+            io::copy(&mut pex_info_src_fp, &mut pex_info_dst_fp)?;
+        }
     }
     Ok(())
 }
@@ -1134,25 +1160,15 @@ where
                         let mut script_contents = tempfile::spooled_tempfile(10 * 1_024);
                         io::copy(&mut zip_file, &mut script_contents)?;
                         script_contents.rewind()?;
-                        if let Some(python_script) =
-                            PythonScript::detect(&mut script_contents, size, python_version)?
-                        {
-                            let reified_script = python_script
-                                .reified_contents(shebang_interpreter, &mut script_contents)?;
-                            write_script(
-                                proxy_source,
-                                shebang_interpreter,
-                                dst_file,
-                                reified_script,
-                                python_script.is_windowed,
-                            )?;
-                        } else {
-                            script_contents.rewind()?;
-                            io::copy(&mut script_contents, &mut dst_file)?;
-                            if let Some(perms) = perms {
-                                platform::set_permissions(dst_file.file_mut(), perms)?;
-                            }
-                        }
+                        reify_script(
+                            shebang_interpreter,
+                            proxy_source,
+                            dst_file,
+                            python_version,
+                            &mut script_contents,
+                            perms,
+                            size,
+                        )?;
                     }
                 }
             }
