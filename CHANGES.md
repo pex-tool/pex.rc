@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.32.1
+
+This release fixes `--sh-boot` mode to respect `PEX_PYTHON` and `PEX_PYTHON_PATH`. Previously, only
+`PATH` was consulted in the search for Python interpreters in the `/bin/sh` boot code.
+
+See: https://github.com/pex-tool/pex/issues/3289
+
 ## 0.32.0
 
 This release adds sources support with:

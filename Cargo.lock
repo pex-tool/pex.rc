@@ -2283,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.32.0"
+version = "0.32.1"
 dependencies = [
  "anstream",
  "anyhow",
