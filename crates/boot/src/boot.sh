@@ -37,8 +37,6 @@ VENV="${PEXRC_ROOT}/${VENV_RELPATH}"
 
 on_fast_path() {
     [ -z "${PEX_IGNORE_RCFILES:-}" ] \
-      && [ -z "${PEX_PYTHON:-}" ] \
-      && [ -z "${PEX_PYTHON_PATH:-}" ] \
       && [ -z "${PEX_PATH:-}" ] \
       && [ -z "${PEX_TOOLS:-}" ]
 }
