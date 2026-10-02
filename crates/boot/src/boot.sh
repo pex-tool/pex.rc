@@ -37,8 +37,6 @@ VENV="${PEXRC_ROOT}/${VENV_RELPATH}"
 
 on_fast_path() {
     [ -z "${PEX_IGNORE_RCFILES:-}" ] \
-      && [ -z "${PEX_PYTHON:-}" ] \
-      && [ -z "${PEX_PYTHON_PATH:-}" ] \
       && [ -z "${PEX_PATH:-}" ] \
       && [ -z "${PEX_TOOLS:-}" ]
 }
@@ -68,8 +66,31 @@ if on_fast_path; then
 fi
 
 find_python() {
+    if [ -f "${PEX_PYTHON:-}" -a -x "${PEX_PYTHON:-}" ]; then
+        echo "${PEX_PYTHON}"
+        return
+    fi
+    _path="${PATH:-}"
+    _ifs=$IFS
+    IFS=:
+    for entry in ${PEX_PYTHON_PATH:-}; do
+        if [ -z "${entry}" ]; then
+            entry="."
+        fi
+        if [ -f "${entry}" -a -x "${entry}" ]; then
+            echo "${entry}"
+            return
+        elif [ -d "${entry}" ]; then
+            if [ -n "${_path}" ]; then
+                _path="${entry}:${_path}"
+            else
+                _path="${entry}"
+            fi
+        fi
+    done
+    IFS=$_ifs
     for python in ${PYTHONS}; do
-        if command -v "${python}" 2>/dev/null; then
+        if PATH="${_path}" command -v "${python}" 2>/dev/null; then
             return
         fi
     done
