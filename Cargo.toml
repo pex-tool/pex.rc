@@ -222,6 +222,7 @@ url = "2.5"
 version-ranges = "*"
 walkdir = "2.5"
 windows-registry = "0.100"
+windows-version = "0.100"
 which = "8.0"
 xz2 = "0.1"
 zip = { version = "8.6", default-features = false, features = ["chrono", "deflate", "zstd"] }
