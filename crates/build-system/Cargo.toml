@@ -1,0 +1,22 @@
+# Copyright 2026 Pex project contributors.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "build-system"
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+cache = { path = "../cache" }
+fs-err = { workspace = true }
+pep508_rs = { workspace = true }
+scripts = { path = "../scripts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+venv = { path = "../venv" }

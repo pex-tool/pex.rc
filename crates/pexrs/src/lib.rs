@@ -11,81 +11,16 @@ use std::process::Command;
 use std::sync::Arc;
 use std::{cmp, env, mem};
 
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use cache::{CacheDir, CacheRoot, HashOptions, Key, atomic_dir};
-use fs_err as fs;
 use interpreter::SearchPath;
 use itertools::Itertools;
 use pex::{InheritPath, Pex, PexPath, RawPexInfo};
 use python_proxy::ProxySource;
 use regex::bytes::Regex;
 use tracing::{info, instrument, warn};
-use venv::{InstallScope, Linker, Provenance, Virtualenv, populate, populate_user_code_and_wheels};
-
-struct PythonProxyLinker<'a>(&'a Pex<'a>);
-
-impl<'a> Linker for PythonProxyLinker<'a> {
-    #[cfg(unix)]
-    fn link(&self, dest: &Path, interpreter: Option<&Path>, is_gui: bool) -> anyhow::Result<()> {
-        let file_name = dest.file_name().ok_or_else(|| {
-            anyhow!(
-                "The destination for the python-proxy doesn't have a file name: {path}",
-                path = dest.display()
-            )
-        })?;
-        let venv_python_file_name = format!(
-            ".{file_name}",
-            file_name = file_name.to_str().ok_or_else(|| anyhow!(
-                "The destination for the python-proxy is not a UTF-8 file name: {file_name}",
-                file_name = file_name.display()
-            ))?
-        );
-
-        let mut key = Key::default();
-        key.property("proxied-python", &venv_python_file_name);
-        let fingerprint = key.fingerprint();
-        let python_proxy = CacheDir::PythonProxy
-            .path()?
-            .join(fingerprint.base64_digest());
-
-        cache::atomic_file(&python_proxy, |file| {
-            let proxy_source = ProxySource::Pex(self.0);
-            python_proxy::create(
-                &proxy_source,
-                venv_python_file_name.as_ref(),
-                file.into_file(),
-                None::<&[u8]>,
-                is_gui,
-            )
-        })?;
-
-        if let Some(interpreter) = interpreter {
-            platform::symlink_or_link_or_copy(
-                interpreter,
-                dest.with_file_name(&venv_python_file_name),
-                false,
-            )?;
-        } else {
-            let orig_python = dest.with_file_name(&venv_python_file_name);
-            fs::rename(dest, &orig_python)?;
-        }
-        platform::symlink_or_link_or_copy(python_proxy, dest, true)?;
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    fn link(&self, dest: &Path, interpreter: Option<&Path>, is_gui: bool) -> anyhow::Result<()> {
-        let proxy_source = ProxySource::Pex(self.0);
-        python_proxy::create(
-            &proxy_source,
-            interpreter
-                .ok_or_else(|| anyhow!("Windows venvs require an interpreter to link to."))?,
-            fs::File::create(dest)?.into_file(),
-            None::<&[u8]>,
-            is_gui,
-        )
-    }
-}
+use venv::install::{Scope, populate, populate_user_code_and_wheels};
+use venv::{Provenance, PythonProxyLinker, Virtualenv};
 
 #[allow(clippy::too_many_arguments)]
 pub fn boot(
@@ -259,9 +194,9 @@ fn prepare_venv<'a>(
     if let Some(venv_interpreter) = atomic_dir(&venv_dir, |work_dir| {
         let mut resolve = pex.resolve(python, additional_pexes.iter(), search_path, None)?;
         let venv = Virtualenv::create(
-            resolve.interpreter,
+            Cow::Owned(resolve.interpreter),
             Cow::Borrowed(work_dir),
-            PythonProxyLinker(&pex),
+            PythonProxyLinker(&ProxySource::Pex(&pex)),
             &mut resolve.scripts,
             pex_info.venv_system_site_packages,
             false,
@@ -298,7 +233,7 @@ fn prepare_venv<'a>(
             &mut resolve.scripts,
             None,
             &proxy_source,
-            InstallScope::All,
+            Scope::All,
             provenance.clone(),
         )?;
         for (additional_pex, resolved_wheels) in resolve.additional_wheels {
@@ -310,7 +245,7 @@ fn prepare_venv<'a>(
                 resolved_wheels,
                 false,
                 &proxy_source,
-                InstallScope::All,
+                Scope::All,
                 provenance.clone(),
             )?;
         }

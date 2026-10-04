@@ -131,7 +131,7 @@ pub fn write_sh_boot_shebang(
     Ok(())
 }
 
-const PY_BOOT: [&str; 3] = str_split!(include_str!("boot.py"), "# --- split --- #\n");
+const PY_BOOT: [&str; 3] = str_split!(include_str!("boot.py"), "    # --- split --- #\n");
 
 pub fn inject_boot<T: FileOptionExtension + Copy>(
     pex_info: &RawPexInfo,
@@ -178,7 +178,7 @@ fn write_boot_contents(pex_info: &RawPexInfo, sink: &mut impl Write) -> anyhow::
         .join(", ");
     sink.write_all(
         PY_BOOT[1]
-            .replace("'{inject_python_args}'", &inject_python_args)
+            .replace("\"{inject_python_args}\"", &inject_python_args)
             .as_bytes(),
     )?;
     sink.write_all(PY_BOOT[2].as_bytes())?;

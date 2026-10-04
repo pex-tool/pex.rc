@@ -247,6 +247,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-system"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "cache",
+ "fs-err",
+ "pep508_rs",
+ "scripts",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "tracing",
+ "url",
+ "venv",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2283,13 +2302,14 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "anstream",
  "anyhow",
  "boot",
  "bstr",
  "build",
+ "build-system",
  "cache",
  "chrono",
  "clap",

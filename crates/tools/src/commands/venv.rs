@@ -21,8 +21,9 @@ use python_proxy::ProxySource;
 use resolver::CollectWheelMetadata;
 use shell_quote::Quote;
 use tracing::warn;
+use venv::install::{self, Scope};
 use venv::virtualenv::FileSystemLinker;
-use venv::{Provenance, Virtualenv, venv_pex};
+use venv::{Provenance, Virtualenv};
 
 #[derive(Clone)]
 struct BinPath(pex::BinPath);
@@ -48,10 +49,10 @@ impl ValueEnum for BinPath {
 }
 
 #[derive(Clone)]
-struct InstallScope(venv_pex::InstallScope);
+struct InstallScope(Scope);
 
 impl InstallScope {
-    fn into_inner(self) -> venv_pex::InstallScope {
+    fn into_inner(self) -> Scope {
         self.0
     }
 }
@@ -59,9 +60,9 @@ impl InstallScope {
 impl AsRef<str> for InstallScope {
     fn as_ref(&self) -> &str {
         match self.0 {
-            venv_pex::InstallScope::All => "all",
-            venv_pex::InstallScope::Deps => "deps",
-            venv_pex::InstallScope::Srcs => "srcs",
+            Scope::All => "all",
+            Scope::Deps => "deps",
+            Scope::Srcs => "srcs",
         }
     }
 }
@@ -71,9 +72,9 @@ impl TryFrom<&str> for InstallScope {
 
     fn try_from(value: &str) -> anyhow::Result<Self> {
         Ok(Self(match value {
-            "all" => venv_pex::InstallScope::All,
-            "deps" => venv_pex::InstallScope::Deps,
-            "srcs" => venv_pex::InstallScope::Srcs,
+            "all" => Scope::All,
+            "deps" => Scope::Deps,
+            "srcs" => Scope::Srcs,
             _ => bail!("Not a recognized InstallScope value: {value}"),
         }))
     }
@@ -82,9 +83,9 @@ impl TryFrom<&str> for InstallScope {
 impl ValueEnum for InstallScope {
     fn value_variants<'a>() -> &'a [Self] {
         &[
-            InstallScope(venv_pex::InstallScope::All),
-            InstallScope(venv_pex::InstallScope::Deps),
-            InstallScope(venv_pex::InstallScope::Srcs),
+            InstallScope(Scope::All),
+            InstallScope(Scope::Deps),
+            InstallScope(Scope::Srcs),
         ]
     }
 
@@ -106,7 +107,7 @@ pub(crate) struct VenvArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = InstallScope(venv_pex::InstallScope::All),
+        default_value_t = InstallScope(Scope::All),
         long_help = "\
 The scope of code contained in the Pex that is installed in the venv.
 By default, all code is installed and this is generally what you want. However, in some situations
@@ -207,20 +208,16 @@ impl InstallScopeState {
     fn is_partial_install(&self) -> bool {
         matches!(
             self.prior_state,
-            Some(InstallScope(
-                venv_pex::InstallScope::Deps | venv_pex::InstallScope::Srcs
-            ))
+            Some(InstallScope(Scope::Deps | Scope::Srcs))
         )
     }
 
     fn save(&self, mut install_scope: InstallScope) -> anyhow::Result<()> {
         if let Some(prior_state) = self.prior_state.as_ref()
-            && ((prior_state.0 == venv_pex::InstallScope::Srcs
-                && install_scope.0 == venv_pex::InstallScope::Deps)
-                || (prior_state.0 == venv_pex::InstallScope::Deps
-                    && install_scope.0 == venv_pex::InstallScope::Srcs))
+            && ((prior_state.0 == Scope::Srcs && install_scope.0 == Scope::Deps)
+                || (prior_state.0 == Scope::Deps && install_scope.0 == Scope::Srcs))
         {
-            install_scope = InstallScope(venv_pex::InstallScope::All)
+            install_scope = InstallScope(Scope::All)
         }
         Ok(fs::write(&self.state_file, install_scope.as_ref())?)
     }
@@ -289,7 +286,7 @@ pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow:
         Virtualenv::load(Cow::Borrowed(&args.venv_dir), &mut scripts)?
     } else {
         let venv = Virtualenv::create(
-            resolve.interpreter,
+            Cow::Owned(resolve.interpreter),
             Cow::Borrowed(&args.venv_dir),
             FileSystemLinker(),
             &mut scripts,
@@ -358,7 +355,7 @@ pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow:
         pex = pex.path.display()
     )));
     let proxy_source = ProxySource::Pex(&pex);
-    venv_pex::populate(
+    install::populate(
         &venv,
         venv.interpreter.details.path.as_ref(),
         shebang_arg,
@@ -371,7 +368,7 @@ pub(crate) fn create(python: Option<&Path>, pex: Pex, args: VenvArgs) -> anyhow:
         provenance.clone(),
     )?;
     for (pex, wheels) in resolve.additional_wheels {
-        venv_pex::populate_user_code_and_wheels(
+        install::populate_user_code_and_wheels(
             &venv,
             venv.interpreter.details.path.as_ref(),
             shebang_arg,

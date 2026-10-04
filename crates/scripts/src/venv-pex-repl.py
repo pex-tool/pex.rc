@@ -224,6 +224,13 @@ class EphemeralPex(Pex):
             except OSError as e:
                 if e.errno != errno.EEXIST:
                     raise
+        if os.path.isdir(self._path):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            elif os.path.isfile(path):
+                os.unlink(path)
+        elif os.path.isfile(self._path) and os.path.isdir(path):
+            shutil.rmtree(path)
         shutil.move(self._path, path)
         self._retained_to = path
         print("This PEX has been retained at", self._retained_to)
@@ -242,34 +249,44 @@ def _create_pex_repl(
 ):
     # type: (...) -> Callable[[], Dict[str, Any]]
 
-    pex_type = EphemeralPex if os.environ.pop("__PEX_EPHEMERAL__", "0") == "1" else Pex
+    pex_ephemeral = os.environ.pop("__PEX_EPHEMERAL__", None)
+    argv0 = None  # type: Optional[str]
+    if pex_ephemeral:
+        seed_pex, _, argv0 = pex_ephemeral.partition(os.pathsep)
+    pex_type = EphemeralPex if pex_ephemeral else Pex
     pex_about = pex_type._ABOUT
 
     pex = pex_type(path=seed_pex, activation_details=activation_details, pex_info=pex_info)
 
-    return repl_loop(
-        banner="\n".join(
-            (
-                (
-                    "\x1b[33;7m"
-                    "Pex {pex_version} hermetic environment with {activation_summary}."
-                    "\x1b[0m"
-                ),
-                "Python {sys_version} on {sys_platform}",
-                (
-                    'Type "help", "'
-                    "\x1b[33m"
-                    "pex"
-                    "\x1b[0m"
-                    '", "copyright", "credits" or "license" for more information.'
-                ),
-            )
+    banner_lines = [
+        (
+            "\x1b[33;7mPex {pex_version} hermetic environment with {activation_summary}.\x1b[0m"
         ).format(
-            pex_version=pex_version,
-            activation_summary=activation_summary,
-            sys_version=sys.version,
-            sys_platform=sys.platform,
-        ),
+            pex_version=pex_version, activation_summary=activation_summary or "no dependencies"
+        )
+    ]
+    if not activation_summary and argv0:
+        banner_lines.append(
+            (
+                "\x1b[33mExit the repl (type quit()) and run `{argv0} -h` for CLI help.\x1b[0m"
+            ).format(argv0=argv0)
+        )
+    banner_lines.extend(
+        (
+            "Python {sys_version} on {sys_platform}".format(
+                sys_version=sys.version, sys_platform=sys.platform
+            ),
+            (
+                'Type "help", "'
+                "\x1b[33m"
+                "pex"
+                "\x1b[0m"
+                '", "copyright", "credits" or "license" for more information.'
+            ),
+        )
+    )
+    return repl_loop(
+        banner="\n".join(banner_lines),
         ps1=ps1,
         ps2=ps2,
         custom_commands={"pex": (pex, pex_about)},

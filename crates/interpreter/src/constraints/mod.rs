@@ -14,7 +14,12 @@ use anyhow::bail;
 use indexmap::IndexSet;
 use pep440_rs::{Operator, Version, VersionSpecifier, VersionSpecifiers};
 use pep508_rs::{ExtraName, MarkerTree, PackageName, Requirement, VersionOrUrl};
-use python_platform::{CPythonImplementation, PythonImplementation};
+use python_platform::{
+    CPythonImplementation,
+    PlatformDetails,
+    PythonImplementation,
+    PythonVersion,
+};
 use tracing::debug;
 use url::Url;
 
@@ -119,6 +124,29 @@ pub struct InterpreterConstraint {
     pub version_specifiers: Option<VersionSpecifiers>,
 }
 
+#[derive(Copy, Clone)]
+pub enum VersionSpecificity {
+    Major,
+    MajorMinor,
+}
+
+impl VersionSpecificity {
+    fn specifier(&self, python_version: &PythonVersion) -> VersionSpecifier {
+        let version = match self {
+            VersionSpecificity::Major => Version::new([u64::from(python_version.major)].iter()),
+            VersionSpecificity::MajorMinor => Version::new(
+                [
+                    u64::from(python_version.major),
+                    u64::from(python_version.minor),
+                ]
+                .iter(),
+            ),
+        };
+        VersionSpecifier::from_version(Operator::EqualStar, version)
+            .expect("`==<major>.*`  and `==<major>.<minor>.*` are valid version specifiers.")
+    }
+}
+
 impl InterpreterConstraint {
     pub fn exact_version(interpreter: &Interpreter) -> Self {
         let python_version = Version::new(
@@ -135,6 +163,19 @@ impl InterpreterConstraint {
             implementation: InterpreterImplementation::of(interpreter),
             version_specifiers: Some(VersionSpecifiers::from_iter([version_specifier])),
         }
+    }
+
+    pub fn matching_platform(
+        platform: &PlatformDetails,
+        version_specificity: VersionSpecificity,
+    ) -> anyhow::Result<Self> {
+        let python_implementation = platform.python_implementation()?;
+        Ok(Self {
+            implementation: Some(python_implementation.into()),
+            version_specifiers: Some(VersionSpecifiers::from_iter([
+                version_specificity.specifier(&python_implementation)
+            ])),
+        })
     }
 
     pub fn parse(constraint: &str) -> anyhow::Result<Self> {
