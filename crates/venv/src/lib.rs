@@ -16,7 +16,6 @@ pub mod virtualenv;
 use std::path::Path;
 
 use anyhow::anyhow;
-use cache::{CacheDir, Key};
 use fs_err as fs;
 pub use provenance::{Collision, CollisionReport, Provenance};
 use python_proxy::ProxySource;
@@ -42,10 +41,10 @@ impl<'a> Linker for PythonProxyLinker<'a> {
             ))?
         );
 
-        let mut key = Key::default();
+        let mut key = cache::Key::default();
         key.property("proxied-python", &venv_python_file_name);
         let fingerprint = key.fingerprint();
-        let python_proxy = CacheDir::PythonProxy
+        let python_proxy = cache::CacheDir::PythonProxy
             .path()?
             .join(fingerprint.base64_digest());
 

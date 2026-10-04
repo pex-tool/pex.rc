@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fmt::{Display, Formatter};
-use std::io::{BufReader, Cursor, ErrorKind, Read, Seek, Write as _};
+use std::io::{BufReader, Cursor, ErrorKind, Read, Seek};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail};
 use cache::{Fingerprint, default_digest, fingerprint_file};
 use fs_err as fs;
 use fs_err::File;
-use platform::{Perms, mark_executable, path_as_str};
+use platform::{Perms, path_as_str};
 use python_platform::PythonVersion;
 use python_proxy::ProxySource;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -85,8 +85,8 @@ fn write_script(
     script_contents: impl AsRef<[u8]>,
     _is_gui: bool,
 ) -> anyhow::Result<()> {
-    script_file.write_all(script_contents.as_ref())?;
-    mark_executable(script_file.file_mut())?;
+    <File as io::Write>::write_all(&mut script_file, script_contents.as_ref())?;
+    platform::mark_executable(script_file.file_mut())?;
     Ok(())
 }
 
