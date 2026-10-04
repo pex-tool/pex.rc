@@ -2,29 +2,38 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Display, Formatter, Write as _};
-use std::io::{Seek, Write};
+use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::{env, io, process};
 
 use anyhow::{anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
+use build_system::{VenvBuilder, build_wheel};
 use cache::{CacheDir, DigestingWriter, Fingerprint, HashOptions, Key, atomic_file};
-use clap::{ArgAction, Args};
+use clap::Args;
 use const_format::concatcp;
 use digest::Digest;
 use enumset::enum_set;
 use fs_err as fs;
 use fs_err::File;
 use indexmap::{IndexMap, IndexSet, indexmap};
-use interpreter::{Interpreter, SearchPath};
+use interpreter::{
+    Interpreter,
+    InterpreterConstraint,
+    InterpreterConstraints,
+    SearchPath,
+    SelectionStrategy,
+    VersionSpecificity,
+};
 use ouroboros::self_referencing;
+use pep440_rs::VersionSpecifiers;
 use pep508_rs::Requirement;
-use pep508_rs::pep440_rs::VersionSpecifiers;
 use pex::{
     BinPath,
     DEPS_DIR,
@@ -38,6 +47,7 @@ use pex::{
 };
 use platform::mark_executable;
 use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
+use python_proxy::ProxySource;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use regex::Regex;
 use repackage::{WheelOptions, recompress_zipped_whl_to_file};
@@ -51,8 +61,16 @@ use target::SimplifiedTarget;
 use tempfile::NamedTempFile;
 use tracing::{debug_span, instrument, warn};
 use url::Url;
-use venv::{InstallPaths, InstalledWheel, Virtualenv, collect_installed_wheels};
-use wheel::{EntryPoints, MetadataDirs, MetadataReader, WheelFile};
+use venv::install::{populate_whl_zip, write_pex_extra_sys_path_support_files};
+use venv::{
+    InstallPaths,
+    InstalledWheel,
+    Provenance,
+    PythonProxyLinker,
+    Virtualenv,
+    collect_installed_wheels,
+};
+use wheel::{EntryPoints, MetadataDirs, MetadataReader, WheelFile, WheelMetadata};
 use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -60,7 +78,14 @@ use zip_ext::ZipArchiveExt;
 
 use crate::VERSION;
 use crate::compression_method::CompressionArgs;
-use crate::embeds::{AVAILABLE_TARGETS, Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
+use crate::embeds::{
+    AVAILABLE_TARGETS,
+    Binary,
+    CLIB_BY_TARGET,
+    PROXY_BY_TARGET,
+    PROXYW_BY_TARGET,
+    read_proxy_content,
+};
 use crate::interpreter_selection::{InterpreterSelection, InterpreterSelectionArgs};
 use crate::target::{PythonPlatform, RequiredTargets};
 
@@ -75,7 +100,6 @@ struct Virtualenvs<'a> {
 enum Repository<'a> {
     Venvs(Virtualenvs<'a>),
     Wheels(Vec<PathBuf>),
-    Empty,
 }
 
 impl<'a> Repository<'a> {
@@ -683,8 +707,12 @@ impl Sources {
         file_options: SimpleFileOptions,
         code_hash: &mut Key,
     ) -> anyhow::Result<()> {
+        let sources = self.sources()?;
+        if sources.is_empty() {
+            return Ok(());
+        }
         zip.add_directory(SRCS_ZIP_DIR, SimpleFileOptions::DEFAULT)?;
-        for (src, prefix) in self.sources()? {
+        for (src, prefix) in sources {
             let dst = Path::new(SRCS_DIR).join(src.strip_prefix(prefix)?);
             if src.is_dir() {
                 zip.add_directory_from_path(dst, SimpleFileOptions::DEFAULT)?;
@@ -764,13 +792,12 @@ pub struct Build {
     /// no targets are specified, the interpreter for each specified venv is considered a target. A
     /// full transitive closure is confirmed for each target.
     #[arg(
-            long,
-            visible_alias = "venv",
-            value_name = "PATH",
-            action = ArgAction::Append,
-            help_heading = "Contents",
-            conflicts_with = "wheels",
-            verbatim_doc_comment
+        long,
+        visible_alias = "venv",
+        value_name = "PATH",
+        help_heading = "Contents",
+        conflicts_with = "wheels",
+        verbatim_doc_comment
     )]
     venvs: Vec<PathBuf>,
 
@@ -783,12 +810,17 @@ pub struct Build {
         long,
         visible_alias = "wheel",
         value_name = "PATH",
-        action = ArgAction::Append,
         help_heading = "Contents",
         conflicts_with = "venvs",
         verbatim_doc_comment
     )]
     wheels: Vec<PathBuf>,
+
+    /// Add the specified Python project to the PEX along with its transitive dependencies.
+    ///
+    /// The path can be that of a Python project directory, an sdist or a pre-built project wheel.
+    #[arg(long = "project", help_heading = "Content", verbatim_doc_comment)]
+    projects: Vec<PathBuf>,
 
     #[command(flatten)]
     sources: Sources,
@@ -869,7 +901,7 @@ pub struct Build {
     /// `--interpreter-constraint` command line arguments comply or else fail.
     #[arg(
         long,
-        visible_aliases = ["--executable", "--python-script"],
+        visible_aliases = ["executable", "python-script"],
         help_heading = "Entry Point",
         conflicts_with_all = ["entry_point", "script"],
         verbatim_doc_comment
@@ -959,7 +991,6 @@ pub struct Build {
 
     #[arg(
         long = "target",
-        action = ArgAction::Append,
         help_heading = "Targets",
         value_parser = PythonPlatform::parse,
         help=PYTHON_PLATFORM_HELP,
@@ -1064,11 +1095,11 @@ impl Build {
             via clap `conflicts_with`."
         );
         let repository = if !self.venvs.is_empty() {
-            Repository::venvs(self.venvs)?
+            Some(Repository::venvs(self.venvs)?)
         } else if !self.wheels.is_empty() {
-            Repository::wheels(self.wheels)?
+            Some(Repository::wheels(self.wheels)?)
         } else {
-            Repository::Empty
+            None
         };
 
         assert!(
@@ -1154,13 +1185,69 @@ impl Build {
         };
         let wheel_options = self.compression_args.into_wheel_options(None);
 
-        let (preferred_python, wheels) = resolve_wheel_files(
-            &repository,
-            &platforms,
-            requirements,
-            &pex_info,
-            &wheel_options,
+        let dependency_configuration = DependencyConfiguration::parse(
+            pex_info.excluded.as_slice(),
+            pex_info.overridden.as_slice(),
         )?;
+        let (_dest_dir_guard, fingerprinted_project_wheels) = if !self.projects.is_empty() {
+            let Some(repository) = repository.as_ref() else {
+                let mut message = format!(
+                    "Cannot build requested {projects} without either `--wheels` or `--venv`s \
+                    specified to resolve build systems from:",
+                    projects = if self.projects.len() == 1 {
+                        "project"
+                    } else {
+                        "projects"
+                    }
+                );
+                match self.projects.as_slice() {
+                    [project] => write!(&mut message, " {}", project.display())?,
+                    _ => {
+                        for project in self.projects {
+                            writeln!(&mut message)?;
+                            write!(&mut message, "- {}", project.display())?;
+                        }
+                    }
+                }
+                bail!(message);
+            };
+            let dest_dir = if let Some(output) = self.output.as_deref()
+                && let Some(parent) = output.parent()
+            {
+                tempfile::tempdir_in(parent)?
+            } else {
+                tempfile::tempdir()?
+            };
+            let resolved_projects = resolve_projects(
+                self.projects,
+                &platforms,
+                interpreter_selection.search_path.as_ref(),
+                repository,
+                &wheel_options,
+                &dependency_configuration,
+                dest_dir.path(),
+            )?;
+            requirements.extend(resolved_projects.requirements);
+            (Some(dest_dir), Some(resolved_projects.wheels))
+        } else {
+            (None, None)
+        };
+        let (preferred_python, mut wheels) =
+            if fingerprinted_project_wheels.is_some() && requirements.is_empty() {
+                (None, vec![])
+            } else {
+                resolve_wheel_files(
+                    repository.as_ref(),
+                    &platforms,
+                    &requirements,
+                    &wheel_options,
+                    &dependency_configuration,
+                    pex_info.ignore_errors,
+                )?
+            };
+        if let Some(fingerprinted_project_wheels) = fingerprinted_project_wheels {
+            wheels.extend(fingerprinted_project_wheels);
+        }
 
         // N.B.: Determines shebang for PEX.
         let preferred_platform = platforms.first();
@@ -1179,6 +1266,291 @@ impl Build {
             self.sources,
         )
     }
+}
+
+struct ResolvedProjects {
+    wheels: Vec<FingerprintedWheel>,
+    requirements: IndexSet<Requirement<Url>>,
+}
+
+impl From<Vec<ResolvedProject>> for ResolvedProjects {
+    fn from(resolved_projects: Vec<ResolvedProject>) -> Self {
+        let mut wheels = Vec::with_capacity(resolved_projects.len());
+        let mut requirements = IndexSet::with_capacity(
+            resolved_projects
+                .iter()
+                .map(|project| project.requirements.len())
+                .sum(),
+        );
+        for resolved_project in resolved_projects {
+            requirements.extend(resolved_project.requirements);
+            wheels.push(resolved_project.wheel);
+        }
+        Self {
+            requirements,
+            wheels,
+        }
+    }
+}
+
+#[instrument(level = "debug", skip_all)]
+fn resolve_projects(
+    projects: Vec<PathBuf>,
+    platforms: &[Platform],
+    search_path: Option<&SearchPath>,
+    repository: &Repository,
+    wheel_options: &WheelOptions,
+    dependency_configuration: &DependencyConfiguration,
+    dest_dir: &Path,
+) -> anyhow::Result<ResolvedProjects> {
+    let mut platform_details = HashSet::with_capacity(platforms.len());
+    let mut interpreters = IndexSet::with_capacity(platforms.len());
+    for platform in platforms {
+        match platform {
+            Platform::Details(platform) => {
+                platform_details.insert(platform);
+            }
+            Platform::Interpreter(interpreter) => {
+                interpreters.insert(interpreter.clone());
+            }
+        }
+    }
+    if let Repository::Venvs(venvs) = repository {
+        for venv in venvs.borrow_venvs() {
+            interpreters.insert(Cow::Borrowed(&venv.interpreter));
+        }
+    }
+    if !platform_details.is_empty() {
+        let mut ics = Vec::with_capacity(2 * platform_details.len());
+        for platform in &platform_details {
+            ics.push(InterpreterConstraint::matching_platform(
+                platform,
+                VersionSpecificity::MajorMinor,
+            )?)
+        }
+        for platform in &platform_details {
+            ics.push(InterpreterConstraint::matching_platform(
+                platform,
+                VersionSpecificity::Major,
+            )?)
+        }
+        let search_path = if let Some(search_path) = search_path {
+            search_path.clone()
+        } else {
+            SearchPath::from_env()?
+        };
+        let identification_script = IdentifyInterpreter::read(&mut Scripts::Embedded)?;
+        let possibly_compatible_python_exes = InterpreterConstraints::from(ics)
+            .iter_possibly_compatible_python_exes(SelectionStrategy::Newest, search_path, false)?
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|python_exe| Interpreter::load(&python_exe, &identification_script))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut major_only_match_interpreters =
+            Vec::with_capacity(possibly_compatible_python_exes.len());
+        let mut platforms_to_find_interpreters_for =
+            platform_details.iter().copied().collect::<IndexSet<_>>();
+        for interpreter in possibly_compatible_python_exes {
+            let version = interpreter.details.version;
+            let major_minor = [version.major, version.minor];
+            let mut matched = false;
+            for platform in &platform_details {
+                let python_implementation = platform.python_implementation()?;
+                if [python_implementation.major, python_implementation.minor] == major_minor {
+                    matched = true;
+                    platforms_to_find_interpreters_for.shift_remove(platform);
+                }
+            }
+            if matched {
+                interpreters.insert(Cow::Owned(interpreter));
+            } else {
+                major_only_match_interpreters.push(interpreter)
+            }
+        }
+        let mut last_ditch_interpreters = Vec::with_capacity(major_only_match_interpreters.len());
+        for interpreter in major_only_match_interpreters {
+            let version = interpreter.details.version;
+            let mut matched = false;
+            for platform in &platform_details {
+                if platforms_to_find_interpreters_for.contains(platform) {
+                    continue;
+                }
+                let python_implementation = platform.python_implementation()?;
+                if python_implementation.major == version.major {
+                    matched = true;
+                    platforms_to_find_interpreters_for.shift_remove(platform);
+                }
+            }
+            if matched {
+                interpreters.insert(Cow::Owned(interpreter));
+            } else {
+                last_ditch_interpreters.push(interpreter)
+            }
+        }
+        if !platform_details.is_empty() {
+            last_ditch_interpreters
+                .into_iter()
+                .next()
+                .map(|interpreter| interpreters.insert(Cow::Owned(interpreter)));
+        }
+    }
+    if interpreters.is_empty() {
+        bail!("Failed to resolve any interpreters to build projects with!")
+    }
+
+    let resolved_projects = projects
+        .into_iter()
+        .flat_map(|project| {
+            interpreters
+                .iter()
+                .map(|interpreter| (project.clone(), interpreter))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|(project, interpreter)| {
+            resolve_project(
+                project,
+                interpreter.as_ref(),
+                repository,
+                wheel_options,
+                dependency_configuration,
+                dest_dir,
+            )
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(resolved_projects.into())
+}
+
+struct BuildSystemVenvBuilder<'a> {
+    interpreter: &'a Interpreter,
+    repository: &'a Repository<'a>,
+    wheel_options: &'a WheelOptions,
+    dependency_configuration: &'a DependencyConfiguration,
+    include_system_site_packages: bool,
+}
+
+impl<'a> VenvBuilder for BuildSystemVenvBuilder<'a> {
+    fn create_at(
+        &self,
+        subject: &impl Display,
+        venv_dir: PathBuf,
+        requirements: &[Requirement<Url>],
+    ) -> anyhow::Result<Virtualenv<'_>> {
+        let (_, fingerprinted_wheels) = resolve_wheel_files(
+            Some(self.repository),
+            &[Platform::Interpreter(Cow::Borrowed(self.interpreter))],
+            requirements,
+            self.wheel_options,
+            self.dependency_configuration,
+            false,
+        )?;
+        let proxy_bytes = read_proxy_content(SimplifiedTarget::current()?, false)?;
+        let proxy_source = ProxySource::Embedded(&proxy_bytes);
+        let linker = PythonProxyLinker(&proxy_source);
+        let mut scripts = Scripts::Embedded;
+        let venv = Virtualenv::create(
+            Cow::Borrowed(self.interpreter),
+            Cow::Owned(venv_dir),
+            linker,
+            &mut scripts,
+            self.include_system_site_packages,
+            false,
+            None,
+        )?;
+        let provenance = Arc::new(Provenance::new(format!(
+            "populating PEP-517 build-system requires for {subject}"
+        )));
+        fingerprinted_wheels
+            .into_par_iter()
+            .try_for_each(|fingerprinted_wheel| {
+                let wheel_file = WheelFile::parse_file_name(&fingerprinted_wheel.file_name)?;
+                let whl_zip = ZipArchive::new(File::open(&fingerprinted_wheel.path)?.into_file())?;
+                let metadata_dirs = wheel_file.metadata_dirs_from_zip(
+                    &whl_zip,
+                    fingerprinted_wheel.path.display(),
+                    None,
+                )?;
+                populate_whl_zip(
+                    &venv,
+                    &venv.interpreter.details.path,
+                    &fingerprinted_wheel.path,
+                    Some(whl_zip),
+                    wheel_file.raw_project_name,
+                    &metadata_dirs,
+                    &proxy_source,
+                    provenance.clone(),
+                )
+            })?;
+        if let Some(collision_report) = Arc::try_unwrap(provenance)
+            .expect("Provenance use is complete")
+            .into_collision_report()?
+        {
+            warn!("{collision_report}");
+        }
+        write_pex_extra_sys_path_support_files(&venv, &mut scripts)?;
+        Ok(venv)
+    }
+}
+
+struct Whl<D: Display, R: Read + Seek> {
+    zip: ZipArchive<R>,
+    zip_source: D,
+}
+
+impl<D: Display, R: Read + Seek> MetadataReader for Whl<D, R> {
+    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+        wheel_file.metadata_dirs_from_zip(&self.zip, &self.zip_source, None)
+    }
+
+    fn read(
+        &mut self,
+        metadata_dirs: &MetadataDirs,
+        _wheel_file: &WheelFile,
+        file_name: &str,
+    ) -> anyhow::Result<String> {
+        let dist_info_dir = metadata_dirs.dist_info_dir();
+        Ok(io::read_to_string(
+            self.zip
+                .by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
+        )?)
+    }
+}
+
+struct ResolvedProject {
+    wheel: FingerprintedWheel,
+    requirements: Vec<Requirement<Url>>,
+}
+
+#[instrument(level = "debug", skip_all, fields(project = %project.display()))]
+fn resolve_project(
+    project: PathBuf,
+    interpreter: &Interpreter,
+    repository: &Repository,
+    wheel_options: &WheelOptions,
+    dependency_configuration: &DependencyConfiguration,
+    dest_dir: &Path,
+) -> anyhow::Result<ResolvedProject> {
+    let include_system_site_packages = false; // TODO: XXX: plumb this
+    let venv_builder = BuildSystemVenvBuilder {
+        interpreter,
+        repository,
+        wheel_options,
+        dependency_configuration,
+        include_system_site_packages,
+    };
+    let wheel = build_wheel(&project, dest_dir, &venv_builder, &mut Scripts::Embedded)?;
+    let fingerprinted_wheel = cache_wheel(&wheel, wheel_options)?;
+    let wheel_file = WheelFile::parse_file_name(&fingerprinted_wheel.file_name)?;
+    let zip = ZipArchive::new(File::open(&fingerprinted_wheel.path)?.into_file())?;
+    let zip_source = wheel.display();
+    let metadata_dirs = wheel_file.metadata_dirs_from_zip(&zip, &zip_source, None)?;
+    let mut whl = Whl { zip, zip_source };
+    let whl_metadata = WheelMetadata::parse(wheel_file, metadata_dirs, &mut whl)?;
+    Ok(ResolvedProject {
+        requirements: whl_metadata.requires_dists,
+        wheel: fingerprinted_wheel,
+    })
 }
 
 fn check_valid_platforms(
@@ -1263,20 +1635,33 @@ fn adjust_requirements(
 
 #[instrument(level = "debug", skip_all)]
 fn resolve_wheel_files<'a>(
-    repository: &'a Repository<'a>,
+    repository: Option<&'a Repository<'a>>,
     platforms: &'a [Platform<'a>],
-    requirements: Vec<Requirement<Url>>,
-    pex_info: &RawPexInfo,
+    requirements: &[Requirement<Url>],
     wheel_options: &WheelOptions,
+    dependency_configuration: &DependencyConfiguration,
+    ignore_errors: bool,
 ) -> anyhow::Result<(Option<&'a Interpreter>, Vec<FingerprintedWheel>)> {
     match repository {
-        Repository::Venvs(venvs) => {
-            let (preferred_python, wheels) =
-                resolve_wheels_from_venvs(venvs, platforms, wheel_options, requirements, pex_info)?;
+        Some(Repository::Venvs(venvs)) => {
+            let (preferred_python, wheels) = resolve_wheels_from_venvs(
+                venvs,
+                platforms,
+                wheel_options,
+                requirements,
+                dependency_configuration,
+                ignore_errors,
+            )?;
             Ok((preferred_python, wheels))
         }
-        Repository::Wheels(wheel_files) => {
-            let wheels = resolve_wheels_from_files(wheel_files, platforms, requirements, pex_info)?;
+        Some(Repository::Wheels(wheel_files)) => {
+            let wheels = resolve_wheels_from_files(
+                wheel_files,
+                platforms,
+                requirements,
+                dependency_configuration,
+                ignore_errors,
+            )?;
             let fingerprinted_wheels = wheels
                 .into_par_iter()
                 .map(|wheel| cache_wheel(wheel, wheel_options))
@@ -1284,7 +1669,7 @@ fn resolve_wheel_files<'a>(
             let _preferred_platform = platforms.iter().next();
             Ok((None, fingerprinted_wheels))
         }
-        Repository::Empty => {
+        None => {
             if requirements.is_empty() {
                 let _preferred_platform = platforms.iter().next();
                 Ok((None, vec![]))
@@ -1364,8 +1749,9 @@ fn resolve_wheels_from_venvs<'a>(
     virtualenvs: &'a Virtualenvs<'a>,
     platforms: &'a [Platform<'a>],
     wheel_options: &WheelOptions,
-    requirements: Vec<Requirement<Url>>,
-    pex_info: &RawPexInfo,
+    requirements: &[Requirement<Url>],
+    dependency_configuration: &DependencyConfiguration,
+    ignore_errors: bool,
 ) -> anyhow::Result<(Option<&'a Interpreter>, Vec<FingerprintedWheel>)> {
     let (venvs, mut repositories) = {
         let inventory = virtualenvs
@@ -1381,11 +1767,6 @@ fn resolve_wheels_from_venvs<'a>(
         }
         (venvs, repositories)
     };
-
-    let dependency_configuration = DependencyConfiguration::parse(
-        pex_info.excluded.as_slice(),
-        pex_info.overridden.as_slice(),
-    )?;
 
     let mut wheels = IndexMap::new();
     let mut errors_by_platform = IndexMap::new();
@@ -1408,22 +1789,22 @@ fn resolve_wheels_from_venvs<'a>(
                 Platform::Details(platform) => resolve_wheels(
                     "venv",
                     platform,
-                    &requirements,
+                    requirements,
                     wheel_files,
                     venv_repository,
-                    &dependency_configuration,
+                    dependency_configuration,
                     None,
-                    pex_info.ignore_errors,
+                    ignore_errors,
                 ),
                 Platform::Interpreter(interpreter) => resolve_wheels(
                     "venv",
                     interpreter.as_ref(),
-                    &requirements,
+                    requirements,
                     wheel_files,
                     venv_repository,
-                    &dependency_configuration,
+                    dependency_configuration,
                     None,
-                    pex_info.ignore_errors,
+                    ignore_errors,
                 ),
             };
             match result {
@@ -1653,26 +2034,28 @@ fn inventory_venv<'a>(
 fn resolve_wheels_from_files<'a>(
     wheel_files: &'a [impl AsRef<Path>],
     platforms: &'a [Platform<'a>],
-    requirements: Vec<Requirement<Url>>,
-    pex_info: &RawPexInfo,
+    requirements: &[Requirement<Url>],
+    dependency_configuration: &DependencyConfiguration,
+    ignore_errors: bool,
 ) -> anyhow::Result<Vec<&'a Path>> {
     if platforms.is_empty() {
         if !requirements.is_empty() {
-            struct Requirements(Vec<Requirement<Url>>);
-            impl Display for Requirements {
+            struct Requirements<'a>(&'a [Requirement<Url>]);
+            impl<'a> Display for Requirements<'a> {
                 fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                     write!(f, "You must specify at least one `--target` to resolve ")?;
-                    if self.0.len() > 1 {
-                        writeln!(f, "requirements:")?;
-                        for (index, requirement) in self.0.iter().enumerate() {
-                            if index + 1 == self.0.len() {
-                                write!(f, "  {requirement}")?;
-                            } else {
-                                writeln!(f, "  {requirement}")?;
+                    match &self.0 {
+                        &[requirement] => write!(f, "requirement: {}", requirement)?,
+                        _ => {
+                            writeln!(f, "requirements:")?;
+                            for (index, requirement) in self.0.iter().enumerate() {
+                                if index + 1 == self.0.len() {
+                                    write!(f, "  {requirement}")?;
+                                } else {
+                                    writeln!(f, "  {requirement}")?;
+                                }
                             }
                         }
-                    } else {
-                        write!(f, "requirement: {}", self.0.as_slice()[0])?;
                     }
                     Ok(())
                 }
@@ -1681,11 +2064,6 @@ fn resolve_wheels_from_files<'a>(
         }
         return Ok(wheel_files.iter().map(AsRef::as_ref).collect());
     }
-
-    let dependency_configuration = DependencyConfiguration::parse(
-        pex_info.excluded.as_slice(),
-        pex_info.overridden.as_slice(),
-    )?;
 
     let file_names = file_names(wheel_files.iter().map(AsRef::as_ref))?;
     let mut wheel_paths_by_file_name: IndexMap<&str, &Path> =
@@ -1705,12 +2083,12 @@ fn resolve_wheels_from_files<'a>(
                 resolve_wheels(
                     "specified set of wheels",
                     platform,
-                    &requirements,
+                    requirements,
                     wheel_files,
                     &mut wheel_repository,
-                    &dependency_configuration,
+                    dependency_configuration,
                     None,
-                    pex_info.ignore_errors,
+                    ignore_errors,
                 )?
             }
             Platform::Interpreter(interpreter) => {
@@ -1721,12 +2099,12 @@ fn resolve_wheels_from_files<'a>(
                 resolve_wheels(
                     "specified set of wheels",
                     interpreter.as_ref(),
-                    &requirements,
+                    requirements,
                     wheel_files,
                     &mut wheel_repository,
-                    &dependency_configuration,
+                    dependency_configuration,
                     None,
-                    pex_info.ignore_errors,
+                    ignore_errors,
                 )?
             }
         };
@@ -2112,18 +2490,20 @@ fn create_zipapp(
     }
     pex_info.code_hash = Cow::Owned(code_hash.fingerprint().hex_digest());
 
-    dst_zip.add_directory(DEPS_ZIP_DIR, directory_options)?;
-    for wheel in wheels {
-        dst_zip.start_file(
-            format!("{DEPS_DIR}/{}", wheel.file_name),
-            stored_file_options,
-        )?;
-        let mut src = File::open(wheel.path)?;
-        io::copy(&mut src, &mut dst_zip)?;
-        pex_info.distributions.insert(
-            Cow::Owned(wheel.file_name),
-            Cow::Owned(wheel.fingerprint.hex_digest()),
-        );
+    if !wheels.is_empty() {
+        dst_zip.add_directory(DEPS_ZIP_DIR, directory_options)?;
+        for wheel in wheels {
+            dst_zip.start_file(
+                format!("{DEPS_DIR}/{}", wheel.file_name),
+                stored_file_options,
+            )?;
+            let mut src = File::open(wheel.path)?;
+            io::copy(&mut src, &mut dst_zip)?;
+            pex_info.distributions.insert(
+                Cow::Owned(wheel.file_name),
+                Cow::Owned(wheel.fingerprint.hex_digest()),
+            );
+        }
     }
     pex_info.deps_are_wheel_files = true;
 
@@ -2228,7 +2608,13 @@ fn execute_pex(
         python_args,
         pex,
         args,
-        Some([("__PEX_EPHEMERAL__", "1")]),
+        Some([(
+            "__PEX_EPHEMERAL__",
+            env::join_paths([
+                pex.as_os_str(),
+                &env::args_os().next().expect("There is always an argv0"),
+            ])?,
+        )]),
         search_path,
         false,
         false,

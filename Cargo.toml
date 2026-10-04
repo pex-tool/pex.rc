@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.32.1"
+version = "0.33.0"
 edition = { workspace = true }
 publish = false
 
@@ -19,7 +19,6 @@ members = [
     "crates/clib",
     "crates/interpreter",
     "crates/logging",
-    "crates/package",
     "crates/pex",
     "crates/pexrs",
     "crates/platform",
@@ -35,6 +34,8 @@ members = [
     "crates/venv",
     "crates/wheel",
     "crates/zip-ext",
+    "tooling/build",
+    "tooling/package",
 ]
 
 [package.metadata.build]
@@ -222,6 +223,7 @@ url = "2.5"
 version-ranges = "*"
 walkdir = "2.5"
 windows-registry = "0.100"
+windows-version = "0.100"
 which = "8.0"
 xz2 = "0.1"
 zip = { version = "8.6", default-features = false, features = ["chrono", "deflate", "zstd"] }
@@ -230,7 +232,7 @@ zstd = "0.14"
 [build-dependencies]
 anyhow = { workspace = true }
 bstr = { workspace = true }
-build-system = { path = "crates/build-system" }
+build = { path = "tooling/build" }
 env_logger = { workspace = true }
 fs-err = { workspace = true }
 itertools = { workspace = true }
@@ -240,6 +242,7 @@ zstd = { workspace = true }
 anstream = { workspace = true }
 anyhow = { workspace = true }
 boot = { path = "crates/boot" }
+build-system = { path = "crates/build-system" }
 cache = { path = "crates/cache" }
 chrono = { workspace = true }
 clap = { workspace = true }
@@ -258,6 +261,7 @@ itertools = { workspace = true }
 logging = { path = "crates/logging" }
 ouroboros = { workspace = true }
 owo-colors = { workspace = true }
+pep440_rs = { workspace = true }
 pep508_rs = { workspace = true }
 pex = { path = "crates/pex" }
 pexrs = { path = "crates/pexrs" }

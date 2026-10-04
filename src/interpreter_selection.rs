@@ -15,7 +15,7 @@ use interpreter::{
     SearchPath,
     SelectionStrategy,
 };
-use pep508_rs::pep440_rs::{Version, VersionSpecifiers};
+use pep440_rs::{Version, VersionSpecifiers};
 use pex::InterpreterSelectionStrategy;
 use version_ranges::Ranges;
 

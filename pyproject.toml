@@ -41,11 +41,39 @@ line-length = 100
 extend-select = ["I"]
 
 [tool.dev-cmd.commands]
-fmt = ["ruff", "format", "crates/scripts", "python", "scripts"]
-check-fmt = ["ruff", "format", "--diff", "crates/scripts", "python", "scripts"]
+fmt = [
+    "ruff", "format",
+    "crates/boot",
+    "crates/build-system",
+    "crates/scripts",
+    "python",
+    "scripts",
+]
+check-fmt = [
+    "ruff", "format", "--diff",
+    "crates/boot",
+    "crates/build-system",
+    "crates/scripts",
+    "python",
+    "scripts",
+]
 
-lint = ["ruff", "check", "--fix", "crates/scripts", "python", "scripts"]
-check-lint = ["ruff", "check", "crates/scripts", "python", "scripts"]
+lint = [
+    "ruff", "check", "--fix",
+    "crates/boot",
+    "crates/build-system",
+    "crates/scripts",
+    "python",
+    "scripts",
+]
+check-lint = [
+    "ruff", "check",
+    "crates/boot",
+    "crates/build-system",
+    "crates/scripts",
+    "python",
+    "scripts",
+]
 
 [tool.dev-cmd.commands.type-check-pexrc.factors]
 py = "The Python version to type check in <major>.<minor> form; i.e.: 3.13."
@@ -54,6 +82,8 @@ args = [
     "mypy",
     "--python-version", "{-py:{markers.python_version}}",
     "--cache-dir", ".mypy_cache_{-py:{markers.python_version}}",
+    "crates/boot",
+    "crates/build-system",
     "crates/scripts",
     "python",
 ]

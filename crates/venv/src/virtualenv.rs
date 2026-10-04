@@ -124,7 +124,7 @@ impl<'a> Virtualenv<'a> {
 
     #[instrument(level = "debug", skip_all)]
     pub fn create(
-        interpreter: Interpreter,
+        interpreter: Cow<'a, Interpreter>,
         path: Cow<'a, Path>,
         linker: impl Linker,
         scripts: &mut Scripts,
@@ -387,7 +387,7 @@ impl<'a> PyVenvCfg<'a> {
 }
 
 fn create_pep_405_venv<'a>(
-    interpreter: Interpreter,
+    interpreter: Cow<'a, Interpreter>,
     path: &Path,
     linker: impl Linker,
     include_system_site_packages: bool,
@@ -396,7 +396,7 @@ fn create_pep_405_venv<'a>(
     prompt: Option<&'a str>,
 ) -> anyhow::Result<Cow<'a, Path>> {
     // See: https://peps.python.org/pep-0405/
-    let base_interpreter = interpreter.resolve_base_interpreter(scripts)?;
+    let base_interpreter = interpreter.into_owned().resolve_base_interpreter(scripts)?;
     let home = base_interpreter.realpath.parent().ok_or_else(|| {
         anyhow!(
             "Failed to calculate the home dir of venv base python {path}",
@@ -579,7 +579,7 @@ mod tests {
             .unwrap_or(interpreter.details.prefix.as_ref())
             .to_owned();
         let venv = Virtualenv::create(
-            interpreter,
+            Cow::Owned(interpreter),
             Cow::Owned(tmp_dir),
             FileSystemLinker(),
             &mut embedded_scripts,

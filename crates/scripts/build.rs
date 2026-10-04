@@ -6,7 +6,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use build_system::{
+use build::{
     InstallDirs,
     download_virtualenv,
     ensure_tools_installed,

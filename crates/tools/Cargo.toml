@@ -21,11 +21,9 @@ fs-err = { workspace = true }
 graphviz-rust = { workspace = true }
 indexmap = { workspace = true }
 interpreter = { path = "../interpreter" }
-log = { workspace = true }
 logging = { path = "../logging" }
 oneshot = { workspace = true }
 open = { workspace = true }
-owo-colors = { workspace = true }
 pep440_rs = { workspace = true }
 pep508_rs = { workspace = true }
 pex = { path = "../pex" }
@@ -38,14 +36,11 @@ repackage = { path = "../repackage" }
 resolver = { path = "../resolver" }
 scripts = { path = "../scripts" }
 shell-quote = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tar = { workspace = true }
 target = { path = "../target" }
 tempfile = { workspace = true }
-textwrap = { workspace = true }
 tracing = { workspace = true }
 venv = { path = "../venv" }
-walkdir = { workspace = true }
 zip = { workspace = true }
 url = { workspace = true }

@@ -216,7 +216,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "build-system"
+name = "build"
 version = "0.0.0"
 dependencies = [
  "anyhow",
@@ -244,6 +244,25 @@ dependencies = [
  "which",
  "xz2",
  "zip",
+]
+
+[[package]]
+name = "build-system"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "cache",
+ "fs-err",
+ "pep508_rs",
+ "scripts",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "tracing",
+ "url",
+ "venv",
 ]
 
 [[package]]
@@ -2091,7 +2110,7 @@ version = "0.0.0"
 dependencies = [
  "anstream",
  "anyhow",
- "build-system",
+ "build",
  "cache",
  "clap",
  "clap-verbosity-flag",
@@ -2283,12 +2302,13 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "anstream",
  "anyhow",
  "boot",
  "bstr",
+ "build",
  "build-system",
  "cache",
  "chrono",
@@ -2309,6 +2329,7 @@ dependencies = [
  "logging",
  "ouroboros",
  "owo-colors",
+ "pep440_rs",
  "pep508_rs",
  "pex",
  "pexrs",
@@ -2502,8 +2523,6 @@ dependencies = [
  "elf",
  "fs-err",
  "interpreter",
- "log",
- "ouroboros",
  "pep440_rs",
  "pep508_rs",
  "plist",
@@ -2513,7 +2532,6 @@ dependencies = [
  "rustix",
  "scripts",
  "serde",
- "serde_json",
  "serde_with",
  "strum",
  "strum_macros",
@@ -3080,7 +3098,7 @@ name = "scripts"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build-system",
+ "build",
  "const_format",
  "env_logger",
  "fs-err",
@@ -3699,11 +3717,9 @@ dependencies = [
  "graphviz-rust",
  "indexmap 2.14.2",
  "interpreter",
- "log",
  "logging",
  "oneshot",
  "open",
- "owo-colors",
  "pep440_rs",
  "pep508_rs",
  "pex",
@@ -3715,17 +3731,14 @@ dependencies = [
  "repackage",
  "resolver",
  "scripts",
- "serde",
  "serde_json",
  "shell-quote",
  "tar",
  "target",
  "tempfile",
- "textwrap",
  "tracing",
  "url",
  "venv",
- "walkdir",
  "zip",
 ]
 
@@ -4126,7 +4139,6 @@ dependencies = [
  "ouroboros",
  "pep440_rs",
  "pep508_rs",
- "platform",
  "python-pkginfo",
  "regex",
  "rfc2047-decoder",
@@ -4372,11 +4384,11 @@ dependencies = [
 
 [[package]]
 name = "windows-version"
-version = "0.1.7"
+version = "0.100.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4060a1da109b9d0326b7262c8e12c84df67cc0dbc9e33cf49e01ccc2eb63631"
+checksum = "f5d2a42ae19ff386c4680514519a225a2a99bcfada6aff0ab3766f928ff84365"
 dependencies = [
- "windows-link 0.2.1",
+ "windows-link 0.100.0",
 ]
 
 [[package]]

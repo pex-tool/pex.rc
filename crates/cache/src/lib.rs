@@ -190,6 +190,7 @@ fn cleanup_tmp_cache_root() {
 }
 
 pub enum CacheDir {
+    BuildSystem,
     Interpreter,
     PythonProxy,
     Venv,
@@ -203,10 +204,11 @@ impl CacheDir {
 
     fn version(&self) -> &'static str {
         match self {
-            CacheDir::Interpreter => "4",
-            CacheDir::PythonProxy => "0",
-            CacheDir::Venv => "2",
-            CacheDir::Wheel => "0",
+            Self::BuildSystem => "0",
+            Self::Interpreter => "4",
+            Self::PythonProxy => "0",
+            Self::Venv => "2",
+            Self::Wheel => "0",
         }
     }
 
@@ -214,10 +216,11 @@ impl CacheDir {
     pub fn path(&self) -> anyhow::Result<PathBuf> {
         Self::root().map(|pexrc_root| {
             match self {
-                CacheDir::Interpreter => pexrc_root.join("interpreters"),
-                CacheDir::PythonProxy => pexrc_root.join("python-proxies"),
-                CacheDir::Venv => pexrc_root.join("venvs"),
-                CacheDir::Wheel => pexrc_root.join("wheels"),
+                Self::BuildSystem => pexrc_root.join("build-systems"),
+                Self::Interpreter => pexrc_root.join("interpreters"),
+                Self::PythonProxy => pexrc_root.join("python-proxies"),
+                Self::Venv => pexrc_root.join("venvs"),
+                Self::Wheel => pexrc_root.join("wheels"),
             }
             .join(self.version())
         })

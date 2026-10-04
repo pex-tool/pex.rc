@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.33.0
+
+This release adds initial support for `--project`s to `pexrc -X build`. This allows building a PEX
+from a local Python project given `--wheels` or `--venv`s that can supply its build system and
+dependencies.
+
 ## 0.32.1
 
 This release fixes `--sh-boot` mode to respect `PEX_PYTHON` and `PEX_PYTHON_PATH`. Previously, only

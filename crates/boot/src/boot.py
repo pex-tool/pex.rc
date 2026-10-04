@@ -460,7 +460,7 @@ def _load_pexrc():
                 )
             )
         try:
-            return cdll.LoadLibrary(library_file_path)  # type: Pexrc
+            return cdll.LoadLibrary(library_file_path)
         except OSError as e:
             raise RuntimeError(
                 "Failed to load pexrc library from {library_file_path}: {err}".format(
@@ -482,7 +482,7 @@ def _load_pexrc():
         with open(library_file_path, "wb") as fp:
             fp.write(pexrc_data)
         try:
-            pexrc = cdll.LoadLibrary(library_file_path)  # type: Pexrc
+            pexrc = cdll.LoadLibrary(library_file_path)
         except OSError as e:
             raise RuntimeError(
                 "Failed to load pexrc library from {library_file_path}: {err}".format(
@@ -701,9 +701,9 @@ if __name__ == "__main__":
         sys.exit("Could not launch python executable!\n")
     os.environ["PEX"] = entry_point
 
-# --- split --- #
-    python_args = ['{inject_python_args}']  # type: List[str]
-# --- split --- #
+    # --- split --- #
+    python_args = ["{inject_python_args}"]  # type: List[str]
+    # --- split --- #
     orig_args = orig_argv()
     if orig_args is not None:
         orig_python_args = []  # type: List[str]

@@ -2,113 +2,193 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![deny(clippy::all)]
-
-mod downloads;
-mod metadata;
-mod rust_toolchain;
-mod tools;
+#![feature(exit_status_error)]
 
 use std::borrow::Cow;
-use std::env;
+use std::fmt::Display;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::{env, io};
 
-use anyhow::bail;
-use cache::atomic_dir;
+use anyhow::{anyhow, bail};
+use cache::{CacheDir, Key, atomic_dir};
 use fs_err as fs;
-use itertools::Itertools;
-pub use metadata::{Embeds, EmbedsConfiguration, Glibc};
-pub use rust_toolchain::BuildTarget;
-use rust_toolchain::{Toolchain, parse_toolchain};
+use pep508_rs::Requirement;
+use scripts::Scripts;
+use serde::Deserialize;
+use sha2::Sha256;
+use tracing::{Level, enabled, instrument};
+use url::Url;
+use venv::Virtualenv;
 
-use crate::downloads::ensure_download;
-use crate::metadata::{Metadata, parse_metadata};
-use crate::tools::ToolBox;
-pub use crate::tools::{BinstallTool, FoundTool, InstallDirs, ToolInstallation, Zig};
+const WHEEL_BUILDER: &[u8] = include_bytes!("wheel-builder.py");
 
-pub fn download_virtualenv(
-    cargo_manifest_contents: &str,
-    install_dirs: &InstallDirs,
-) -> anyhow::Result<PathBuf> {
-    let metadata: Metadata = parse_metadata(cargo_manifest_contents)?;
-    ensure_download(&metadata.build.virtualenv, &install_dirs.download_dir)
+#[derive(Deserialize)]
+struct BuildSystem<'a> {
+    #[serde(rename = "build-backend")]
+    build_backend: Option<&'a str>,
+    #[serde(rename = "backend-path")]
+    backend_path: Vec<&'a Path>,
+    requires: Vec<Requirement<Url>>,
 }
 
-pub fn prepare_venv_activation_scripts(
-    workspace_root: &Path,
-    install_dirs: &InstallDirs,
-) -> anyhow::Result<PathBuf> {
-    let python_version = fs::read_to_string(workspace_root.join(".python-version"))?;
-    let venv_activation_scripts_dir = install_dirs
-        .data_dir
-        .join("venv-activation-scripts")
-        .join(python_version.trim());
-    atomic_dir(&venv_activation_scripts_dir, |work_dir| {
-        Ok(Command::new("uv")
-            .args(["run", "dev-cmd", "prepare-venv-activation-scripts", "--"])
-            .arg(work_dir)
-            .current_dir(workspace_root)
-            .spawn()?
-            .wait()?)
-    })?;
-    Ok(venv_activation_scripts_dir)
+#[derive(Deserialize)]
+struct PyProject<'a> {
+    #[serde(borrow, rename = "build-system")]
+    build_system: BuildSystem<'a>,
 }
 
-pub fn all_targets(rust_toolchain_contents: &str) -> anyhow::Result<Vec<String>> {
-    let toolchain: Toolchain = parse_toolchain(rust_toolchain_contents)?;
-    Ok(toolchain.into_targets())
+pub trait VenvBuilder {
+    fn create_at(
+        &self,
+        subject: &impl Display,
+        venv_dir: PathBuf,
+        requirements: &[Requirement<Url>],
+    ) -> anyhow::Result<Virtualenv<'_>>;
 }
 
-pub fn classify_targets<'a>(
-    rust_toolchain_contents: &'a str,
-    glibc: &'a Glibc,
-) -> anyhow::Result<Vec<BuildTarget<'a>>> {
-    let toolchain: Toolchain = parse_toolchain(rust_toolchain_contents)?;
-    Ok(toolchain.classify_targets(glibc))
-}
+#[instrument(level = "debug", skip_all, fields(subject = %subject))]
+fn ensure_venv<'a>(
+    subject: &impl Display,
+    venv_builder: &'a impl VenvBuilder,
+    requirements: &[Requirement<Url>],
+    scripts: &mut Scripts,
+) -> anyhow::Result<Virtualenv<'a>> {
+    let venv_dir = {
+        let mut key = Key::<Sha256>::new();
+        let mut hashable_requirements = requirements
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        hashable_requirements.sort();
+        key.list("requirements", hashable_requirements.iter());
+        let fingerprint = key.fingerprint();
 
-pub fn ensure_tools_installed<'a>(
-    cargo_manifest_contents: &'a str,
-    target_dir: &Path,
-    is_build_script: bool,
-) -> anyhow::Result<(Embeds<'a>, Glibc<'a>, Vec<FoundTool>)> {
-    let install_dirs = InstallDirs::system("pexrc-dev").unwrap_or_else(|| {
-        let cache_base_dir = target_dir.join(".pexrc-dev");
-        if is_build_script {
-            println!(
-                "cargo::warning=Failed to discover the user cache dir; using {cache_base_dir}",
-                cache_base_dir = cache_base_dir.display()
-            );
-        }
-        InstallDirs::new(cache_base_dir)
-    });
-
-    if is_build_script {
-        println!("cargo::rerun-if-env-changed=PEXRC_INSTALL_TOOLS");
+        CacheDir::BuildSystem
+            .path()?
+            .join(fingerprint.base64_digest())
+    };
+    if let Some(venv) = atomic_dir(&venv_dir, |venv_dir| {
+        venv_builder.create_at(subject, venv_dir.to_path_buf(), requirements)
+    })? {
+        let venv_interpreter = Virtualenv::host_interpreter(&venv_dir, &venv.interpreter)?;
+        venv_interpreter.store()?;
+        Virtualenv::enclosing(venv_interpreter)
+    } else {
+        Virtualenv::load(Cow::Owned(venv_dir), scripts)
     }
-    let install_missing_tools = env::var_os("PEXRC_INSTALL_TOOLS").unwrap_or_default() == "1";
+}
 
-    let metadata: Metadata = parse_metadata(cargo_manifest_contents)?;
-    let tool_box = ToolBox::from(metadata.build);
-    let tool_inventory = tool_box.find_tools(install_dirs)?;
-    match tool_inventory.ensure_tools_installed(install_missing_tools)? {
-        ToolInstallation::Success(result) => Ok(result),
-        ToolInstallation::Failure((zig, missing_binstall_tools, tool_search_path)) => {
-            bail!(
-                "The following tools are required but are not installed: {tools}\n\
-                Searched PATH: {search_path}\n\
-                Re-run with PEXRC_INSTALL_TOOLS=1 to let the build script install these tools.",
-                tools = missing_binstall_tools
-                    .iter()
-                    .map(|tool| Cow::Borrowed(tool.binary_name()))
-                    .chain(
-                        zig.missing_version()
-                            .iter()
-                            .map(|version| Cow::Owned(format!("zig@{version}")))
+#[instrument(level = "debug", skip_all, fields(project = %project_dir.display()))]
+pub fn build_wheel(
+    project_dir: &Path,
+    dest_dir: &Path,
+    venv_builder: &impl VenvBuilder,
+    scripts: &mut Scripts,
+) -> anyhow::Result<PathBuf> {
+    let mut wheel_builder = tempfile::Builder::new()
+        .prefix("wheel-builder")
+        .suffix(".py")
+        .tempfile_in(dest_dir)?;
+    io::copy(&mut Cursor::new(WHEEL_BUILDER), &mut wheel_builder)?;
+
+    let pyproject_content = {
+        let pyproject_toml = project_dir.join("pyproject.toml");
+        fs::read_to_string(pyproject_toml)?
+    };
+    let mut build_system = {
+        let pyproject = toml::from_str::<PyProject>(&pyproject_content)?;
+        pyproject.build_system
+    };
+    let extra_sys_path = {
+        if build_system.backend_path.is_empty() {
+            None
+        } else {
+            let entry_count = build_system.backend_path.len();
+            let mut entries = build_system.backend_path.into_iter().map(|backend_path| {
+                let entry = project_dir.join(backend_path).canonicalize()?;
+                if !entry.starts_with(project_dir) {
+                    bail!(
+                        "The [build-system] `backend-path` for the Python project at {project_dir} \
+                        contains entry \"{backend_path}\" which resolves to {entry} and is not a \
+                        subdirectory of the project as required by PEP-517: \
+                        https://peps.python.org/pep-0517/#in-tree-build-backends",
+                        project_dir = project_dir.display(),
+                        backend_path = backend_path.display(),
+                        entry = entry.display()
                     )
-                    .join(" "),
-                search_path = tool_search_path.display()
-            );
+                }
+                Ok(entry)
+            });
+            Some(if entry_count == 1 {
+                entries.next().expect("We checked there was 1.")?.into()
+            } else {
+                env::join_paths(entries.collect::<anyhow::Result<Vec<_>>>()?)?
+            })
         }
+    };
+    let wheel_builder_command = |python: &Path| -> anyhow::Result<Command> {
+        let mut command = Command::new(python);
+        command.arg(wheel_builder.path());
+        if let Some(build_backend) = build_system.build_backend {
+            command.arg("--backend").arg(build_backend);
+        }
+        if enabled!(Level::DEBUG) {
+            command.arg("--verbose");
+        }
+        if let Some(extra_sys_path) = extra_sys_path.as_deref() {
+            command.env("PEX_EXTRA_SYS_PATH", extra_sys_path);
+        }
+        command
+            .current_dir(project_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        Ok(command)
+    };
+
+    let subject = format!("Python project at {}", project_dir.display());
+    let mut venv = ensure_venv(&subject, venv_builder, &build_system.requires, scripts)?;
+    let result = wheel_builder_command(&venv.interpreter.details.path)?
+        .arg("get_requires_for_build_wheel")
+        .spawn()
+        .and_then(|process| process.wait_with_output())
+        .map_err(|err| anyhow!("Failed to execute `get_requires_for_build_wheel`: {err}"))?;
+    result.status.exit_ok().map_err(|err| {
+        anyhow!(
+            "Execution of `get_requires_for_build_wheel` failed with: {err}\n\
+            Stderr from build backend:\n\
+            {stderr}",
+            stderr = String::from_utf8_lossy(&result.stderr).trim_end()
+        )
+    })?;
+    let requirements_for_build_wheel =
+        serde_json::from_slice::<Vec<Requirement<Url>>>(&result.stdout)?;
+    if !requirements_for_build_wheel.is_empty() {
+        build_system.requires.extend(requirements_for_build_wheel);
+        venv = ensure_venv(&subject, venv_builder, &build_system.requires, scripts)?;
     }
+
+    let result = wheel_builder_command(&venv.interpreter.details.path)?
+        .arg("build_wheel")
+        .arg(dest_dir)
+        .spawn()
+        .and_then(|process| process.wait_with_output())
+        .map_err(|err| anyhow!("Failed to execute `build_wheel`: {err}"))?;
+    result.status.exit_ok().map_err(|err| {
+        anyhow!(
+            "Execution of `build_wheel` failed with: {err}\n\
+            Stderr from build backend:\n\
+            {stderr}",
+            stderr = String::from_utf8_lossy(&result.stderr).trim_end()
+        )
+    })?;
+    Ok(dest_dir.join(
+        serde_json::from_slice::<&str>(&result.stdout).map_err(|err| {
+            anyhow!(
+                "Failed to parse output from `build_wheel`: {err}\nOutput:\n{}",
+                String::from_utf8_lossy(&result.stdout)
+            )
+        })?,
+    ))
 }

@@ -22,8 +22,8 @@ use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
+use pep440_rs::Version;
 use pep508_rs::MarkerEnvironment;
-use pep508_rs::pep440_rs::Version;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 

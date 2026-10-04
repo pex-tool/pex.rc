@@ -21,6 +21,7 @@ pub use constraints::{
     InterpreterConstraints,
     SelectionStrategy,
     VersionSpec,
+    VersionSpecificity,
 };
 pub use interpreter::{Interpreter, InterpreterDetails};
 pub use platform::Platform;

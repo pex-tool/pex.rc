@@ -20,7 +20,7 @@ fn test_collect_installed_wheels_empty(
     mut embedded_scripts: Scripts,
 ) {
     let venv = Virtualenv::create(
-        Interpreter::load(python_exe, &interpreter_identification_script).unwrap(),
+        Cow::Owned(Interpreter::load(python_exe, &interpreter_identification_script).unwrap()),
         Cow::Owned(tmp_dir),
         FileSystemLinker(),
         &mut embedded_scripts,

@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use std::{cmp, env, io};
 
 use anyhow::{anyhow, bail};
-use build_system::{BuildTarget, all_targets, classify_targets, ensure_tools_installed};
+use build::{BuildTarget, all_targets, classify_targets, ensure_tools_installed};
 use cache::fingerprint_file;
 use clap::builder::Str;
 use clap::{ArgAction, Parser, ValueEnum};
