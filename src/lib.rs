@@ -3,6 +3,7 @@
 
 #![deny(clippy::all)]
 #![feature(normalize_lexically)]
+#![feature(os_str_split_at)]
 #![feature(trim_prefix_suffix)]
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -190,11 +190,11 @@ fn cleanup_tmp_cache_root() {
 }
 
 pub enum CacheDir {
-    BuildSystem,
-    Interpreter,
-    PythonProxy,
-    Venv,
-    Wheel,
+    BuildSystems,
+    Interpreters,
+    PythonProxies,
+    Venvs,
+    Wheels,
 }
 
 impl CacheDir {
@@ -204,11 +204,11 @@ impl CacheDir {
 
     fn version(&self) -> &'static str {
         match self {
-            Self::BuildSystem => "0",
-            Self::Interpreter => "4",
-            Self::PythonProxy => "0",
-            Self::Venv => "2",
-            Self::Wheel => "0",
+            Self::BuildSystems => "0",
+            Self::Interpreters => "4",
+            Self::PythonProxies => "0",
+            Self::Venvs => "2",
+            Self::Wheels => "0",
         }
     }
 
@@ -216,11 +216,11 @@ impl CacheDir {
     pub fn path(&self) -> anyhow::Result<PathBuf> {
         Self::root().map(|pexrc_root| {
             match self {
-                Self::BuildSystem => pexrc_root.join("build-systems"),
-                Self::Interpreter => pexrc_root.join("interpreters"),
-                Self::PythonProxy => pexrc_root.join("python-proxies"),
-                Self::Venv => pexrc_root.join("venvs"),
-                Self::Wheel => pexrc_root.join("wheels"),
+                Self::BuildSystems => pexrc_root.join("build-systems"),
+                Self::Interpreters => pexrc_root.join("interpreters"),
+                Self::PythonProxies => pexrc_root.join("python-proxies"),
+                Self::Venvs => pexrc_root.join("venvs"),
+                Self::Wheels => pexrc_root.join("wheels"),
             }
             .join(self.version())
         })

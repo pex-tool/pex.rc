@@ -222,7 +222,7 @@ fn main() {
     };
     let pex_root = matches.get_one::<PathBuf>("pex_root").cloned();
     if let Err(err) = execute(cli_command, experimental_commands, matches, ansi, pex_root) {
-        anstream::eprintln!("{}", err.red());
+        anstream::eprintln!("{:?}", err.red());
         process::exit(1);
     }
 }

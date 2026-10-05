@@ -44,7 +44,7 @@ impl<'a> Linker for PythonProxyLinker<'a> {
         let mut key = cache::Key::default();
         key.property("proxied-python", &venv_python_file_name);
         let fingerprint = key.fingerprint();
-        let python_proxy = cache::CacheDir::PythonProxy
+        let python_proxy = cache::CacheDir::PythonProxies
             .path()?
             .join(fingerprint.base64_digest());
 

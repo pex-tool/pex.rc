@@ -324,7 +324,7 @@ impl Interpreter {
 
     fn interpreter_info(python_exe: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
         let hash = hash_file(python_exe.as_ref(), &Self::INTERPRETER_HASH_CONFIG)?;
-        Ok(CacheDir::Interpreter.path()?.join(hash.base64_digest()))
+        Ok(CacheDir::Interpreters.path()?.join(hash.base64_digest()))
     }
 
     #[instrument(level = "debug", skip_all, fields(python_exe = %python_exe.display()))]
@@ -400,7 +400,7 @@ impl Interpreter {
     #[instrument(level = "debug", skip_all)]
     pub fn store(&self) -> anyhow::Result<()> {
         let hash = hash_file(self.details.path.as_ref(), &Self::INTERPRETER_HASH_CONFIG)?;
-        let interpreter_info = CacheDir::Interpreter.path()?.join(hash.base64_digest());
+        let interpreter_info = CacheDir::Interpreters.path()?.join(hash.base64_digest());
         atomic_dir(&interpreter_info, |path| {
             serde_json::to_writer(
                 BufWriter::new(File::create_new(path.join("interpreter-details.json"))?),

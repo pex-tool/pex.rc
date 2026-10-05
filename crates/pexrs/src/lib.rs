@@ -368,7 +368,7 @@ pub fn venv_dir(
         }
     }
 
-    let venv_dir = CacheDir::Venv.path()?.join(PathBuf::from(key));
+    let venv_dir = CacheDir::Venvs.path()?.join(PathBuf::from(key));
     if let Some(pex_python) = imprecise_pex_python {
         warn!(
             "\
