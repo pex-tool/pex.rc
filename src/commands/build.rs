@@ -1127,14 +1127,14 @@ impl Build {
             Shebang::EnvCompatible
         };
 
-        let mut requirements = Requirements::from(self.requirements);
+        let mut requirements = Requirements::try_from(self.requirements)?;
         let mut interpreter_selection = self.interpreter_selection_args.finalize();
         let entry_point = if let Some(entry_point) = self.entry_point {
             Some(PexEntryPoint::EntryPoint(entry_point))
         } else if let Some(exe) = self.exe {
             let exe = Exe::try_from(exe)?;
             if let Some(metadata) = exe.metadata {
-                requirements.append(metadata.dependencies);
+                requirements.append(metadata.dependencies)?;
                 interpreter_selection.merge(exe.path.display(), metadata.requires_python)?;
             }
             Some(PexEntryPoint::Exe(exe.content))
@@ -1308,14 +1308,20 @@ enum CategorizedRequirement {
 }
 
 impl CategorizedRequirement {
-    fn categorize(mut requirement: Requirement<Url>) -> Self {
+    fn categorize(mut requirement: Requirement<Url>) -> anyhow::Result<Self> {
         match requirement.version_or_url.take() {
             Some(VersionOrUrl::Url(url)) => {
-                Self::DirectReference(UrlRequirement { url, requirement })
+                if let Some((vcs, _)) = url.scheme().split_once('+') {
+                    bail!(
+                        "VCS requirements are not currently supported: Asked to resolve for {vcs} \
+                        via {url}"
+                    )
+                }
+                Ok(Self::DirectReference(UrlRequirement { url, requirement }))
             }
             version => {
                 requirement.version_or_url = version;
-                Self::Requirement(requirement)
+                Ok(Self::Requirement(requirement))
             }
         }
     }
@@ -1337,15 +1343,16 @@ impl Requirements {
     fn append(
         &mut self,
         requirements: impl IntoIterator<IntoIter = impl ExactSizeIterator<Item = Requirement<Url>>>,
-    ) {
+    ) -> anyhow::Result<()> {
         for requirement in requirements {
-            match CategorizedRequirement::categorize(requirement) {
+            match CategorizedRequirement::categorize(requirement)? {
                 CategorizedRequirement::DirectReference(url_requirement) => {
                     self.urls.push(url_requirement)
                 }
                 CategorizedRequirement::Requirement(requirement) => self.reqs.push(requirement),
             }
         }
+        Ok(())
     }
 
     fn into_requirements(self) -> Vec<Requirement<Url>> {
@@ -1357,14 +1364,16 @@ impl Requirements {
     }
 }
 
-impl From<Vec<Requirement<Url>>> for Requirements {
-    fn from(requirements: Vec<Requirement<Url>>) -> Self {
+impl TryFrom<Vec<Requirement<Url>>> for Requirements {
+    type Error = anyhow::Error;
+
+    fn try_from(requirements: Vec<Requirement<Url>>) -> anyhow::Result<Self> {
         let mut reqs = Requirements {
             urls: Vec::with_capacity(requirements.len()),
             reqs: Vec::with_capacity(requirements.len()),
         };
-        reqs.append(requirements);
-        reqs
+        reqs.append(requirements)?;
+        Ok(reqs)
     }
 }
 
@@ -1513,7 +1522,7 @@ fn resolve_projects_and_url_requirements(
             let mut url_requirements = Vec::new();
             if resolved_projects.wheels.insert(project.wheel) {
                 for dependency in project.dependencies {
-                    match CategorizedRequirement::categorize(dependency) {
+                    match CategorizedRequirement::categorize(dependency)? {
                         CategorizedRequirement::DirectReference(url_requirement) => {
                             if !seen_urls.contains(&url_requirement.url) {
                                 seen_urls.insert(url_requirement.url.clone());
