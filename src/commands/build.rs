@@ -5,12 +5,13 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Display, Formatter, Write as _};
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
-use std::{env, io, process};
+use std::{env, io, mem, process};
 
 use anyhow::{Context, anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
@@ -1361,7 +1362,7 @@ impl From<Vec<Requirement<Url>>> for Requirements {
 }
 
 struct ResolvedProjects {
-    wheels: Vec<FingerprintedWheel>,
+    wheels: IndexSet<FingerprintedWheel>,
     project_requirements: Vec<Requirement<Url>>,
     dependencies: Vec<Requirement<Url>>,
 }
@@ -1489,10 +1490,38 @@ fn resolve_projects_and_url_requirements(
     }
 
     let mut resolved_projects = ResolvedProjects {
-        wheels: Vec::with_capacity(projects.len() + requirements.urls.len()),
+        wheels: IndexSet::with_capacity(projects.len() + requirements.urls.len()),
         project_requirements: Vec::with_capacity(projects.len()),
         dependencies: requirements.reqs,
     };
+
+    let mut seen_urls = HashSet::new();
+    let mut process_resolved_project =
+        |project: ResolvedProject| -> anyhow::Result<Vec<UrlRequirement>> {
+            if !project.requirement_was_known {
+                resolved_projects
+                    .project_requirements
+                    .push(project.wheel.requirement()?);
+            }
+            let mut url_requirements = Vec::new();
+            if resolved_projects.wheels.insert(project.wheel) {
+                for mut dependency in project.dependencies {
+                    match dependency.version_or_url.take() {
+                        Some(VersionOrUrl::Url(url)) => {
+                            if !seen_urls.contains(&url) {
+                                seen_urls.insert(url.clone());
+                                url_requirements.push(UrlRequirement {
+                                    url,
+                                    requirement: dependency,
+                                })
+                            }
+                        }
+                        _ => resolved_projects.dependencies.push(dependency),
+                    }
+                }
+            }
+            Ok(url_requirements)
+        };
 
     let projects = projects
         .into_iter()
@@ -1534,15 +1563,46 @@ fn resolve_projects_and_url_requirements(
             )
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    // TODO: XXX: Loop to further process any requirements that are themselves UrlRequirements.
+
+    let mut url_requirements = Vec::new();
     for project in projects {
-        if !project.requirement_was_known {
-            resolved_projects
-                .project_requirements
-                .push(project.wheel.requirement()?);
+        url_requirements.append(&mut process_resolved_project(project)?);
+    }
+    while !url_requirements.is_empty() {
+        for project in mem::take(&mut url_requirements)
+            .into_iter()
+            .flat_map(|url_requirement| {
+                interpreters
+                    .iter()
+                    .filter_map(|interpreter| {
+                        if url_requirement
+                            .requirement
+                            .marker
+                            .evaluate(interpreter.platform_details().marker_env(), &[])
+                        {
+                            Some((url_requirement.clone(), interpreter))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|(url_requirement, interpreter)| {
+                resolve_project(
+                    Project::Url(Box::new(url_requirement)),
+                    interpreter.as_ref(),
+                    repository,
+                    wheel_options,
+                    dependency_configuration,
+                    dest_dir,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+        {
+            url_requirements.append(&mut process_resolved_project(project)?);
         }
-        resolved_projects.wheels.push(project.wheel);
-        resolved_projects.dependencies.extend(project.dependencies);
     }
     Ok(resolved_projects)
 }
@@ -2226,10 +2286,24 @@ fn wheel_path(file_name: &str, wheel_options: &WheelOptions) -> anyhow::Result<P
     Ok(whl_path)
 }
 
+#[derive(Eq)]
 struct FingerprintedWheel {
     path: PathBuf,
     file_name: String,
     fingerprint: Fingerprint,
+}
+
+impl PartialEq for FingerprintedWheel {
+    fn eq(&self, other: &Self) -> bool {
+        self.file_name == other.file_name && self.fingerprint == other.fingerprint
+    }
+}
+
+impl Hash for FingerprintedWheel {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write(self.file_name.as_bytes());
+        state.write(self.fingerprint.as_bytes())
+    }
 }
 
 impl FingerprintedWheel {

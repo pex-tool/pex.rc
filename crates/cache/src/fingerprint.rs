@@ -45,6 +45,10 @@ impl Fingerprint {
     pub fn store(&self, sink: &mut impl Write) -> anyhow::Result<()> {
         Ok(sink.write_all(&self.0)?)
     }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 impl Display for Fingerprint {
