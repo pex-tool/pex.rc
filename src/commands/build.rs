@@ -1302,6 +1302,25 @@ struct UrlRequirement {
     requirement: Requirement<Url>,
 }
 
+enum CategorizedRequirement {
+    DirectReference(UrlRequirement),
+    Requirement(Requirement<Url>),
+}
+
+impl CategorizedRequirement {
+    fn categorize(mut requirement: Requirement<Url>) -> Self {
+        match requirement.version_or_url.take() {
+            Some(VersionOrUrl::Url(url)) => {
+                Self::DirectReference(UrlRequirement { url, requirement })
+            }
+            version => {
+                requirement.version_or_url = version;
+                Self::Requirement(requirement)
+            }
+        }
+    }
+}
+
 struct Requirements {
     reqs: Vec<Requirement<Url>>,
     urls: Vec<UrlRequirement>,
@@ -1319,24 +1338,12 @@ impl Requirements {
         &mut self,
         requirements: impl IntoIterator<IntoIter = impl ExactSizeIterator<Item = Requirement<Url>>>,
     ) {
-        let reqs_iter = requirements.into_iter();
-        let mut url_reqs = IndexSet::with_capacity(reqs_iter.len());
-        for requirement in reqs_iter {
-            match &requirement.version_or_url {
-                Some(VersionOrUrl::Url(_)) => {
-                    url_reqs.insert(requirement);
+        for requirement in requirements {
+            match CategorizedRequirement::categorize(requirement) {
+                CategorizedRequirement::DirectReference(url_requirement) => {
+                    self.urls.push(url_requirement)
                 }
-                _ => {
-                    self.reqs.push(requirement);
-                }
-            }
-        }
-        for mut url_req in url_reqs {
-            if let Some(VersionOrUrl::Url(url)) = url_req.version_or_url.take() {
-                self.urls.push(UrlRequirement {
-                    url,
-                    requirement: url_req,
-                });
+                CategorizedRequirement::Requirement(requirement) => self.reqs.push(requirement),
             }
         }
     }
@@ -1505,18 +1512,17 @@ fn resolve_projects_and_url_requirements(
             }
             let mut url_requirements = Vec::new();
             if resolved_projects.wheels.insert(project.wheel) {
-                for mut dependency in project.dependencies {
-                    match dependency.version_or_url.take() {
-                        Some(VersionOrUrl::Url(url)) => {
-                            if !seen_urls.contains(&url) {
-                                seen_urls.insert(url.clone());
-                                url_requirements.push(UrlRequirement {
-                                    url,
-                                    requirement: dependency,
-                                })
+                for dependency in project.dependencies {
+                    match CategorizedRequirement::categorize(dependency) {
+                        CategorizedRequirement::DirectReference(url_requirement) => {
+                            if !seen_urls.contains(&url_requirement.url) {
+                                seen_urls.insert(url_requirement.url.clone());
+                                url_requirements.push(url_requirement)
                             }
                         }
-                        _ => resolved_projects.dependencies.push(dependency),
+                        CategorizedRequirement::Requirement(dependency) => {
+                            resolved_projects.dependencies.push(dependency)
+                        }
                     }
                 }
             }
