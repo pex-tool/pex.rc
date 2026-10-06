@@ -485,7 +485,12 @@ impl PexEntryPoint {
                             .path
                             .file_name()
                             .and_then(OsStr::to_str)
-                            .ok_or_else(|| anyhow!("XXX"))
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "The wheel at {path} does not have a valid file name.",
+                                    path = wheel.path.display()
+                                )
+                            })
                             .and_then(WheelFile::parse_file_name)?;
                         let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
                         let metadata_dirs = MetadataDirs::locate_in_zip(
@@ -1867,18 +1872,26 @@ fn move_top_dir(unpack_chroot: &Path, dest_dir: &Path) -> anyhow::Result<Project
         .map(|entry| Ok(entry?))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let top_dir = if entries.is_empty() {
-        bail!("XXX: Empty top dir!")
+        bail!("Empty top dir!")
     } else if entries.len() == 1 {
         let entry = entries.into_iter().next().expect("We confirmed 1 entry.");
         if !entry.metadata()?.is_dir() {
-            bail!("XXX: Top entry is a file!")
+            bail!("Top entry is a file!")
         }
         entry.path()
     } else {
-        bail!(
-            "XXX: More than one top dir under {chroot}: {entries:#?}",
-            chroot = unpack_chroot.display()
-        )
+        struct AmbiguousTopDir(Vec<std::fs::DirEntry>);
+        impl Display for AmbiguousTopDir {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                write!(f, "More than one top dir:")?;
+                for entry in &self.0 {
+                    writeln!(f)?;
+                    write!(f, "- {}", entry.file_name().display())?;
+                }
+                Ok(())
+            }
+        }
+        bail!("{}", AmbiguousTopDir(entries))
     };
 
     let project_dir = dest_dir.join(
@@ -2069,7 +2082,19 @@ fn resolve_project(
     } else if is_whl(&project) {
         project
     } else {
-        bail!("XXX: Can't categorize {}", project.display())
+        if let Some(req) = project_req {
+            bail!(
+                "Can't identify {req} downloaded at {}.\n\
+                It is not a whl and does not appear to hold Python project sources.",
+                project.display()
+            )
+        } else {
+            bail!(
+                "Can't identify {}.\n\
+                It is not a whl and does not appear to hold Python project sources.",
+                project.display()
+            )
+        }
     };
 
     let wheel = cache_wheel(&wheel_path, wheel_options)?;
@@ -2172,7 +2197,12 @@ fn adjust_requirements(
                         .path
                         .file_name()
                         .and_then(OsStr::to_str)
-                        .ok_or_else(|| anyhow!("XXX"))
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "The wheel at {path} does not have a valid file name.",
+                                path = wheel.path.display()
+                            )
+                        })
                         .and_then(WheelFile::parse_file_name)
                         .map(|wheel_file| Cow::Owned(wheel_file.project_name.to_string()))
                 })
@@ -2502,10 +2532,12 @@ fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<Fin
     let time_cache = debug_span!("cache_wheel", wheel=%wheel.display());
     let _time_cache = time_cache.enter();
     let wheel_file = WheelFile::parse_file_name(
-        wheel
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or_else(|| anyhow!("XXX"))?,
+        wheel.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+            anyhow!(
+                "The wheel at {path} does not have a valid file name.",
+                path = wheel.display()
+            )
+        })?,
     )?;
     let wheel_path = wheel_path(wheel_file.file_name, wheel_options)?;
     let fingerprint_path = wheel_path.with_added_extension(ALGORITHM_NAME);
@@ -2821,7 +2853,7 @@ impl<'a> Wheels<'a> {
             paths.push(
                 self.wheel_files
                     .shift_remove(file_name)
-                    .ok_or_else(|| anyhow!("XXX"))?,
+                    .ok_or_else(|| anyhow!("The collected wheels do not include {file_name}."))?,
             )
         }
         Ok(paths)
@@ -2843,7 +2875,10 @@ impl<'a> MetadataReader for Wheels<'a> {
                 .insert(wheel_file.file_name.to_string(), wheel_zip);
             Ok(metadata_dirs)
         } else {
-            bail!("XXX")
+            bail!(
+                "The collected wheels do not include {file_name}.",
+                file_name = wheel_file.file_name
+            )
         }
     }
 
@@ -2856,7 +2891,12 @@ impl<'a> MetadataReader for Wheels<'a> {
         let zip = self
             .wheel_zips
             .get_mut(wheel_file.file_name)
-            .ok_or_else(|| anyhow!("XXX"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "The collected wheels do not include {file_name}.",
+                    file_name = wheel_file.file_name
+                )
+            })?;
         let dist_info_dir = metadata_dirs.dist_info_dir();
         Ok(io::read_to_string(
             zip.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
