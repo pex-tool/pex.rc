@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.34.0
+
+This release removes the `--project` support introduced in 0.33.0 in favor of fully supporting
+PEP-440 direct reference URLs and Pip extensions to the format (`<project> @ <bare file path>`).
+Only git is supported for VCS direct references but `#subdirectory=<subdir>` is supported for all
+source urls (git, sdists, other source archives and source directories).
+
 ## 0.33.0
 
 This release adds initial support for `--project`s to `pexrc -X build`. This allows building a PEX
