@@ -1327,6 +1327,14 @@ struct UrlRequirement {
     requirement: Requirement<Url>,
 }
 
+impl UrlRequirement {
+    fn to_file_path(&self) -> anyhow::Result<PathBuf> {
+        self.url
+            .to_file_path()
+            .map_err(|_| anyhow!("Failed to extract a valid path from {url}.", url = self.url))
+    }
+}
+
 enum CategorizedRequirement {
     DirectReference(UrlRequirement),
     Requirement(Requirement<Url>),
@@ -1955,19 +1963,18 @@ fn resolve_project(
             match url_requirement.scheme {
                 Scheme::File => (
                     None,
-                    url_requirement.url.path().into(),
+                    url_requirement.to_file_path()?,
                     sub_dir,
                     Some(url_requirement.requirement),
                 ),
                 Scheme::Http | Scheme::Https => {
-                    let file_name = Path::new(url_requirement.url.path())
-                        .file_name()
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "Cannot identify the project type from {}.",
-                                url_requirement.url
-                            )
-                        })?;
+                    let path = url_requirement.to_file_path()?;
+                    let file_name = path.file_name().ok_or_else(|| {
+                        anyhow!(
+                            "Cannot identify the project type from {}.",
+                            url_requirement.url
+                        )
+                    })?;
                     let chroot_dir = tempfile::tempdir_in(dest_dir)?;
                     let project = chroot_dir.path().join(file_name);
                     download_project(url_requirement.url, &mut File::create(&project)?)?;
