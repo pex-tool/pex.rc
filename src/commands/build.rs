@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::{env, io, mem, process};
@@ -1297,8 +1298,32 @@ impl Build {
 }
 
 #[derive(Clone, Hash, Eq, PartialEq)]
+struct GitRef(String);
+
+impl GitRef {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for GitRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+enum Scheme {
+    File,
+    Http,
+    Https,
+    Git(Option<GitRef>),
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
 struct UrlRequirement {
     url: Url,
+    scheme: Scheme,
     requirement: Requirement<Url>,
 }
 
@@ -1311,13 +1336,37 @@ impl CategorizedRequirement {
     fn categorize(mut requirement: Requirement<Url>) -> anyhow::Result<Self> {
         match requirement.version_or_url.take() {
             Some(VersionOrUrl::Url(url)) => {
-                if let Some((vcs, _)) = url.scheme().split_once('+') {
-                    bail!(
-                        "VCS requirements are not currently supported: Asked to resolve for {vcs} \
-                        via {url}"
-                    )
-                }
-                Ok(Self::DirectReference(UrlRequirement { url, requirement }))
+                let scheme = if let Some((vcs, _)) = url.scheme().split_once('+') {
+                    match vcs {
+                        "git" => {
+                            let git_ref = if let Some((_, git_ref)) = url.path().rsplit_once('@') {
+                                Some(GitRef(git_ref.to_string()))
+                            } else {
+                                None
+                            };
+                            Scheme::Git(git_ref)
+                        }
+                        _ => bail!(
+                            "The direct reference VCS requirement {url} uses unsupported vcs \
+                            '{vcs}'."
+                        ),
+                    }
+                } else {
+                    match url.scheme() {
+                        "file" => Scheme::File,
+                        "http" => Scheme::Http,
+                        "https" => Scheme::Https,
+                        other => bail!(
+                            "The direct reference requirement {url} uses unsupported scheme \
+                            '{other}'."
+                        ),
+                    }
+                };
+                Ok(Self::DirectReference(UrlRequirement {
+                    url,
+                    scheme,
+                    requirement,
+                }))
             }
             version => {
                 requirement.version_or_url = version;
@@ -1757,6 +1806,53 @@ fn download_project(url: Url, dst: &mut impl Write) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[instrument(level = "debug", skip_all, fields(url = %git_url))]
+fn git_clone_project(
+    git_url: Url,
+    git_ref: Option<GitRef>,
+    clone_dir: &Path,
+) -> anyhow::Result<()> {
+    let create_git_command = || {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(clone_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    };
+    let result = create_git_command()
+        .arg("clone")
+        .arg(git_url.as_str())
+        .arg(".")
+        .spawn()
+        .and_then(|process| process.wait_with_output())
+        .map_err(|err| anyhow!("Failed to clone {git_url}: {err}"))?;
+    result.status.exit_ok().map_err(|err| {
+        anyhow!(
+            "Failed to clone {git_url}: {err}\n\
+            Stderr from git:\n\
+            {stderr}",
+            stderr = String::from_utf8_lossy(&result.stderr).trim_end()
+        )
+    })?;
+    if let Some(git_ref) = git_ref.as_ref() {
+        let result = create_git_command()
+            .args(["reset", "--hard"])
+            .arg(git_ref.as_str())
+            .spawn()
+            .and_then(|process| process.wait_with_output())
+            .map_err(|err| anyhow!("Failed to reset {git_url} to {git_ref}: {err}"))?;
+        result.status.exit_ok().map_err(|err| {
+            anyhow!(
+                "Failed to reset {git_url} to {git_ref}: {err}\n\
+                Stderr from git:\n\
+                {stderr}",
+                stderr = String::from_utf8_lossy(&result.stderr).trim_end()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn move_top_dir(unpack_chroot: &Path, dest_dir: &Path) -> anyhow::Result<ProjectDir> {
     let entries = unpack_chroot
         .read_dir()?
@@ -1838,30 +1934,80 @@ fn resolve_project(
     dependency_configuration: &DependencyConfiguration,
     dest_dir: &Path,
 ) -> anyhow::Result<ResolvedProject> {
-    let (_downloaded_guard, project, project_req) = match project {
+    let (_downloaded_guard, project, sub_dir, project_req) = match project {
         Project::Url(url_requirement) => {
-            if url_requirement.url.scheme() == "file" {
-                (
+            let mut sub_dir: Option<PathBuf> = None;
+            if let Some(fragment) = url_requirement.url.fragment() {
+                for (name, value) in form_urlencoded::parse(fragment.as_bytes()) {
+                    if name.as_ref() == "subdirectory" {
+                        if let Some(sub_dir) = sub_dir {
+                            warn!(
+                                "Overriding earlier subdirectory fragment param {sub_dir} with \
+                                {value} from {url}.",
+                                sub_dir = sub_dir.display(),
+                                url = url_requirement.url
+                            )
+                        }
+                        sub_dir = Some(PathBuf::from(value.into_owned()));
+                    }
+                }
+            }
+            match url_requirement.scheme {
+                Scheme::File => (
                     None,
                     url_requirement.url.path().into(),
+                    sub_dir,
                     Some(url_requirement.requirement),
-                )
-            } else {
-                let file_name = Path::new(url_requirement.url.path())
-                    .file_name()
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Cannot identify the project type from {}.",
-                            url_requirement.url
-                        )
-                    })?;
-                let chroot_dir = tempfile::tempdir_in(dest_dir)?;
-                let project = chroot_dir.path().join(file_name);
-                download_project(url_requirement.url, &mut File::create(&project)?)?;
-                (Some(chroot_dir), project, Some(url_requirement.requirement))
+                ),
+                Scheme::Http | Scheme::Https => {
+                    let file_name = Path::new(url_requirement.url.path())
+                        .file_name()
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Cannot identify the project type from {}.",
+                                url_requirement.url
+                            )
+                        })?;
+                    let chroot_dir = tempfile::tempdir_in(dest_dir)?;
+                    let project = chroot_dir.path().join(file_name);
+                    download_project(url_requirement.url, &mut File::create(&project)?)?;
+                    (
+                        Some(chroot_dir),
+                        project,
+                        sub_dir,
+                        Some(url_requirement.requirement),
+                    )
+                }
+                Scheme::Git(git_ref) => {
+                    let (_, url) = url_requirement
+                        .url
+                        .as_str()
+                        .split_once('+')
+                        .expect("We already parsed git+<url> to get here.");
+                    let mut url = Url::parse(url)?;
+                    url.set_fragment(None);
+                    if git_ref.is_some() {
+                        let (path_prefix, _) = url_requirement
+                            .url
+                            .path()
+                            .rsplit_once('@')
+                            .expect("We already parsed <path_prefix>@<ref> to get here.");
+                        url.set_path(path_prefix);
+                    }
+                    let clone_temp_dir = tempfile::tempdir_in(dest_dir)?;
+                    let clone_dir = clone_temp_dir.path();
+                    let project_dir = clone_dir.to_path_buf();
+                    git_clone_project(url, git_ref, clone_dir)?;
+                    (
+                        Some(clone_temp_dir),
+                        project_dir,
+                        sub_dir,
+                        Some(url_requirement.requirement),
+                    )
+                }
             }
         }
-        Project::Local(path) => (None, path, None),
+        Project::Local(path) => (None, path, None, None),
     };
 
     let include_system_site_packages = false; // TODO: XXX: plumb this
@@ -1883,28 +2029,34 @@ fn resolve_project(
         }
     };
     let wheel_path = if project.is_dir() {
-        build_wheel(
-            ProjectDir::new(&project)?,
-            dest_dir,
-            &venv_builder,
-            &mut Scripts::Embedded,
-        )
-        .with_context(build_err_context)?
+        let project_dir = if let Some(sub_dir) = sub_dir {
+            ProjectDir::new(project.join(sub_dir))?
+        } else {
+            ProjectDir::new(&project)?
+        };
+        build_wheel(project_dir, dest_dir, &venv_builder, &mut Scripts::Embedded)
+            .with_context(build_err_context)?
     } else if is_tgz(&project) {
-        let project_dir = unpack_tarball(
+        let mut project_dir = unpack_tarball(
             flate2::read::GzDecoder::new(File::open(&project)?),
             dest_dir,
         )?;
+        if let Some(sub_dir) = sub_dir {
+            project_dir.push_sub_dir(sub_dir)?;
+        }
         build_wheel(project_dir, dest_dir, &venv_builder, &mut Scripts::Embedded)
             .with_context(build_err_context)?
     } else if is_zip(&project) {
-        let project_dir = unpack_zip(&project, dest_dir).with_context(|| {
+        let mut project_dir = unpack_zip(&project, dest_dir).with_context(|| {
             format!(
                 "Failed to unpack {} to {}",
                 project.display(),
                 dest_dir.display()
             )
         })?;
+        if let Some(sub_dir) = sub_dir {
+            project_dir.push_sub_dir(sub_dir)?;
+        }
         build_wheel(project_dir, dest_dir, &venv_builder, &mut Scripts::Embedded)
             .with_context(build_err_context)?
     } else if is_whl(&project) {

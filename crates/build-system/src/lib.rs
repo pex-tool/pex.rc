@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::io::Cursor;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::{env, io};
@@ -106,6 +106,21 @@ impl ProjectDir {
             );
         }
         Ok(Self(dir))
+    }
+
+    pub fn push_sub_dir(&mut self, sub_dir: impl AsRef<Path>) -> anyhow::Result<()> {
+        let sub_dir = sub_dir.as_ref();
+        if sub_dir
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            bail!(
+                "Sub-dirs can only consist of normal components; given: {}",
+                sub_dir.display()
+            )
+        }
+        self.0.push(sub_dir);
+        Ok(())
     }
 }
 

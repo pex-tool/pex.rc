@@ -2322,6 +2322,7 @@ dependencies = [
  "enumset",
  "env_logger",
  "flate2",
+ "form_urlencoded",
  "fs-err",
  "include_dir",
  "indexmap 2.14.2",
