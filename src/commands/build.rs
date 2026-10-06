@@ -34,7 +34,7 @@ use interpreter::{
     VersionSpecificity,
 };
 use ouroboros::self_referencing;
-use pep440_rs::{VersionSpecifier, VersionSpecifiers};
+use pep440_rs::VersionSpecifiers;
 use pep508_rs::{MarkerTree, Requirement, VerbatimUrl, VersionOrUrl};
 use pex::{
     BinPath,
@@ -869,12 +869,6 @@ pub struct Build {
     )]
     wheels: Vec<PathBuf>,
 
-    /// Add the specified Python project to the PEX along with its transitive dependencies.
-    ///
-    /// The path can be that of a Python project directory, an sdist or a pre-built project wheel.
-    #[arg(long = "project", help_heading = "Content", verbatim_doc_comment)]
-    projects: Vec<PathBuf>,
-
     #[command(flatten)]
     sources: Sources,
 
@@ -1243,25 +1237,20 @@ impl Build {
             pex_info.overridden.as_slice(),
         )?;
         let (_dest_dir_guard, fingerprinted_project_wheels, requirements) =
-            if !self.projects.is_empty() || !requirements.urls.is_empty() {
+            if !requirements.urls.is_empty() {
                 let Some(repository) = repository.as_ref() else {
                     let mut message = format!(
                         "Cannot build requested {projects} without either `--wheels` or `--venv`s \
                         specified to resolve build systems from:",
-                        projects = if self.projects.len() + requirements.urls.len() == 1 {
+                        projects = if requirements.urls.len() == 1 {
                             "project"
                         } else {
                             "projects"
                         }
                     );
-                    match (self.projects.as_slice(), requirements.urls.as_slice()) {
-                        ([project], []) => write!(&mut message, " {}", project.display())?,
-                        ([], [req]) => write!(&mut message, " {req}", req = req.requirement)?,
-                        (projects, reqs) => {
-                            for project in projects {
-                                writeln!(&mut message)?;
-                                write!(&mut message, "- {}", project.display())?;
-                            }
+                    match requirements.urls.as_slice() {
+                        [req] => write!(&mut message, " {req}", req = req.requirement)?,
+                        reqs => {
                             for req in reqs {
                                 writeln!(&mut message)?;
                                 write!(&mut message, "- {req}", req = req.requirement)?;
@@ -1278,7 +1267,6 @@ impl Build {
                     tempfile::tempdir()?
                 };
                 let resolved_projects = resolve_projects_and_url_requirements(
-                    self.projects,
                     requirements,
                     &platforms,
                     interpreter_selection.search_path.as_ref(),
@@ -1287,12 +1275,6 @@ impl Build {
                     &dependency_configuration,
                     dest_dir.path(),
                 )?;
-                pex_info.requirements.extend(
-                    resolved_projects
-                        .project_requirements
-                        .into_iter()
-                        .map(|requirement| Cow::Owned(requirement.to_string())),
-                );
                 (
                     Some(dest_dir),
                     Some(resolved_projects.wheels),
@@ -1376,6 +1358,12 @@ impl UrlRequirement {
         Path::new(self.url.path())
             .file_name()
             .ok_or_else(|| anyhow!("Cannot identify a file name from {}.", self.url))
+    }
+}
+
+impl Display for UrlRequirement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{req} @ {url}", req = self.requirement, url = self.url)
     }
 }
 
@@ -1480,29 +1468,12 @@ impl TryFrom<Vec<Requirement<Url>>> for Requirements {
 
 struct ResolvedProjects {
     wheels: IndexSet<FingerprintedWheel>,
-    project_requirements: Vec<Requirement<Url>>,
     dependencies: Vec<Requirement<Url>>,
-}
-
-#[derive(Clone)]
-enum Project {
-    Local(PathBuf),
-    Url(Box<UrlRequirement>),
-}
-
-impl Display for Project {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Project::Local(path) => write!(f, "{}", path.display()),
-            Project::Url(url_requirement) => write!(f, "{}", url_requirement.requirement),
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "debug", skip_all)]
 fn resolve_projects_and_url_requirements(
-    projects: Vec<PathBuf>,
     requirements: Requirements,
     platforms: &[Platform],
     search_path: Option<&SearchPath>,
@@ -1607,19 +1578,13 @@ fn resolve_projects_and_url_requirements(
     }
 
     let mut resolved_projects = ResolvedProjects {
-        wheels: IndexSet::with_capacity(projects.len() + requirements.urls.len()),
-        project_requirements: Vec::with_capacity(projects.len()),
+        wheels: IndexSet::with_capacity(requirements.urls.len()),
         dependencies: requirements.reqs,
     };
 
     let mut seen_urls = HashSet::new();
     let mut process_resolved_project =
         |project: ResolvedProject| -> anyhow::Result<Vec<UrlRequirement>> {
-            if !project.requirement_was_known {
-                resolved_projects
-                    .project_requirements
-                    .push(project.wheel.requirement()?);
-            }
             let mut url_requirements = Vec::new();
             if resolved_projects.wheels.insert(project.wheel) {
                 for dependency in project.dependencies {
@@ -1639,30 +1604,22 @@ fn resolve_projects_and_url_requirements(
             Ok(url_requirements)
         };
 
-    let projects = projects
+    let projects = requirements
+        .urls
         .into_iter()
-        .map(Project::Local)
-        .chain(
-            requirements
-                .urls
-                .into_iter()
-                .map(Box::new)
-                .map(Project::Url),
-        )
-        .flat_map(|project| {
+        .flat_map(|url_requirement| {
             interpreters
                 .iter()
-                .filter_map(|interpreter| match &project {
-                    Project::Local(_) => Some((project.clone(), interpreter)),
-                    Project::Url(url_requirement)
-                        if url_requirement
-                            .requirement
-                            .marker
-                            .evaluate(interpreter.platform_details().marker_env(), &[]) =>
+                .filter_map(|interpreter| {
+                    if url_requirement
+                        .requirement
+                        .marker
+                        .evaluate(interpreter.platform_details().marker_env(), &[])
                     {
-                        Some((project.clone(), interpreter))
+                        Some((url_requirement.clone(), interpreter))
+                    } else {
+                        None
                     }
-                    _ => None,
                 })
                 .collect::<Vec<_>>()
         })
@@ -1707,7 +1664,7 @@ fn resolve_projects_and_url_requirements(
             .into_par_iter()
             .map(|(url_requirement, interpreter)| {
                 resolve_project(
-                    Project::Url(Box::new(url_requirement)),
+                    url_requirement,
                     interpreter.as_ref(),
                     repository,
                     wheel_options,
@@ -1820,7 +1777,6 @@ impl<D: Display, R: Read + Seek> MetadataReader for Whl<D, R> {
 
 struct ResolvedProject {
     wheel: FingerprintedWheel,
-    requirement_was_known: bool,
     dependencies: Vec<Requirement<Url>>,
 }
 
@@ -1987,80 +1943,72 @@ fn unpack_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::Result<ProjectDir> {
 
 #[instrument(level = "debug", skip_all, fields(project = %project))]
 fn resolve_project(
-    project: Project,
+    project: UrlRequirement,
     interpreter: &Interpreter,
     repository: &Repository,
     wheel_options: &WheelOptions,
     dependency_configuration: &DependencyConfiguration,
     dest_dir: &Path,
 ) -> anyhow::Result<ResolvedProject> {
-    let (_downloaded_guard, project, sub_dir, project_req) = match project {
-        Project::Url(url_requirement) => {
-            let mut sub_dir: Option<PathBuf> = None;
-            if let Some(fragment) = url_requirement.url.fragment() {
-                for (name, value) in form_urlencoded::parse(fragment.as_bytes()) {
-                    if name.as_ref() == "subdirectory" {
-                        if let Some(sub_dir) = sub_dir {
-                            warn!(
-                                "Overriding earlier subdirectory fragment param {sub_dir} with \
-                                {value} from {url}.",
-                                sub_dir = sub_dir.display(),
-                                url = url_requirement.url
-                            )
-                        }
-                        sub_dir = Some(PathBuf::from(value.into_owned()));
+    let (_downloaded_guard, project, sub_dir, project_req) = {
+        let mut sub_dir: Option<PathBuf> = None;
+        if let Some(fragment) = project.url.fragment() {
+            for (name, value) in form_urlencoded::parse(fragment.as_bytes()) {
+                if name.as_ref() == "subdirectory" {
+                    if let Some(sub_dir) = sub_dir {
+                        warn!(
+                            "Overriding earlier subdirectory fragment param {sub_dir} with \
+                            {value} from {url}.",
+                            sub_dir = sub_dir.display(),
+                            url = project.url
+                        )
                     }
-                }
-            }
-            match url_requirement.scheme {
-                Scheme::File => (
-                    None,
-                    url_requirement.to_file_path(),
-                    sub_dir,
-                    Some(url_requirement.requirement),
-                ),
-                Scheme::Http | Scheme::Https => {
-                    let file_name = url_requirement.file_name()?;
-                    let chroot_dir = tempfile::tempdir_in(dest_dir)?;
-                    let project = chroot_dir.path().join(file_name);
-                    download_project(url_requirement.url, &mut File::create(&project)?)?;
-                    (
-                        Some(chroot_dir),
-                        project,
-                        sub_dir,
-                        Some(url_requirement.requirement),
-                    )
-                }
-                Scheme::Git(git_ref) => {
-                    let (_, url) = url_requirement
-                        .url
-                        .as_str()
-                        .split_once('+')
-                        .expect("We already parsed git+<url> to get here.");
-                    let mut url = Url::parse(url)?;
-                    url.set_fragment(None);
-                    if git_ref.is_some() {
-                        let (path_prefix, _) = url_requirement
-                            .url
-                            .path()
-                            .rsplit_once('@')
-                            .expect("We already parsed <path_prefix>@<ref> to get here.");
-                        url.set_path(path_prefix);
-                    }
-                    let clone_temp_dir = tempfile::tempdir_in(dest_dir)?;
-                    let clone_dir = clone_temp_dir.path();
-                    let project_dir = clone_dir.to_path_buf();
-                    git_clone_project(url, git_ref, clone_dir)?;
-                    (
-                        Some(clone_temp_dir),
-                        project_dir,
-                        sub_dir,
-                        Some(url_requirement.requirement),
-                    )
+                    sub_dir = Some(PathBuf::from(value.into_owned()));
                 }
             }
         }
-        Project::Local(path) => (None, path, None, None),
+        match project.scheme {
+            Scheme::File => (
+                None,
+                project.to_file_path(),
+                sub_dir,
+                Some(project.requirement),
+            ),
+            Scheme::Http | Scheme::Https => {
+                let file_name = project.file_name()?;
+                let chroot_dir = tempfile::tempdir_in(dest_dir)?;
+                let dst = chroot_dir.path().join(file_name);
+                download_project(project.url, &mut File::create(&dst)?)?;
+                (Some(chroot_dir), dst, sub_dir, Some(project.requirement))
+            }
+            Scheme::Git(git_ref) => {
+                let (_, url) = project
+                    .url
+                    .as_str()
+                    .split_once('+')
+                    .expect("We already parsed git+<url> to get here.");
+                let mut url = Url::parse(url)?;
+                url.set_fragment(None);
+                if git_ref.is_some() {
+                    let (path_prefix, _) = project
+                        .url
+                        .path()
+                        .rsplit_once('@')
+                        .expect("We already parsed <path_prefix>@<ref> to get here.");
+                    url.set_path(path_prefix);
+                }
+                let clone_temp_dir = tempfile::tempdir_in(dest_dir)?;
+                let clone_dir = clone_temp_dir.path();
+                let project_dir = clone_dir.to_path_buf();
+                git_clone_project(url, git_ref, clone_dir)?;
+                (
+                    Some(clone_temp_dir),
+                    project_dir,
+                    sub_dir,
+                    Some(project.requirement),
+                )
+            }
+        }
     };
 
     let include_system_site_packages = false; // TODO: XXX: plumb this
@@ -2137,7 +2085,6 @@ fn resolve_project(
     let metadata_dirs = wheel_file.metadata_dirs_from_zip(&zip, &zip_source, None)?;
     let mut whl = Whl { zip, zip_source };
     let whl_metadata = WheelMetadata::parse(wheel_file, metadata_dirs, &mut whl)?;
-    let requirement_was_known = project_req.is_some();
     let dependencies = {
         let mut requirements = Vec::with_capacity(whl_metadata.requires_dists.len());
         let extras = if let Some(project_req) = project_req {
@@ -2155,7 +2102,6 @@ fn resolve_project(
     };
     Ok(ResolvedProject {
         wheel,
-        requirement_was_known,
         dependencies,
     })
 }
@@ -2540,21 +2486,6 @@ impl Hash for FingerprintedWheel {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write(self.file_name.as_bytes());
         state.write(self.fingerprint.as_bytes())
-    }
-}
-
-impl FingerprintedWheel {
-    fn requirement(&self) -> anyhow::Result<Requirement<Url>> {
-        let wheel_file = WheelFile::parse_file_name(&self.file_name)?;
-        Ok(Requirement {
-            name: wheel_file.project_name,
-            extras: vec![],
-            version_or_url: Some(VersionOrUrl::VersionSpecifier(
-                VersionSpecifier::equals_version(wheel_file.version).into(),
-            )),
-            marker: MarkerTree::TRUE,
-            origin: None,
-        })
     }
 }
 
