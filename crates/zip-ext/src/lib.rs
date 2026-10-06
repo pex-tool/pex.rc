@@ -15,6 +15,7 @@ pub trait ZipArchiveExt<R: Read + Seek> {
 
 impl<R: Read + Seek> ZipArchiveExt<R> for ZipArchive<R> {
     fn by_name_ex(&mut self, name: &str) -> anyhow::Result<ZipFile<'_, R>> {
-        self.by_name(name).with_context(|| name.to_owned())
+        self.by_name(name)
+            .with_context(|| format!("Failed to find zip entry {name}."))
     }
 }

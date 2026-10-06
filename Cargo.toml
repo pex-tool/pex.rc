@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 
 [package]
 name = "pexrc"
-version = "0.33.0"
+version = "0.34.0"
 edition = { workspace = true }
 publish = false
 
@@ -170,6 +170,7 @@ enumset = "1.1"
 env_filter = "2.0"
 env_logger = "0.11"
 flate2 = "1.1"
+form_urlencoded = "1.2"
 fs-err = "3.3"
 glob = "0.3"
 graphviz-rust = "0.9"
@@ -188,7 +189,7 @@ parking_lot = "0.12"
 pathdiff = "0.2"
 pelite = "0.10"
 pep440_rs = "0.7"
-pep508_rs = "0.9"
+pep508_rs = {  version = "0.9", features = ["non-pep508-extensions"] }
 plist = "1.9"
 pretty_assertions = "1.4"
 python-pkginfo = "0.6"
@@ -253,6 +254,8 @@ color-print = { workspace = true }
 const_format = { workspace = true }
 digest = { workspace = true }
 enumset = { workspace = true }
+flate2 = { workspace = true }
+form_urlencoded = { workspace = true }
 fs-err = { workspace = true }
 include_dir = { workspace = true }
 indexmap = { workspace = true }
@@ -279,6 +282,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 shlex = { workspace = true }
 strum = { workspace = true }
+tar = { workspace = true }
 target = { path = "crates/target" }
 tempfile = { workspace = true }
 toml = { workspace = true }

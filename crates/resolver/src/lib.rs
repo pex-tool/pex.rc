@@ -275,7 +275,7 @@ pub fn resolve_wheels<'a>(
                     }
                 }
                 anyhow!(
-                    "The requirement {requirement} cannot be satisfied: {reason}",
+                    "The requirement \"{requirement}\" cannot be satisfied: {reason}",
                     reason = Reason(&source, requirement, inapplicable_wheels)
                 )
             })?;

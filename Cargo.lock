@@ -2302,7 +2302,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2321,6 +2321,8 @@ dependencies = [
  "digest",
  "enumset",
  "env_logger",
+ "flate2",
+ "form_urlencoded",
  "fs-err",
  "include_dir",
  "indexmap 2.14.2",
@@ -2347,6 +2349,7 @@ dependencies = [
  "sha2",
  "shlex",
  "strum",
+ "tar",
  "target",
  "tempfile",
  "toml",

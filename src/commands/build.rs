@@ -5,16 +5,18 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Display, Formatter, Write as _};
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
-use std::{env, io, process};
+use std::{env, io, mem, process};
 
-use anyhow::{anyhow, bail};
+use anyhow::{Context, anyhow, bail};
 use boot::{inject_boot, sh_boot_buffer, write_boot, write_sh_boot_shebang};
-use build_system::{VenvBuilder, build_wheel};
+use build_system::{ProjectDir, VenvBuilder, build_wheel};
 use cache::{CacheDir, DigestingWriter, Fingerprint, HashOptions, Key, atomic_file};
 use clap::Args;
 use const_format::concatcp;
@@ -33,7 +35,7 @@ use interpreter::{
 };
 use ouroboros::self_referencing;
 use pep440_rs::VersionSpecifiers;
-use pep508_rs::Requirement;
+use pep508_rs::{MarkerTree, Requirement, VerbatimUrl, VersionOrUrl};
 use pex::{
     BinPath,
     DEPS_DIR,
@@ -46,7 +48,12 @@ use pex::{
     SRCS_ZIP_DIR,
 };
 use platform::mark_executable;
-use python_platform::{PYTHON_PLATFORM_LONG_HELP, PlatformDetails, PythonImplementation};
+use python_platform::{
+    PYTHON_PLATFORM_LONG_HELP,
+    PlatformDetails,
+    PythonImplementation,
+    PythonPlatform as _,
+};
 use python_proxy::ProxySource;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use regex::Regex;
@@ -478,7 +485,12 @@ impl PexEntryPoint {
                             .path
                             .file_name()
                             .and_then(OsStr::to_str)
-                            .ok_or_else(|| anyhow!("XXX"))
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "The wheel at {path} does not have a valid file name.",
+                                    path = wheel.path.display()
+                                )
+                            })
                             .and_then(WheelFile::parse_file_name)?;
                         let mut whl = ZipArchive::new(File::open(&wheel.path)?)?;
                         let metadata_dirs = MetadataDirs::locate_in_zip(
@@ -488,7 +500,7 @@ impl PexEntryPoint {
                             &wheel_file.project_name,
                             &wheel_file.version,
                         )?;
-                        match whl.by_name(&format!(
+                        match whl.by_name_ex(&format!(
                             "{dist_info_dir}/entry_points.txt",
                             dist_info_dir = metadata_dirs.dist_info_dir()
                         )) {
@@ -500,7 +512,13 @@ impl PexEntryPoint {
                                     Ok(None)
                                 }
                             }
-                            Err(ZipError::FileNotFound) => Ok(None),
+                            Err(err)
+                                if let Some(source) = err.source()
+                                    && let Some(zip_error) = source.downcast_ref::<ZipError>()
+                                    && matches!(zip_error, ZipError::FileNotFound) =>
+                            {
+                                Ok(None)
+                            }
                             Err(err) => Err(anyhow!("{err}")),
                         }
                     })
@@ -611,6 +629,12 @@ N.B.: The paths specified must be valid paths at runtime. PEXes will not be merg
 "#,
 );
 
+static CWD: LazyLock<anyhow::Result<PathBuf>> = LazyLock::new(|| Ok(env::current_dir()?));
+
+fn getcwd() -> anyhow::Result<&'static Path> {
+    Ok(CWD.as_ref().map_err(|err| anyhow!("{err}"))?)
+}
+
 #[derive(Clone, Debug)]
 struct Source {
     prefix: PathBuf,
@@ -624,12 +648,12 @@ impl FromStr for Source {
         let (prefix, suffix) = if let Some((source, subdirectory)) = s.rsplit_once('@') {
             let mut subdirectory = Cow::Borrowed(Path::new(subdirectory));
             if subdirectory.is_relative() {
-                subdirectory = Cow::Owned(env::current_dir()?.join(subdirectory));
+                subdirectory = Cow::Owned(getcwd()?.join(subdirectory));
             }
             let prefix = subdirectory.normalize_lexically()?;
             (prefix, source)
         } else {
-            let prefix = env::current_dir()?;
+            let prefix = getcwd()?.to_path_buf();
             (prefix, s)
         };
         Ok(Source {
@@ -773,6 +797,34 @@ impl Sources {
     }
 }
 
+fn parse_url(value: &str) -> anyhow::Result<Requirement<Url>> {
+    let working_dir = getcwd()?;
+    let mut requirement: Requirement<VerbatimUrl> = Requirement::parse(value, working_dir)?;
+    Ok(match requirement.version_or_url.take() {
+        Some(VersionOrUrl::Url(verbatim_url)) => Requirement {
+            name: requirement.name,
+            extras: requirement.extras,
+            version_or_url: Some(VersionOrUrl::Url(verbatim_url.into_url())),
+            marker: requirement.marker,
+            origin: requirement.origin,
+        },
+        Some(VersionOrUrl::VersionSpecifier(version_specifiers)) => Requirement {
+            name: requirement.name,
+            extras: requirement.extras,
+            version_or_url: Some(VersionOrUrl::VersionSpecifier(version_specifiers)),
+            marker: requirement.marker,
+            origin: requirement.origin,
+        },
+        None => Requirement {
+            name: requirement.name,
+            extras: requirement.extras,
+            version_or_url: None,
+            marker: requirement.marker,
+            origin: requirement.origin,
+        },
+    })
+}
+
 #[derive(Args, Debug)]
 #[group(skip)]
 pub struct Build {
@@ -782,6 +834,7 @@ pub struct Build {
     #[arg(
         value_name = "REQUIREMENT",
         help_heading = "Contents",
+        value_parser = parse_url,
         verbatim_doc_comment
     )]
     requirements: Vec<Requirement<Url>>,
@@ -815,12 +868,6 @@ pub struct Build {
         verbatim_doc_comment
     )]
     wheels: Vec<PathBuf>,
-
-    /// Add the specified Python project to the PEX along with its transitive dependencies.
-    ///
-    /// The path can be that of a Python project directory, an sdist or a pre-built project wheel.
-    #[arg(long = "project", help_heading = "Content", verbatim_doc_comment)]
-    projects: Vec<PathBuf>,
 
     #[command(flatten)]
     sources: Sources,
@@ -1115,14 +1162,14 @@ impl Build {
             Shebang::EnvCompatible
         };
 
-        let mut requirements = self.requirements;
+        let mut requirements = Requirements::try_from(self.requirements)?;
         let mut interpreter_selection = self.interpreter_selection_args.finalize();
         let entry_point = if let Some(entry_point) = self.entry_point {
             Some(PexEntryPoint::EntryPoint(entry_point))
         } else if let Some(exe) = self.exe {
             let exe = Exe::try_from(exe)?;
-            if let Some(mut metadata) = exe.metadata {
-                requirements.append(&mut metadata.dependencies);
+            if let Some(metadata) = exe.metadata {
+                requirements.append(metadata.dependencies)?;
                 interpreter_selection.merge(exe.path.display(), metadata.requires_python)?;
             }
             Some(PexEntryPoint::Exe(exe.content))
@@ -1189,49 +1236,53 @@ impl Build {
             pex_info.excluded.as_slice(),
             pex_info.overridden.as_slice(),
         )?;
-        let (_dest_dir_guard, fingerprinted_project_wheels) = if !self.projects.is_empty() {
-            let Some(repository) = repository.as_ref() else {
-                let mut message = format!(
-                    "Cannot build requested {projects} without either `--wheels` or `--venv`s \
-                    specified to resolve build systems from:",
-                    projects = if self.projects.len() == 1 {
-                        "project"
-                    } else {
-                        "projects"
-                    }
-                );
-                match self.projects.as_slice() {
-                    [project] => write!(&mut message, " {}", project.display())?,
-                    _ => {
-                        for project in self.projects {
-                            writeln!(&mut message)?;
-                            write!(&mut message, "- {}", project.display())?;
+        let (_dest_dir_guard, fingerprinted_project_wheels, requirements) =
+            if !requirements.urls.is_empty() {
+                let Some(repository) = repository.as_ref() else {
+                    let mut message = format!(
+                        "Cannot build requested {projects} without either `--wheels` or `--venv`s \
+                        specified to resolve build systems from:",
+                        projects = if requirements.urls.len() == 1 {
+                            "project"
+                        } else {
+                            "projects"
+                        }
+                    );
+                    match requirements.urls.as_slice() {
+                        [req] => write!(&mut message, " {req}", req = req.requirement)?,
+                        reqs => {
+                            for req in reqs {
+                                writeln!(&mut message)?;
+                                write!(&mut message, "- {req}", req = req.requirement)?;
+                            }
                         }
                     }
-                }
-                bail!(message);
-            };
-            let dest_dir = if let Some(output) = self.output.as_deref()
-                && let Some(parent) = output.parent()
-            {
-                tempfile::tempdir_in(parent)?
+                    bail!(message);
+                };
+                let dest_dir = if let Some(output) = self.output.as_deref()
+                    && let Some(parent) = output.parent()
+                {
+                    tempfile::tempdir_in(parent)?
+                } else {
+                    tempfile::tempdir()?
+                };
+                let resolved_projects = resolve_projects_and_url_requirements(
+                    requirements,
+                    &platforms,
+                    interpreter_selection.search_path.as_ref(),
+                    repository,
+                    &wheel_options,
+                    &dependency_configuration,
+                    dest_dir.path(),
+                )?;
+                (
+                    Some(dest_dir),
+                    Some(resolved_projects.wheels),
+                    resolved_projects.dependencies,
+                )
             } else {
-                tempfile::tempdir()?
+                (None, None, requirements.into_requirements())
             };
-            let resolved_projects = resolve_projects(
-                self.projects,
-                &platforms,
-                interpreter_selection.search_path.as_ref(),
-                repository,
-                &wheel_options,
-                &dependency_configuration,
-                dest_dir.path(),
-            )?;
-            requirements.extend(resolved_projects.requirements);
-            (Some(dest_dir), Some(resolved_projects.wheels))
-        } else {
-            (None, None)
-        };
         let (preferred_python, mut wheels) =
             if fingerprinted_project_wheels.is_some() && requirements.is_empty() {
                 (None, vec![])
@@ -1268,34 +1319,162 @@ impl Build {
     }
 }
 
-struct ResolvedProjects {
-    wheels: Vec<FingerprintedWheel>,
-    requirements: IndexSet<Requirement<Url>>,
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct GitRef(String);
+
+impl GitRef {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-impl From<Vec<ResolvedProject>> for ResolvedProjects {
-    fn from(resolved_projects: Vec<ResolvedProject>) -> Self {
-        let mut wheels = Vec::with_capacity(resolved_projects.len());
-        let mut requirements = IndexSet::with_capacity(
-            resolved_projects
-                .iter()
-                .map(|project| project.requirements.len())
-                .sum(),
-        );
-        for resolved_project in resolved_projects {
-            requirements.extend(resolved_project.requirements);
-            wheels.push(resolved_project.wheel);
-        }
-        Self {
-            requirements,
-            wheels,
+impl Display for GitRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+enum Scheme {
+    File,
+    Http,
+    Https,
+    Git(Option<GitRef>),
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct UrlRequirement {
+    url: Url,
+    scheme: Scheme,
+    requirement: Requirement<Url>,
+}
+
+impl UrlRequirement {
+    fn to_file_path(&self) -> PathBuf {
+        PathBuf::from(self.url.path().to_owned())
+    }
+
+    fn file_name(&self) -> anyhow::Result<&OsStr> {
+        Path::new(self.url.path())
+            .file_name()
+            .ok_or_else(|| anyhow!("Cannot identify a file name from {}.", self.url))
+    }
+}
+
+impl Display for UrlRequirement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{req} @ {url}", req = self.requirement, url = self.url)
+    }
+}
+
+enum CategorizedRequirement {
+    DirectReference(UrlRequirement),
+    Requirement(Requirement<Url>),
+}
+
+impl CategorizedRequirement {
+    fn categorize(mut requirement: Requirement<Url>) -> anyhow::Result<Self> {
+        match requirement.version_or_url.take() {
+            Some(VersionOrUrl::Url(url)) => {
+                let scheme = if let Some((vcs, _)) = url.scheme().split_once('+') {
+                    match vcs {
+                        "git" => {
+                            let git_ref = if let Some((_, git_ref)) = url.path().rsplit_once('@') {
+                                Some(GitRef(git_ref.to_string()))
+                            } else {
+                                None
+                            };
+                            Scheme::Git(git_ref)
+                        }
+                        _ => bail!(
+                            "The direct reference VCS requirement {url} uses unsupported vcs \
+                            '{vcs}'."
+                        ),
+                    }
+                } else {
+                    match url.scheme() {
+                        "file" => Scheme::File,
+                        "http" => Scheme::Http,
+                        "https" => Scheme::Https,
+                        other => bail!(
+                            "The direct reference requirement {url} uses unsupported scheme \
+                            '{other}'."
+                        ),
+                    }
+                };
+                Ok(Self::DirectReference(UrlRequirement {
+                    url,
+                    scheme,
+                    requirement,
+                }))
+            }
+            version => {
+                requirement.version_or_url = version;
+                Ok(Self::Requirement(requirement))
+            }
         }
     }
 }
 
+struct Requirements {
+    reqs: Vec<Requirement<Url>>,
+    urls: Vec<UrlRequirement>,
+}
+
+impl Requirements {
+    fn iter(&self) -> impl Iterator<Item = &Requirement<Url>> {
+        self.urls
+            .iter()
+            .map(|url_req| &url_req.requirement)
+            .chain(self.reqs.iter())
+    }
+
+    fn append(
+        &mut self,
+        requirements: impl IntoIterator<IntoIter = impl ExactSizeIterator<Item = Requirement<Url>>>,
+    ) -> anyhow::Result<()> {
+        for requirement in requirements {
+            match CategorizedRequirement::categorize(requirement)? {
+                CategorizedRequirement::DirectReference(url_requirement) => {
+                    self.urls.push(url_requirement)
+                }
+                CategorizedRequirement::Requirement(requirement) => self.reqs.push(requirement),
+            }
+        }
+        Ok(())
+    }
+
+    fn into_requirements(self) -> Vec<Requirement<Url>> {
+        self.urls
+            .into_iter()
+            .map(|url_req| url_req.requirement)
+            .chain(self.reqs)
+            .collect()
+    }
+}
+
+impl TryFrom<Vec<Requirement<Url>>> for Requirements {
+    type Error = anyhow::Error;
+
+    fn try_from(requirements: Vec<Requirement<Url>>) -> anyhow::Result<Self> {
+        let mut reqs = Requirements {
+            urls: Vec::with_capacity(requirements.len()),
+            reqs: Vec::with_capacity(requirements.len()),
+        };
+        reqs.append(requirements)?;
+        Ok(reqs)
+    }
+}
+
+struct ResolvedProjects {
+    wheels: IndexSet<FingerprintedWheel>,
+    dependencies: Vec<Requirement<Url>>,
+}
+
+#[allow(clippy::too_many_arguments)]
 #[instrument(level = "debug", skip_all)]
-fn resolve_projects(
-    projects: Vec<PathBuf>,
+fn resolve_projects_and_url_requirements(
+    requirements: Requirements,
     platforms: &[Platform],
     search_path: Option<&SearchPath>,
     repository: &Repository,
@@ -1398,12 +1577,50 @@ fn resolve_projects(
         bail!("Failed to resolve any interpreters to build projects with!")
     }
 
-    let resolved_projects = projects
+    let mut resolved_projects = ResolvedProjects {
+        wheels: IndexSet::with_capacity(requirements.urls.len()),
+        dependencies: requirements.reqs,
+    };
+
+    let mut seen_urls = HashSet::new();
+    let mut process_resolved_project =
+        |project: ResolvedProject| -> anyhow::Result<Vec<UrlRequirement>> {
+            let mut url_requirements = Vec::new();
+            if resolved_projects.wheels.insert(project.wheel) {
+                for dependency in project.dependencies {
+                    match CategorizedRequirement::categorize(dependency)? {
+                        CategorizedRequirement::DirectReference(url_requirement) => {
+                            if !seen_urls.contains(&url_requirement.url) {
+                                seen_urls.insert(url_requirement.url.clone());
+                                url_requirements.push(url_requirement)
+                            }
+                        }
+                        CategorizedRequirement::Requirement(dependency) => {
+                            resolved_projects.dependencies.push(dependency)
+                        }
+                    }
+                }
+            }
+            Ok(url_requirements)
+        };
+
+    let projects = requirements
+        .urls
         .into_iter()
-        .flat_map(|project| {
+        .flat_map(|url_requirement| {
             interpreters
                 .iter()
-                .map(|interpreter| (project.clone(), interpreter))
+                .filter_map(|interpreter| {
+                    if url_requirement
+                        .requirement
+                        .marker
+                        .evaluate(interpreter.platform_details().marker_env(), &[])
+                    {
+                        Some((url_requirement.clone(), interpreter))
+                    } else {
+                        None
+                    }
+                })
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>()
@@ -1419,7 +1636,48 @@ fn resolve_projects(
             )
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(resolved_projects.into())
+
+    let mut url_requirements = Vec::new();
+    for project in projects {
+        url_requirements.append(&mut process_resolved_project(project)?);
+    }
+    while !url_requirements.is_empty() {
+        for project in mem::take(&mut url_requirements)
+            .into_iter()
+            .flat_map(|url_requirement| {
+                interpreters
+                    .iter()
+                    .filter_map(|interpreter| {
+                        if url_requirement
+                            .requirement
+                            .marker
+                            .evaluate(interpreter.platform_details().marker_env(), &[])
+                        {
+                            Some((url_requirement.clone(), interpreter))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|(url_requirement, interpreter)| {
+                resolve_project(
+                    url_requirement,
+                    interpreter.as_ref(),
+                    repository,
+                    wheel_options,
+                    dependency_configuration,
+                    dest_dir,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+        {
+            url_requirements.append(&mut process_resolved_project(project)?);
+        }
+    }
+    Ok(resolved_projects)
 }
 
 struct BuildSystemVenvBuilder<'a> {
@@ -1519,18 +1777,240 @@ impl<D: Display, R: Read + Seek> MetadataReader for Whl<D, R> {
 
 struct ResolvedProject {
     wheel: FingerprintedWheel,
-    requirements: Vec<Requirement<Url>>,
+    dependencies: Vec<Requirement<Url>>,
 }
 
-#[instrument(level = "debug", skip_all, fields(project = %project.display()))]
+fn is_tgz(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|file_name| {
+            path.file_prefix().map(|prefix| {
+                let (_, full_extension) = file_name.split_at(prefix.len());
+                [".tar.gz", ".tgz"]
+                    .into_iter()
+                    .any(|ext| full_extension == OsStr::new(ext))
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn has_ext(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .map(|extension| extension == OsStr::new(ext))
+        .unwrap_or_default()
+}
+
+fn is_whl(path: &Path) -> bool {
+    has_ext(path, "whl")
+}
+
+fn is_zip(path: &Path) -> bool {
+    has_ext(path, "zip")
+}
+
+#[instrument(level = "debug", skip_all, fields(url = %url))]
+fn download_project(url: Url, dst: &mut impl Write) -> anyhow::Result<()> {
+    let mut response = request::get(url)?.error_for_status()?;
+    io::copy(&mut response, dst)?;
+    Ok(())
+}
+
+#[instrument(level = "debug", skip_all, fields(url = %git_url))]
+fn git_clone_project(
+    git_url: Url,
+    git_ref: Option<GitRef>,
+    clone_dir: &Path,
+) -> anyhow::Result<()> {
+    let create_git_command = || {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(clone_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    };
+    let result = create_git_command()
+        .arg("clone")
+        .arg(git_url.as_str())
+        .arg(".")
+        .spawn()
+        .and_then(|process| process.wait_with_output())
+        .map_err(|err| anyhow!("Failed to clone {git_url}: {err}"))?;
+    result.status.exit_ok().map_err(|err| {
+        anyhow!(
+            "Failed to clone {git_url}: {err}\n\
+            Stderr from git:\n\
+            {stderr}",
+            stderr = String::from_utf8_lossy(&result.stderr).trim_end()
+        )
+    })?;
+    if let Some(git_ref) = git_ref.as_ref() {
+        let result = create_git_command()
+            .args(["reset", "--hard"])
+            .arg(git_ref.as_str())
+            .spawn()
+            .and_then(|process| process.wait_with_output())
+            .map_err(|err| anyhow!("Failed to reset {git_url} to {git_ref}: {err}"))?;
+        result.status.exit_ok().map_err(|err| {
+            anyhow!(
+                "Failed to reset {git_url} to {git_ref}: {err}\n\
+                Stderr from git:\n\
+                {stderr}",
+                stderr = String::from_utf8_lossy(&result.stderr).trim_end()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn move_top_dir(unpack_chroot: &Path, dest_dir: &Path) -> anyhow::Result<ProjectDir> {
+    let entries = unpack_chroot
+        .read_dir()?
+        .map(|entry| Ok(entry?))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let top_dir = if entries.is_empty() {
+        bail!("Empty top dir!")
+    } else if entries.len() == 1 {
+        let entry = entries.into_iter().next().expect("We confirmed 1 entry.");
+        if !entry.metadata()?.is_dir() {
+            bail!("Top entry is a file!")
+        }
+        entry.path()
+    } else {
+        struct AmbiguousTopDir(Vec<std::fs::DirEntry>);
+        impl Display for AmbiguousTopDir {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                write!(f, "More than one top dir:")?;
+                for entry in &self.0 {
+                    writeln!(f)?;
+                    write!(f, "- {}", entry.file_name().display())?;
+                }
+                Ok(())
+            }
+        }
+        bail!("{}", AmbiguousTopDir(entries))
+    };
+
+    let project_dir = dest_dir.join(
+        top_dir
+            .file_name()
+            .expect("We confirmed a file name nested in the temp_dir."),
+    );
+    fs::rename(top_dir, &project_dir)?;
+    ProjectDir::new(project_dir)
+}
+
+#[instrument(level = "debug", skip_all)]
+fn unpack_tarball(tarball: impl Read, dest_dir: &Path) -> anyhow::Result<ProjectDir> {
+    let mut tar = tar::Archive::new(tarball);
+    let temp_dir = tempfile::tempdir_in(dest_dir)?;
+    tar.unpack(temp_dir.path())?;
+    move_top_dir(temp_dir.path(), dest_dir)
+}
+
+#[instrument(level = "debug", skip_all)]
+fn unpack_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::Result<ProjectDir> {
+    let zip = ZipArchive::new(
+        File::open(zip_path)
+            .with_context(|| format!("Failed to open zip at {}", zip_path.display()))?,
+    )?;
+    let metadata = zip.metadata();
+    let temp_dir = tempfile::tempdir_in(dest_dir)?;
+    (0..zip.len())
+        .into_par_iter()
+        .try_for_each(|index| -> anyhow::Result<()> {
+            let mut zip = unsafe {
+                ZipArchive::unsafe_new_with_metadata(File::open(zip_path)?, metadata.clone())
+            };
+            let mut zip_file = zip.by_index(index)?;
+            let dst = temp_dir.path().join(zip_file.name());
+            if zip_file.is_dir() {
+                fs::create_dir_all(dst)?;
+            } else {
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                io::copy(&mut zip_file, &mut File::create(dst)?)?;
+            }
+            Ok(())
+        })?;
+    move_top_dir(temp_dir.path(), dest_dir).with_context(|| {
+        format!(
+            "Failed to move {} to {}",
+            temp_dir.path().display(),
+            dest_dir.display()
+        )
+    })
+}
+
+#[instrument(level = "debug", skip_all, fields(project = %project))]
 fn resolve_project(
-    project: PathBuf,
+    project: UrlRequirement,
     interpreter: &Interpreter,
     repository: &Repository,
     wheel_options: &WheelOptions,
     dependency_configuration: &DependencyConfiguration,
     dest_dir: &Path,
 ) -> anyhow::Result<ResolvedProject> {
+    let (_downloaded_guard, project, sub_dir, project_req) = {
+        let mut sub_dir: Option<PathBuf> = None;
+        if let Some(fragment) = project.url.fragment() {
+            for (name, value) in form_urlencoded::parse(fragment.as_bytes()) {
+                if name.as_ref() == "subdirectory" {
+                    if let Some(sub_dir) = sub_dir {
+                        warn!(
+                            "Overriding earlier subdirectory fragment param {sub_dir} with \
+                            {value} from {url}.",
+                            sub_dir = sub_dir.display(),
+                            url = project.url
+                        )
+                    }
+                    sub_dir = Some(PathBuf::from(value.into_owned()));
+                }
+            }
+        }
+        match project.scheme {
+            Scheme::File => (
+                None,
+                project.to_file_path(),
+                sub_dir,
+                Some(project.requirement),
+            ),
+            Scheme::Http | Scheme::Https => {
+                let file_name = project.file_name()?;
+                let chroot_dir = tempfile::tempdir_in(dest_dir)?;
+                let dst = chroot_dir.path().join(file_name);
+                download_project(project.url, &mut File::create(&dst)?)?;
+                (Some(chroot_dir), dst, sub_dir, Some(project.requirement))
+            }
+            Scheme::Git(git_ref) => {
+                let (_, url) = project
+                    .url
+                    .as_str()
+                    .split_once('+')
+                    .expect("We already parsed git+<url> to get here.");
+                let mut url = Url::parse(url)?;
+                url.set_fragment(None);
+                if git_ref.is_some() {
+                    let (path_prefix, _) = project
+                        .url
+                        .path()
+                        .rsplit_once('@')
+                        .expect("We already parsed <path_prefix>@<ref> to get here.");
+                    url.set_path(path_prefix);
+                }
+                let clone_temp_dir = tempfile::tempdir_in(dest_dir)?;
+                let clone_dir = clone_temp_dir.path();
+                let project_dir = clone_dir.to_path_buf();
+                git_clone_project(url, git_ref, clone_dir)?;
+                (
+                    Some(clone_temp_dir),
+                    project_dir,
+                    sub_dir,
+                    Some(project.requirement),
+                )
+            }
+        }
+    };
+
     let include_system_site_packages = false; // TODO: XXX: plumb this
     let venv_builder = BuildSystemVenvBuilder {
         interpreter,
@@ -1539,17 +2019,90 @@ fn resolve_project(
         dependency_configuration,
         include_system_site_packages,
     };
-    let wheel = build_wheel(&project, dest_dir, &venv_builder, &mut Scripts::Embedded)?;
-    let fingerprinted_wheel = cache_wheel(&wheel, wheel_options)?;
-    let wheel_file = WheelFile::parse_file_name(&fingerprinted_wheel.file_name)?;
-    let zip = ZipArchive::new(File::open(&fingerprinted_wheel.path)?.into_file())?;
-    let zip_source = wheel.display();
+    let build_err_context = || {
+        if let Some(req) = project_req.as_ref() {
+            format!("Failed to build wheel for Python project \"{req}\".",)
+        } else {
+            format!(
+                "Failed to build wheel for Python project at `{}`.",
+                project.display()
+            )
+        }
+    };
+    let wheel_path = if project.is_dir() {
+        let project_dir = if let Some(sub_dir) = sub_dir {
+            ProjectDir::new(project.join(sub_dir))?
+        } else {
+            ProjectDir::new(&project)?
+        };
+        build_wheel(project_dir, dest_dir, &venv_builder, &mut Scripts::Embedded)
+            .with_context(build_err_context)?
+    } else if is_tgz(&project) {
+        let mut project_dir = unpack_tarball(
+            flate2::read::GzDecoder::new(File::open(&project)?),
+            dest_dir,
+        )?;
+        if let Some(sub_dir) = sub_dir {
+            project_dir.push_sub_dir(sub_dir)?;
+        }
+        build_wheel(project_dir, dest_dir, &venv_builder, &mut Scripts::Embedded)
+            .with_context(build_err_context)?
+    } else if is_zip(&project) {
+        let mut project_dir = unpack_zip(&project, dest_dir).with_context(|| {
+            format!(
+                "Failed to unpack {} to {}",
+                project.display(),
+                dest_dir.display()
+            )
+        })?;
+        if let Some(sub_dir) = sub_dir {
+            project_dir.push_sub_dir(sub_dir)?;
+        }
+        build_wheel(project_dir, dest_dir, &venv_builder, &mut Scripts::Embedded)
+            .with_context(build_err_context)?
+    } else if is_whl(&project) {
+        project
+    } else {
+        if let Some(req) = project_req {
+            bail!(
+                "Can't identify {req} downloaded at {}.\n\
+                It is not a whl and does not appear to hold Python project sources.",
+                project.display()
+            )
+        } else {
+            bail!(
+                "Can't identify {}.\n\
+                It is not a whl and does not appear to hold Python project sources.",
+                project.display()
+            )
+        }
+    };
+
+    let wheel = cache_wheel(&wheel_path, wheel_options)?;
+    let wheel_file = WheelFile::parse_file_name(&wheel.file_name)?;
+    let zip = ZipArchive::new(File::open(&wheel.path)?.into_file())?;
+    let zip_source = wheel_path.display();
     let metadata_dirs = wheel_file.metadata_dirs_from_zip(&zip, &zip_source, None)?;
     let mut whl = Whl { zip, zip_source };
     let whl_metadata = WheelMetadata::parse(wheel_file, metadata_dirs, &mut whl)?;
+    let dependencies = {
+        let mut requirements = Vec::with_capacity(whl_metadata.requires_dists.len());
+        let extras = if let Some(project_req) = project_req {
+            project_req.extras
+        } else {
+            vec![]
+        };
+        for mut requirement in whl_metadata.requires_dists {
+            if requirement.evaluate_markers(interpreter.marker_env(), &extras) {
+                requirement.marker = MarkerTree::TRUE;
+                requirements.push(requirement)
+            }
+        }
+        requirements
+    };
     Ok(ResolvedProject {
-        requirements: whl_metadata.requires_dists,
-        wheel: fingerprinted_wheel,
+        wheel,
+        dependencies,
     })
 }
 
@@ -1623,7 +2176,12 @@ fn adjust_requirements(
                         .path
                         .file_name()
                         .and_then(OsStr::to_str)
-                        .ok_or_else(|| anyhow!("XXX"))
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "The wheel at {path} does not have a valid file name.",
+                                path = wheel.path.display()
+                            )
+                        })
                         .and_then(WheelFile::parse_file_name)
                         .map(|wheel_file| Cow::Owned(wheel_file.project_name.to_string()))
                 })
@@ -1906,15 +2464,29 @@ fn wheel_path(file_name: &str, wheel_options: &WheelOptions) -> anyhow::Result<P
             method = wheel_options.compression_method
         ),
     };
-    let mut whl_path = CacheDir::Wheel.path()?.join(options_dir_name.as_ref());
+    let mut whl_path = CacheDir::Wheels.path()?.join(options_dir_name.as_ref());
     whl_path.push(file_name);
     Ok(whl_path)
 }
 
+#[derive(Eq)]
 struct FingerprintedWheel {
     path: PathBuf,
     file_name: String,
     fingerprint: Fingerprint,
+}
+
+impl PartialEq for FingerprintedWheel {
+    fn eq(&self, other: &Self) -> bool {
+        self.file_name == other.file_name && self.fingerprint == other.fingerprint
+    }
+}
+
+impl Hash for FingerprintedWheel {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write(self.file_name.as_bytes());
+        state.write(self.fingerprint.as_bytes())
+    }
 }
 
 type WheelDigestAlgorithm = Sha256;
@@ -1924,10 +2496,12 @@ fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<Fin
     let time_cache = debug_span!("cache_wheel", wheel=%wheel.display());
     let _time_cache = time_cache.enter();
     let wheel_file = WheelFile::parse_file_name(
-        wheel
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or_else(|| anyhow!("XXX"))?,
+        wheel.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+            anyhow!(
+                "The wheel at {path} does not have a valid file name.",
+                path = wheel.display()
+            )
+        })?,
     )?;
     let wheel_path = wheel_path(wheel_file.file_name, wheel_options)?;
     let fingerprint_path = wheel_path.with_added_extension(ALGORITHM_NAME);
@@ -2243,7 +2817,7 @@ impl<'a> Wheels<'a> {
             paths.push(
                 self.wheel_files
                     .shift_remove(file_name)
-                    .ok_or_else(|| anyhow!("XXX"))?,
+                    .ok_or_else(|| anyhow!("The collected wheels do not include {file_name}."))?,
             )
         }
         Ok(paths)
@@ -2265,7 +2839,10 @@ impl<'a> MetadataReader for Wheels<'a> {
                 .insert(wheel_file.file_name.to_string(), wheel_zip);
             Ok(metadata_dirs)
         } else {
-            bail!("XXX")
+            bail!(
+                "The collected wheels do not include {file_name}.",
+                file_name = wheel_file.file_name
+            )
         }
     }
 
@@ -2278,7 +2855,12 @@ impl<'a> MetadataReader for Wheels<'a> {
         let zip = self
             .wheel_zips
             .get_mut(wheel_file.file_name)
-            .ok_or_else(|| anyhow!("XXX"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "The collected wheels do not include {file_name}.",
+                    file_name = wheel_file.file_name
+                )
+            })?;
         let dist_info_dir = metadata_dirs.dist_info_dir();
         Ok(io::read_to_string(
             zip.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
