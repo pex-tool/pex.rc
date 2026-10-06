@@ -1266,7 +1266,7 @@ impl Build {
                 } else {
                     tempfile::tempdir()?
                 };
-                let resolved_projects = resolve_projects_and_url_requirements(
+                let resolved_projects = resolve_url_requirements(
                     requirements,
                     &platforms,
                     interpreter_selection.search_path.as_ref(),
@@ -1473,7 +1473,7 @@ struct ResolvedProjects {
 
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "debug", skip_all)]
-fn resolve_projects_and_url_requirements(
+fn resolve_url_requirements(
     requirements: Requirements,
     platforms: &[Platform],
     search_path: Option<&SearchPath>,
@@ -1604,43 +1604,7 @@ fn resolve_projects_and_url_requirements(
             Ok(url_requirements)
         };
 
-    let projects = requirements
-        .urls
-        .into_iter()
-        .flat_map(|url_requirement| {
-            interpreters
-                .iter()
-                .filter_map(|interpreter| {
-                    if url_requirement
-                        .requirement
-                        .marker
-                        .evaluate(interpreter.platform_details().marker_env(), &[])
-                    {
-                        Some((url_requirement.clone(), interpreter))
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map(|(project, interpreter)| {
-            resolve_project(
-                project,
-                interpreter.as_ref(),
-                repository,
-                wheel_options,
-                dependency_configuration,
-                dest_dir,
-            )
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
-    let mut url_requirements = Vec::new();
-    for project in projects {
-        url_requirements.append(&mut process_resolved_project(project)?);
-    }
+    let mut url_requirements = requirements.urls;
     while !url_requirements.is_empty() {
         for project in mem::take(&mut url_requirements)
             .into_iter()
