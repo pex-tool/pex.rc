@@ -138,6 +138,12 @@ impl Deref for ProjectDir {
     }
 }
 
+const REPRODUCIBLE_BUILD_ENV: [(&str, &str); 2] = [
+    ("PYTHONHASHSEED", "0"),
+    // N.B.: This is Jan 1st 1980 00:00:00 UTC.
+    ("SOURCE_DATE_EPOCH", "315532800"),
+];
+
 #[instrument(level = "debug", skip_all, fields(project = %project_dir.display()))]
 pub fn build_wheel(
     project_dir: ProjectDir,
@@ -244,6 +250,7 @@ pub fn build_wheel(
     let result = create_wheel_builder_command(&venv.interpreter.details.path)?
         .arg("build_wheel")
         .arg(dest_dir)
+        .envs(REPRODUCIBLE_BUILD_ENV)
         .spawn()
         .and_then(|process| process.wait_with_output())
         .map_err(|err| anyhow!("Failed to execute `build_wheel`: {err}"))?;
