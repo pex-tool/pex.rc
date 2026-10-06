@@ -35,7 +35,7 @@ use interpreter::{
 };
 use ouroboros::self_referencing;
 use pep440_rs::{VersionSpecifier, VersionSpecifiers};
-use pep508_rs::{MarkerTree, Requirement, VersionOrUrl};
+use pep508_rs::{MarkerTree, Requirement, VerbatimUrl, VersionOrUrl};
 use pex::{
     BinPath,
     DEPS_DIR,
@@ -629,6 +629,12 @@ N.B.: The paths specified must be valid paths at runtime. PEXes will not be merg
 "#,
 );
 
+static CWD: LazyLock<anyhow::Result<PathBuf>> = LazyLock::new(|| Ok(env::current_dir()?));
+
+fn getcwd() -> anyhow::Result<&'static Path> {
+    Ok(CWD.as_ref().map_err(|err| anyhow!("{err}"))?)
+}
+
 #[derive(Clone, Debug)]
 struct Source {
     prefix: PathBuf,
@@ -642,12 +648,12 @@ impl FromStr for Source {
         let (prefix, suffix) = if let Some((source, subdirectory)) = s.rsplit_once('@') {
             let mut subdirectory = Cow::Borrowed(Path::new(subdirectory));
             if subdirectory.is_relative() {
-                subdirectory = Cow::Owned(env::current_dir()?.join(subdirectory));
+                subdirectory = Cow::Owned(getcwd()?.join(subdirectory));
             }
             let prefix = subdirectory.normalize_lexically()?;
             (prefix, source)
         } else {
-            let prefix = env::current_dir()?;
+            let prefix = getcwd()?.to_path_buf();
             (prefix, s)
         };
         Ok(Source {
@@ -791,6 +797,34 @@ impl Sources {
     }
 }
 
+fn parse_url(value: &str) -> anyhow::Result<Requirement<Url>> {
+    let working_dir = getcwd()?;
+    let mut requirement: Requirement<VerbatimUrl> = Requirement::parse(value, working_dir)?;
+    Ok(match requirement.version_or_url.take() {
+        Some(VersionOrUrl::Url(verbatim_url)) => Requirement {
+            name: requirement.name,
+            extras: requirement.extras,
+            version_or_url: Some(VersionOrUrl::Url(verbatim_url.into_url())),
+            marker: requirement.marker,
+            origin: requirement.origin,
+        },
+        Some(VersionOrUrl::VersionSpecifier(version_specifiers)) => Requirement {
+            name: requirement.name,
+            extras: requirement.extras,
+            version_or_url: Some(VersionOrUrl::VersionSpecifier(version_specifiers)),
+            marker: requirement.marker,
+            origin: requirement.origin,
+        },
+        None => Requirement {
+            name: requirement.name,
+            extras: requirement.extras,
+            version_or_url: None,
+            marker: requirement.marker,
+            origin: requirement.origin,
+        },
+    })
+}
+
 #[derive(Args, Debug)]
 #[group(skip)]
 pub struct Build {
@@ -800,6 +834,7 @@ pub struct Build {
     #[arg(
         value_name = "REQUIREMENT",
         help_heading = "Contents",
+        value_parser = parse_url,
         verbatim_doc_comment
     )]
     requirements: Vec<Requirement<Url>>,
@@ -1333,10 +1368,14 @@ struct UrlRequirement {
 }
 
 impl UrlRequirement {
-    fn to_file_path(&self) -> anyhow::Result<PathBuf> {
-        self.url
-            .to_file_path()
-            .map_err(|_| anyhow!("Failed to extract a valid path from {url}.", url = self.url))
+    fn to_file_path(&self) -> PathBuf {
+        PathBuf::from(self.url.path().to_owned())
+    }
+
+    fn file_name(&self) -> anyhow::Result<&OsStr> {
+        Path::new(self.url.path())
+            .file_name()
+            .ok_or_else(|| anyhow!("Cannot identify a file name from {}.", self.url))
     }
 }
 
@@ -1976,18 +2015,12 @@ fn resolve_project(
             match url_requirement.scheme {
                 Scheme::File => (
                     None,
-                    url_requirement.to_file_path()?,
+                    url_requirement.to_file_path(),
                     sub_dir,
                     Some(url_requirement.requirement),
                 ),
                 Scheme::Http | Scheme::Https => {
-                    let path = url_requirement.to_file_path()?;
-                    let file_name = path.file_name().ok_or_else(|| {
-                        anyhow!(
-                            "Cannot identify the project type from {}.",
-                            url_requirement.url
-                        )
-                    })?;
+                    let file_name = url_requirement.file_name()?;
                     let chroot_dir = tempfile::tempdir_in(dest_dir)?;
                     let project = chroot_dir.path().join(file_name);
                     download_project(url_requirement.url, &mut File::create(&project)?)?;
