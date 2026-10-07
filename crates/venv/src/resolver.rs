@@ -11,8 +11,7 @@ use std::io::{Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail};
-use cache::DigestingReader;
-use digest::Digest;
+use cache::{DigestingReader, default_digest};
 use fs_err as fs;
 use fs_err::File;
 use platform::PosixPath;
@@ -20,7 +19,6 @@ use python_platform::PythonVersion;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use repackage::WheelOptions;
 use repackage::original_wheel_info::{OriginalWheelInfo, ZipFileName};
-use sha2::Sha256;
 use tracing::instrument;
 use wheel::{EntryPoints, MetadataDirs, Record, Tag, WHEEL, WheelDir, record};
 use zip::ZipWriter;
@@ -88,12 +86,12 @@ impl<'a> WheelEntry<'a> {
         let (fingerprint, size) = if let Some((file, python_script)) = self.script.as_mut() {
             let mut contents = Vec::with_capacity(usize::try_from(file.metadata()?.len())?);
             python_script.re_write(file, &mut contents)?;
-            let mut src = DigestingReader::new(Sha256::new(), contents.as_slice());
+            let mut src = DigestingReader::new(default_digest(), contents.as_slice());
             io::copy(&mut src, whl_zip)?;
             src.into_fingerprint_and_size()
         } else {
             let mut src =
-                DigestingReader::new(Sha256::new(), File::open(self.installed_path.as_ref())?);
+                DigestingReader::new(default_digest(), File::open(self.installed_path.as_ref())?);
             io::copy(&mut src, whl_zip)?;
             src.into_fingerprint_and_size()
         };

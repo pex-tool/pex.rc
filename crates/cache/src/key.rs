@@ -1,46 +1,21 @@
 // Copyright 2026 Pex project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::{io, mem};
 
 use digest::Digest;
 use sha2::Sha256;
 
 use crate::fingerprint::digest_file;
-use crate::{Fingerprint, HashOptions};
+use crate::{DigestingReader, Fingerprint, HashOptions};
 
-pub struct Key<D: Digest = Sha256> {
+pub struct Key<D: Digest + Default = Sha256> {
     digest: D,
 }
 
-struct DigestingReader<'a, D: Digest, R: Read> {
-    digest: &'a mut D,
-    reader: R,
-    size: u64,
-}
-
-impl<'a, D: Digest, R: Read> DigestingReader<'a, D, R> {
-    fn new(digest: &'a mut D, reader: R) -> Self {
-        Self {
-            digest,
-            reader,
-            size: 0,
-        }
-    }
-}
-
-impl<'a, D: Digest, R: Read> Read for DigestingReader<'a, D, R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let amount = self.reader.read(buf)?;
-        self.digest.update(&buf[0..amount]);
-        self.size += amount as u64;
-        Ok(amount)
-    }
-}
-
-impl<D: Digest> Key<D> {
+impl<D: Digest + Default> Key<D> {
     pub fn new() -> Self {
         Self { digest: D::new() }
     }
@@ -67,8 +42,9 @@ impl<D: Digest> Key<D> {
         self.digest
             .update(path.as_ref().as_os_str().as_encoded_bytes());
         self.digest.update(b"contents:");
-        let mut input = DigestingReader::new(&mut self.digest, input);
+        let mut input = DigestingReader::new(mem::take(&mut self.digest), input);
         io::copy(&mut input, output)?;
+        self.digest = input.into_digest();
         Ok(self)
     }
 
@@ -133,7 +109,7 @@ impl Default for Key {
     }
 }
 
-impl<D: Digest> From<Key<D>> for PathBuf {
+impl<D: Digest + Default> From<Key<D>> for PathBuf {
     fn from(value: Key<D>) -> Self {
         PathBuf::from(value.fingerprint().base64_digest())
     }
