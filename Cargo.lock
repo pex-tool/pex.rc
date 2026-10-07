@@ -2302,7 +2302,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.34.0"
+version = "0.34.1"
 dependencies = [
  "anstream",
  "anyhow",
@@ -3993,12 +3993,14 @@ dependencies = [
  "rstest",
  "rust-ini",
  "scripts",
+ "serde",
  "serde_json",
  "sha2",
  "target-lexicon",
  "tempfile",
  "testing",
  "tracing",
+ "url",
  "walkdir",
  "wheel",
  "zip",

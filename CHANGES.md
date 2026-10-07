@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.34.1
+
+This release fixes `pexrc -X build` to properly materialize PEP-660 editable wheels from `--venv`
+repositories by doing a PEP-517 build of the editable project directory.
+
 ## 0.34.0
 
 This release removes the `--project` support introduced in 0.33.0 in favor of fully supporting

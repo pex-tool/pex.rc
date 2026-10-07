@@ -208,7 +208,7 @@ impl CacheDir {
             Self::Interpreters => "4",
             Self::PythonProxies => "0",
             Self::Venvs => "2",
-            Self::Wheels => "0",
+            Self::Wheels => "1",
         }
     }
 
