@@ -10,7 +10,7 @@ use std::io;
 use std::io::{Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{anyhow, bail};
+use anyhow::{Context, anyhow, bail};
 use cache::{DigestingReader, default_digest};
 use fs_err as fs;
 use fs_err::File;
@@ -19,7 +19,9 @@ use python_platform::PythonVersion;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use repackage::WheelOptions;
 use repackage::original_wheel_info::{OriginalWheelInfo, ZipFileName};
+use serde::Deserialize;
 use tracing::instrument;
+use url::Url;
 use wheel::{EntryPoints, MetadataDirs, Record, Tag, WHEEL, WheelDir, record};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
@@ -108,6 +110,7 @@ pub struct InstalledWheel {
     metadata_dirs: MetadataDirs,
     root_is_purelib: bool,
     entry_points: EntryPoints,
+    editable: Option<PathBuf>,
 }
 
 impl PartialEq<Self> for InstalledWheel {
@@ -130,9 +133,23 @@ impl Hash for InstalledWheel {
     }
 }
 
+#[derive(Deserialize)]
+struct DirInfo {
+    editable: bool,
+}
+
+#[derive(Deserialize)]
+struct DirectUrl<'a> {
+    url: Url,
+    dir_info: Option<DirInfo>,
+    #[serde(borrow)]
+    subdirectory: Option<Cow<'a, Path>>,
+}
+
 impl InstalledWheel {
     fn load(dist_info_dir: PathBuf) -> anyhow::Result<Self> {
         let metadata_dirs = MetadataDirs::from_dist_info_dir(&dist_info_dir)?;
+
         let installed_wheel_dir = dist_info_dir.parent().ok_or_else(|| {
             anyhow!(
                 "Invalid *.dist-info/ dir; expected a parent directory: {path}",
@@ -140,7 +157,9 @@ impl InstalledWheel {
             )
         })?;
         let (record, _) = Record::parse(installed_wheel_dir, &metadata_dirs)?;
+
         let wheel = WHEEL::parse(fs::read(dist_info_dir.join("WHEEL"))?.as_slice())?;
+
         let entry_points = {
             let entry_points_txt = dist_info_dir.join("entry_points.txt");
             if entry_points_txt.exists() {
@@ -149,6 +168,25 @@ impl InstalledWheel {
                 EntryPoints::empty()
             }
         };
+
+        let mut editable = None;
+        let direct_url_json_path = dist_info_dir.join("direct_url.json");
+        if direct_url_json_path.is_file() {
+            let direct_url_json_content = fs::read_to_string(&direct_url_json_path)?;
+            let direct_url: DirectUrl = serde_json::from_str(&direct_url_json_content)
+                .with_context(|| format!("Failed to parse {}", direct_url_json_path.display()))?;
+            if let Some(dir_info) = direct_url.dir_info
+                && dir_info.editable
+            {
+                let editable_directory = Path::new(direct_url.url.path());
+                editable = Some(if let Some(subdirectory) = direct_url.subdirectory {
+                    editable_directory.join(subdirectory)
+                } else {
+                    editable_directory.to_path_buf()
+                })
+            }
+        }
+
         Ok(Self {
             project_name: metadata_dirs.borrow_project_name().to_string(),
             version: metadata_dirs.borrow_version().to_string(),
@@ -158,7 +196,12 @@ impl InstalledWheel {
             metadata_dirs,
             root_is_purelib: wheel.root_is_purelib,
             entry_points,
+            editable,
         })
+    }
+
+    pub fn editable(&self) -> Option<&Path> {
+        self.editable.as_deref()
     }
 
     pub fn file_name(&self) -> anyhow::Result<String> {

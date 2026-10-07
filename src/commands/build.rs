@@ -2165,8 +2165,9 @@ fn resolve_wheel_files<'a>(
     ignore_errors: bool,
 ) -> anyhow::Result<(Option<&'a Interpreter>, Vec<FingerprintedWheel>)> {
     match repository {
-        Some(Repository::Venvs(venvs)) => {
+        Some(repository @ Repository::Venvs(venvs)) => {
             let (preferred_python, wheels) = resolve_wheels_from_venvs(
+                repository,
                 venvs,
                 platforms,
                 wheel_options,
@@ -2268,6 +2269,7 @@ impl MetadataReader for VenvRepository {
 }
 
 fn resolve_wheels_from_venvs<'a>(
+    repository: &Repository,
     virtualenvs: &'a Virtualenvs<'a>,
     platforms: &'a [Platform<'a>],
     wheel_options: &WheelOptions,
@@ -2402,10 +2404,25 @@ fn resolve_wheels_from_venvs<'a>(
     let mut wheel_paths = vec![];
     for (_, (venv, installed_wheels)) in wheels {
         let install_paths = InstallPaths::for_venv(venv)?;
+        let include_system_site_packages = false; // TODO: XXX: plumb this
+        let venv_builder = BuildSystemVenvBuilder {
+            interpreter: &venv.interpreter,
+            repository,
+            wheel_options,
+            dependency_configuration,
+            include_system_site_packages,
+        };
         wheel_paths.append(
             &mut installed_wheels
                 .into_par_iter()
-                .map(|installed_wheel| pack_wheel(installed_wheel, &install_paths, wheel_options))
+                .map(|installed_wheel| {
+                    pack_wheel(
+                        installed_wheel,
+                        &install_paths,
+                        wheel_options,
+                        &venv_builder,
+                    )
+                })
                 .collect::<anyhow::Result<Vec<_>>>()?,
         );
     }
@@ -2508,10 +2525,23 @@ fn pack_wheel(
     wheel: &InstalledWheel,
     install_paths: &InstallPaths,
     wheel_options: &WheelOptions,
+    venv_builder: &impl VenvBuilder,
 ) -> anyhow::Result<FingerprintedWheel> {
     let wheel_file = wheel.file_name()?;
     let time_pack = debug_span!("pack_wheel", wheel_file = wheel_file);
     let _time_pack = time_pack.enter();
+    if let Some(project_dir) = wheel.editable() {
+        let project_dir = ProjectDir::new(project_dir)?;
+        let dest_dir = tempfile::tempdir()?;
+        let built_editable = build_wheel(
+            project_dir,
+            dest_dir.path(),
+            venv_builder,
+            &mut Scripts::Embedded,
+        )?;
+        return cache_wheel(&built_editable, wheel_options);
+    }
+
     let wheel_path = wheel_path(&wheel_file, wheel_options)?;
     let fingerprint_path = wheel_path.with_added_extension(ALGORITHM_NAME);
     if let Some(fingerprint) = atomic_file(&wheel_path, |whl_file| {
