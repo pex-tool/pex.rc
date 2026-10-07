@@ -14,7 +14,7 @@ use fs_err::File;
 use sha2::Sha256;
 use tracing::instrument;
 
-pub fn default_digest() -> impl Digest {
+pub fn default_digest() -> impl Digest + Default {
     Sha256::new()
 }
 
@@ -67,19 +67,23 @@ impl<R: Read> TryFrom<BufReader<R>> for Fingerprint {
     }
 }
 
-pub struct DigestingReader<D: Digest, R: Read> {
+pub struct DigestingReader<D: Digest + Default, R: Read> {
     digest: D,
     reader: R,
     size: u64,
 }
 
-impl<D: Digest, R: Read> DigestingReader<D, R> {
+impl<D: Digest + Default, R: Read> DigestingReader<D, R> {
     pub fn new(digest: D, reader: R) -> Self {
         Self {
             digest,
             reader,
             size: 0,
         }
+    }
+
+    pub fn into_digest(self) -> D {
+        self.digest
     }
 
     pub fn into_fingerprint(self) -> Fingerprint {
@@ -91,7 +95,7 @@ impl<D: Digest, R: Read> DigestingReader<D, R> {
     }
 }
 
-impl<D: Digest, R: Read> Read for DigestingReader<D, R> {
+impl<D: Digest + Default, R: Read> Read for DigestingReader<D, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let amount = self.reader.read(buf)?;
         self.digest.update(&buf[0..amount]);
@@ -100,13 +104,13 @@ impl<D: Digest, R: Read> Read for DigestingReader<D, R> {
     }
 }
 
-pub struct DigestingWriter<D: Digest, W: Write> {
+pub struct DigestingWriter<D: Digest + Default, W: Write> {
     digest: D,
     writer: W,
     size: u64,
 }
 
-impl<D: Digest, W: Write> DigestingWriter<D, W> {
+impl<D: Digest + Default, W: Write> DigestingWriter<D, W> {
     pub fn new(digest: D, writer: W) -> Self {
         Self {
             digest,
@@ -128,7 +132,7 @@ impl<D: Digest, W: Write> DigestingWriter<D, W> {
     }
 }
 
-impl<D: Digest, W: Write> Write for DigestingWriter<D, W> {
+impl<D: Digest + Default, W: Write> Write for DigestingWriter<D, W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let amount = self.writer.write(buf)?;
         self.digest.update(&buf[0..amount]);
