@@ -1127,6 +1127,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "git"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "url",
+ "which",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2324,6 +2333,7 @@ dependencies = [
  "flate2",
  "form_urlencoded",
  "fs-err",
+ "git",
  "include_dir",
  "indexmap 2.14.2",
  "interpreter",

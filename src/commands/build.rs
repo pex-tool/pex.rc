@@ -9,7 +9,6 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::{env, io, mem, process};
@@ -24,6 +23,7 @@ use digest::Digest;
 use enumset::enum_set;
 use fs_err as fs;
 use fs_err::File;
+use git::Git;
 use indexmap::{IndexMap, IndexSet, indexmap};
 use interpreter::{
     Interpreter,
@@ -1784,43 +1784,12 @@ fn git_clone_project(
     git_ref: Option<GitRef>,
     clone_dir: &Path,
 ) -> anyhow::Result<()> {
-    let create_git_command = || {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(clone_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    };
-    let result = create_git_command()
-        .arg("clone")
-        .arg(git_url.as_str())
-        .arg(".")
-        .spawn()
-        .and_then(|process| process.wait_with_output())
-        .map_err(|err| anyhow!("Failed to clone {git_url}: {err}"))?;
-    result.status.exit_ok().map_err(|err| {
-        anyhow!(
-            "Failed to clone {git_url}: {err}\n\
-            Stderr from git:\n\
-            {stderr}",
-            stderr = String::from_utf8_lossy(&result.stderr).trim_end()
-        )
-    })?;
+    let git = Git::clone(&git_url, clone_dir)?;
     if let Some(git_ref) = git_ref.as_ref() {
-        let result = create_git_command()
+        git.command()
             .args(["reset", "--hard"])
             .arg(git_ref.as_str())
-            .spawn()
-            .and_then(|process| process.wait_with_output())
-            .map_err(|err| anyhow!("Failed to reset {git_url} to {git_ref}: {err}"))?;
-        result.status.exit_ok().map_err(|err| {
-            anyhow!(
-                "Failed to reset {git_url} to {git_ref}: {err}\n\
-                Stderr from git:\n\
-                {stderr}",
-                stderr = String::from_utf8_lossy(&result.stderr).trim_end()
-            )
-        })?;
+            .execute(|| format!("reset {git_url} to {git_ref}"))?;
     }
     Ok(())
 }

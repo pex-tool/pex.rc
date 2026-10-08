@@ -17,6 +17,7 @@ members = [
     "crates/cache",
     "crates/cli",
     "crates/clib",
+    "crates/git",
     "crates/interpreter",
     "crates/logging",
     "crates/pex",
@@ -256,6 +257,7 @@ digest = { workspace = true }
 enumset = { workspace = true }
 flate2 = { workspace = true }
 form_urlencoded = { workspace = true }
+git = { path = "crates/git" }
 fs-err = { workspace = true }
 include_dir = { workspace = true }
 indexmap = { workspace = true }

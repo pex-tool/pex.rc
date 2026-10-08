@@ -1,0 +1,12 @@
+# Copyright 2026 Pex project contributors.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "git"
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+url = { workspace = true }
+which = { workspace = true }
