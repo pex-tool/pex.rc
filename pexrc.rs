@@ -23,6 +23,7 @@ use clap_verbosity_flag::{Verbosity, WarnLevel};
 use cli::Output;
 use color_print::cstr;
 use colorchoice_clap::Color;
+use logging::FlushGuard;
 use owo_colors::OwoColorize;
 use pexrc::commands::{Build, Extract, Inject, Platform, Python, Script, info};
 
@@ -139,11 +140,11 @@ impl ExperimentalCommands {
         }
     }
 
-    fn execute(self) -> anyhow::Result<()> {
+    fn execute(self, logging_guard: FlushGuard) -> anyhow::Result<()> {
         match self {
             ExperimentalCommands::Build { jobs, build } => {
                 jobs.configure()?;
-                build.execute()
+                build.execute(logging_guard)
             }
         }
     }
@@ -234,7 +235,7 @@ fn execute(
     ansi: Option<bool>,
     pex_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let _flush_handles = logging::init(
+    let logging_guard = logging::init(
         Verbosity::<WarnLevel>::from_arg_matches(&matches)
             .ok()
             .map(|verbosity| verbosity.log_level_filter()),
@@ -252,7 +253,7 @@ fn execute(
                 let experimental_command =
                     ExperimentalCommands::from_subcommand_matches(subcommand, arg_matches)?;
                 anstream::eprintln!("{EXPERIMENTAL_COMMAND_WARNING}");
-                experimental_command.execute()
+                experimental_command.execute(logging_guard)
             } else {
                 Commands::from_arg_matches(&matches)?.execute()
             }

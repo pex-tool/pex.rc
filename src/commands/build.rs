@@ -33,6 +33,7 @@ use interpreter::{
     SelectionStrategy,
     VersionSpecificity,
 };
+use logging::FlushGuard;
 use ouroboros::self_referencing;
 use pep440_rs::VersionSpecifiers;
 use pep508_rs::{MarkerTree, Requirement, VerbatimUrl, VersionOrUrl};
@@ -65,7 +66,7 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
 use target::SimplifiedTarget;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 use tracing::{debug_span, instrument, warn};
 use url::Url;
 use venv::install::{populate_whl_zip, write_pex_extra_sys_path_support_files};
@@ -1119,7 +1120,7 @@ pub struct Build {
 }
 
 impl Build {
-    pub fn execute(self) -> anyhow::Result<()> {
+    pub fn execute(self, logging_guard: FlushGuard) -> anyhow::Result<()> {
         if self.include_tools && !cfg!(feature = "tools") {
             bail!(
                 "You requested the PEX `--include-tools` but this `pexrc` binary was not built \
@@ -1315,6 +1316,7 @@ impl Build {
             self.extra_args,
             entry_point,
             self.sources,
+            logging_guard,
         )
     }
 }
@@ -2665,6 +2667,7 @@ fn build_pex(
     extra_args: Vec<String>,
     entry_point: Option<PexEntryPoint>,
     sources: Sources,
+    logging_guard: FlushGuard,
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
@@ -2684,58 +2687,49 @@ fn build_pex(
         }
         None => {
             let subject = Cow::Borrowed("ephemeral PEX");
+            enum TempPath {
+                TempDir(TempDir),
+                TempFile(NamedTempFile),
+            }
+            impl TempPath {
+                fn path(&self) -> &Path {
+                    match self {
+                        TempPath::TempDir(temp_dir) => temp_dir.path(),
+                        TempPath::TempFile(temp_file) => temp_file.path(),
+                    }
+                }
+            }
+            let temp_path = if packed {
+                TempPath::TempDir(tempfile::tempdir()?)
+            } else {
+                TempPath::TempFile(NamedTempFile::new()?)
+            };
+            create_pex(
+                subject,
+                true,
+                preferred_platform,
+                wheels,
+                pex_info,
+                packed,
+                shebang,
+                temp_path.path(),
+                entry_point,
+                sources,
+            )?;
             let (python_args, args) = if pex_info.has_entry_point() {
                 (vec![], extra_args)
             } else {
                 (extra_args, vec![])
             };
-            if packed {
-                let chroot = tempfile::tempdir()?;
-                let path = chroot.path();
-                create_pex(
-                    subject,
-                    true,
-                    preferred_platform,
-                    wheels,
-                    pex_info,
-                    packed,
-                    shebang,
-                    path,
-                    entry_point,
-                    sources,
-                )?;
-                execute_pex(
-                    preferred_python,
-                    search_path,
-                    python_args,
-                    path,
-                    args,
-                    pex_info.configured_cache_root(),
-                )
-            } else {
-                let pex = NamedTempFile::new()?;
-                let path = pex.path();
-                create_pex(
-                    subject,
-                    true,
-                    preferred_platform,
-                    wheels,
-                    pex_info,
-                    packed,
-                    shebang,
-                    path,
-                    entry_point,
-                    sources,
-                )?;
-                execute_pex(
-                    preferred_python,
-                    search_path,
-                    python_args,
-                    path,
-                    args,
-                    pex_info.configured_cache_root(),
-                )
-            }
+            execute_pex(
+                preferred_python,
+                search_path,
+                python_args,
+                temp_path.path(),
+                args,
+                pex_info.configured_cache_root(),
+                logging_guard,
+            )
         }
     }
 }
@@ -3136,6 +3130,7 @@ fn execute_pex(
     pex: &Path,
     args: Vec<String>,
     custom_pex_root: Option<Cow<Path>>,
+    logging_guard: FlushGuard,
 ) -> anyhow::Result<()> {
     let preferred_python = preferred_python.map(|interpreter| interpreter.realpath.as_path());
     if let Some(custom_root) = custom_pex_root.as_deref()
@@ -3161,7 +3156,7 @@ fn execute_pex(
             ])?,
         )]),
         search_path,
-        false,
+        Some(logging_guard),
         false,
         false,
     )?;
