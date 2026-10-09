@@ -565,7 +565,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            python_exe.canonicalize().unwrap(),
+            python_exe,
             venv_interpreter
                 .resolve_base_interpreter(&mut embedded_scripts)
                 .unwrap()
