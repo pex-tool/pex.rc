@@ -181,7 +181,7 @@ indexmap = {  version = "2.14", features = ["rayon", "serde"] }
 is_executable = "1.0"
 itertools = "0.15"
 log = "0.4"
-mailparse = "0.17"
+mailparse = "0.18"
 oneshot = {  version = "0.2", features = ["std"] }
 open = "5.3"
 ouroboros = "0.18"
