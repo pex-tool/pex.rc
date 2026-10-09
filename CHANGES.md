@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.35.0
+
+This release adds support for augmenting PEX-INFO `build_properties` with `--build-properties`,
+`--build-property` and `--record-git-state`.
+
+In addition, any extra args after a trailing `--` are now correctly passed to ephemeral PEXes with
+entry points by `pexrc -X build`.
+
 ## 0.34.1
 
 This release fixes `pexrc -X build` to properly materialize PEP-660 editable wheels from `--venv`
