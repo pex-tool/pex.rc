@@ -16,6 +16,7 @@ use platform::{Perms, path_as_str};
 use python_platform::PythonVersion;
 use python_proxy::ProxySource;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use tracing::instrument;
 use wheel::{EntryPoint, EntryPoints, MetadataDirs, Record, WheelDir, WheelLayout};
 use zip::ZipArchive;
 use zip_ext::ZipArchiveExt;
@@ -354,6 +355,7 @@ pub(crate) fn calculate_spread(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[instrument(level = "debug", skip_all, fields(wheel = %wheel.display()))]
 pub fn populate_whl_zip(
     venv: &Virtualenv,
     shebang_interpreter: &Path,

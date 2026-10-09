@@ -114,7 +114,7 @@ pub unsafe extern "C" fn boot(
         argv,
         None::<[(&str, &str); 0]>,
         None,
-        true,
+        None,
         true,
         true,
     ) {

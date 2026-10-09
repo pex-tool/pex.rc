@@ -39,19 +39,32 @@ pub(crate) use layers::configure;
 
 #[cfg(feature = "profiling")]
 pub(crate) mod layers {
-    use std::any::Any;
+    use std::io::Write;
 
     use tracing::level_filters::LevelFilter;
-    use tracing_chrome::{ChromeLayerBuilder, TraceStyle};
-    use tracing_flame::FlameLayer;
+    use tracing_chrome::{ChromeLayerBuilder, FlushGuard as ChromeFlushGuard, TraceStyle};
+    use tracing_flame::{FlameLayer, FlushGuard as FlameFlushGuard};
     use tracing_subscriber::{Layer, Registry};
 
-    use crate::FlushGuard;
+    use crate::Flush;
+
+    impl Flush for ChromeFlushGuard {
+        fn flush(&self) -> anyhow::Result<()> {
+            self.flush();
+            Ok(())
+        }
+    }
+
+    impl<W: Write> Flush for FlameFlushGuard<W> {
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(self.flush()?)
+        }
+    }
 
     pub(crate) fn configure(
         layers: &mut Vec<Box<dyn Layer<Registry> + Send + Sync>>,
-    ) -> anyhow::Result<FlushGuard> {
-        let mut guards: Vec<Box<dyn Any>> = vec![];
+    ) -> anyhow::Result<Vec<Box<dyn Flush>>> {
+        let mut guards: Vec<Box<dyn Flush>> = vec![];
         if let Some(profile_path) = super::chrome_profile(true)? {
             let (chrome_layer, flush_guard) = ChromeLayerBuilder::new()
                 .file(profile_path)
@@ -71,7 +84,7 @@ pub(crate) mod layers {
             );
             guards.push(Box::new(flush_guard));
         }
-        Ok(FlushGuard { _guards: guards })
+        Ok(guards)
     }
 }
 
@@ -83,11 +96,11 @@ pub(crate) mod layers {
     use owo_colors::OwoColorize;
     use tracing_subscriber::{Layer, Registry};
 
-    use crate::FlushGuard;
+    use crate::Flush;
 
     pub(crate) fn configure(
         _layers: &mut Vec<Box<dyn Layer<Registry> + Send + Sync>>,
-    ) -> anyhow::Result<FlushGuard> {
+    ) -> anyhow::Result<Vec<Box<dyn Flush>>> {
         let profile_paths = super::chrome_profile(false)?
             .into_iter()
             .chain(super::flame_profile(false)?)
@@ -117,6 +130,6 @@ pub(crate) mod layers {
             }
             anstream::eprintln!("{}", Message(profile_paths).yellow())
         }
-        Ok(FlushGuard::default())
+        Ok(Vec::new())
     }
 }

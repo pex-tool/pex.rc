@@ -9,7 +9,6 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::{env, io, mem, process};
@@ -24,7 +23,8 @@ use digest::Digest;
 use enumset::enum_set;
 use fs_err as fs;
 use fs_err::File;
-use indexmap::{IndexMap, IndexSet, indexmap};
+use git::Git;
+use indexmap::{IndexMap, IndexSet};
 use interpreter::{
     Interpreter,
     InterpreterConstraint,
@@ -33,6 +33,7 @@ use interpreter::{
     SelectionStrategy,
     VersionSpecificity,
 };
+use logging::FlushGuard;
 use ouroboros::self_referencing;
 use pep440_rs::VersionSpecifiers;
 use pep508_rs::{MarkerTree, Requirement, VerbatimUrl, VersionOrUrl};
@@ -65,8 +66,8 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
 use target::SimplifiedTarget;
-use tempfile::NamedTempFile;
-use tracing::{debug_span, instrument, warn};
+use tempfile::{NamedTempFile, TempDir};
+use tracing::{debug, debug_span, instrument, warn};
 use url::Url;
 use venv::install::{populate_whl_zip, write_pex_extra_sys_path_support_files};
 use venv::{
@@ -797,6 +798,144 @@ impl Sources {
     }
 }
 
+fn parse_build_properties(value: &str) -> anyhow::Result<IndexMap<String, serde_json::Value>> {
+    let json_file_path = Path::new(value);
+    let json_contents = if json_file_path.is_file() {
+        Cow::Owned(fs::read_to_string(json_file_path).map_err(|err| {
+            anyhow!(
+                "Failed to read build properties from {}: {err}",
+                json_file_path.display()
+            )
+        })?)
+    } else {
+        Cow::Borrowed(value)
+    };
+    serde_json::from_str(&json_contents)
+        .map_err(|err| anyhow!("Failed to parse build properties from {value}: {err}"))
+}
+
+fn parse_build_property(value: &str) -> anyhow::Result<(String, serde_json::Value)> {
+    if let Some((key, value)) = value.split_once('=') {
+        Ok((
+            key.to_string(),
+            serde_json::Value::from_str(value)
+                .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
+        ))
+    } else {
+        bail!(
+            "A build property must be of the form `<key>=<JSON value>`; no `=` key / value \
+            delimiter in: {value}"
+        )
+    }
+}
+
+#[derive(Args, Debug)]
+#[command(next_help_heading = "Build Properties")]
+#[group(skip)]
+struct BuildProperties {
+    /// Use the given JSON for PEX-INFO build_properties.
+    ///
+    /// The JSON value can be an object literal or the path to a file containing a JSON object
+    /// literal.
+    #[arg(long, value_parser = parse_build_properties, verbatim_doc_comment)]
+    build_properties: Option<IndexMap<String, serde_json::Value>>,
+
+    /// Add a build property entry.
+    ///
+    /// Entries are specified in the form `<name>=<value>` and values can either be JSON values or
+    /// strings. For example `--build-property foo=bar` adds the property `"foo": "bar"` to the
+    /// build properties object and `--build-property 'foo=["spam", 42]'` adds the property
+    /// `"foo": ["spam", 42]`.
+    #[arg(long, value_parser = parse_build_property, verbatim_doc_comment)]
+    build_property: Vec<(String, serde_json::Value)>,
+
+    /// Records the current git state in build properties.
+    ///
+    /// The information is stored in a `git_state` object containing entries for the `commit`, the
+    /// commit `description`, the `branch` if on a branch and the `tag` if currently checked out to
+    /// an exact tag.
+    #[arg(long, verbatim_doc_comment)]
+    record_git_state: bool,
+}
+
+impl BuildProperties {
+    #[instrument(level = "debug", skip_all)]
+    fn into_json<'a>(self) -> anyhow::Result<IndexMap<Cow<'a, str>, serde_json::Value>> {
+        let mut build_properties = self
+            .build_properties
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(|(key, value)| (Cow::Owned(key), value))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                IndexMap::with_capacity(
+                    self.build_property.len()
+                        + if self.record_git_state {
+                            Self::GIT_STATE_COMMANDS.len()
+                        } else {
+                            0
+                        },
+                )
+            });
+        build_properties.extend(
+            self.build_property
+                .into_iter()
+                .map(|(key, value)| (Cow::Owned(key), value)),
+        );
+        if self.record_git_state {
+            build_properties.insert(Cow::Borrowed("git_state"), Self::collect_git_state()?);
+        }
+        Ok(build_properties)
+    }
+
+    const GIT_STATE_COMMANDS: [(&str, &[&str], Option<String>); 4] = [
+        (
+            "description",
+            &["describe", "--always", "--dirty", "--long"],
+            None,
+        ),
+        ("commit", &["rev-parse", "HEAD"], None),
+        ("branch", &["branch", "--show-current"], Some(String::new())),
+        ("tag", &["describe", "--exact-match"], Some(String::new())),
+    ];
+
+    #[instrument(level = "debug")]
+    fn collect_git_state() -> anyhow::Result<serde_json::Value> {
+        let git = Git::enclosing().context(
+            "Failed to find a git binary to collect git state for build properties with.",
+        )?;
+        Ok(json!(
+            Self::GIT_STATE_COMMANDS
+                .into_par_iter()
+                .filter_map(|(key, args, default)| {
+                    let span = debug_span!("collect git state", key = %key);
+                    let _span = span.enter();
+                    match git
+                        .command()
+                        .args(args)
+                        .execute(|| format!("collect {key} from git state"))
+                    {
+                        Ok(output) => {
+                            Some((key, String::from_utf8_lossy(&output).trim().to_owned()))
+                        }
+                        Err(err) => {
+                            if let Some(default) = default {
+                                Some((key, default))
+                            } else {
+                                warn!("Failed to gather '{key}' git state for build properties.");
+                                debug!("{err}");
+                                None
+                            }
+                        }
+                    }
+                })
+                .collect::<IndexMap<_, _>>()
+        ))
+    }
+}
+
 fn parse_url(value: &str) -> anyhow::Result<Requirement<Url>> {
     let working_dir = getcwd()?;
     let mut requirement: Requirement<VerbatimUrl> = Requirement::parse(value, working_dir)?;
@@ -992,6 +1131,9 @@ pub struct Build {
     #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
     inject_python_args: Vec<String>,
 
+    #[command(flatten)]
+    build_properties: BuildProperties,
+
     /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
     /// PYTHONPATH) running the pex.
     ///
@@ -1119,7 +1261,7 @@ pub struct Build {
 }
 
 impl Build {
-    pub fn execute(self) -> anyhow::Result<()> {
+    pub fn execute(self, logging_guard: FlushGuard) -> anyhow::Result<()> {
         if self.include_tools && !cfg!(feature = "tools") {
             bail!(
                 "You requested the PEX `--include-tools` but this `pexrc` binary was not built \
@@ -1188,11 +1330,19 @@ impl Build {
             .pex_path
             .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
 
+        let mut build_properties = self.build_properties.into_json()?;
+        if let Some(value) = build_properties.insert(
+            Cow::Borrowed("pex_version"),
+            json!(concatcp!("rc ", VERSION)),
+        ) {
+            warn!("Overriding given pex_version {value} with: rc {VERSION}")
+        }
+        if let Some(value) = build_properties.insert(Cow::Borrowed("pexrc_version"), json!(VERSION))
+        {
+            warn!("Overriding given pexrc_version {value} with: {VERSION}")
+        }
         let mut pex_info = RawPexInfo {
-            build_properties: indexmap! {
-                "pex_version" => json!(concatcp!("rc ", VERSION)),
-                "pexrc_version" => json!(VERSION),
-            },
+            build_properties,
             emit_warnings: self.emit_warnings,
             pex_paths,
             requirements: requirements
@@ -1315,6 +1465,7 @@ impl Build {
             self.extra_args,
             entry_point,
             self.sources,
+            logging_guard,
         )
     }
 }
@@ -1784,43 +1935,12 @@ fn git_clone_project(
     git_ref: Option<GitRef>,
     clone_dir: &Path,
 ) -> anyhow::Result<()> {
-    let create_git_command = || {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(clone_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    };
-    let result = create_git_command()
-        .arg("clone")
-        .arg(git_url.as_str())
-        .arg(".")
-        .spawn()
-        .and_then(|process| process.wait_with_output())
-        .map_err(|err| anyhow!("Failed to clone {git_url}: {err}"))?;
-    result.status.exit_ok().map_err(|err| {
-        anyhow!(
-            "Failed to clone {git_url}: {err}\n\
-            Stderr from git:\n\
-            {stderr}",
-            stderr = String::from_utf8_lossy(&result.stderr).trim_end()
-        )
-    })?;
+    let git = Git::clone(&git_url, clone_dir)?;
     if let Some(git_ref) = git_ref.as_ref() {
-        let result = create_git_command()
+        git.command()
             .args(["reset", "--hard"])
             .arg(git_ref.as_str())
-            .spawn()
-            .and_then(|process| process.wait_with_output())
-            .map_err(|err| anyhow!("Failed to reset {git_url} to {git_ref}: {err}"))?;
-        result.status.exit_ok().map_err(|err| {
-            anyhow!(
-                "Failed to reset {git_url} to {git_ref}: {err}\n\
-                Stderr from git:\n\
-                {stderr}",
-                stderr = String::from_utf8_lossy(&result.stderr).trim_end()
-            )
-        })?;
+            .execute(|| format!("reset {git_url} to {git_ref}"))?;
     }
     Ok(())
 }
@@ -2473,9 +2593,8 @@ impl Hash for FingerprintedWheel {
 type WheelDigestAlgorithm = Sha256;
 static ALGORITHM_NAME: &str = "sha256";
 
+#[instrument(level = "debug", skip_all, fields(wheel = %wheel.display()))]
 fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<FingerprintedWheel> {
-    let time_cache = debug_span!("cache_wheel", wheel=%wheel.display());
-    let _time_cache = time_cache.enter();
     let wheel_file = WheelFile::parse_file_name(
         wheel.file_name().and_then(OsStr::to_str).ok_or_else(|| {
             anyhow!(
@@ -2579,6 +2698,7 @@ fn pack_wheel(
 
 type VenvWheelRepository = (IndexMap<String, InstalledWheel>, VenvRepository);
 
+#[instrument(level = "debug", skip_all, fields(venv = %venv.interpreter.details.prefix.display()))]
 fn inventory_venv<'a>(
     venv: &'a Virtualenv<'a>,
 ) -> anyhow::Result<(&'a Virtualenv<'a>, VenvWheelRepository)> {
@@ -2696,6 +2816,7 @@ fn build_pex(
     extra_args: Vec<String>,
     entry_point: Option<PexEntryPoint>,
     sources: Sources,
+    logging_guard: FlushGuard,
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
@@ -2715,58 +2836,49 @@ fn build_pex(
         }
         None => {
             let subject = Cow::Borrowed("ephemeral PEX");
+            enum TempPath {
+                TempDir(TempDir),
+                TempFile(NamedTempFile),
+            }
+            impl TempPath {
+                fn path(&self) -> &Path {
+                    match self {
+                        TempPath::TempDir(temp_dir) => temp_dir.path(),
+                        TempPath::TempFile(temp_file) => temp_file.path(),
+                    }
+                }
+            }
+            let temp_path = if packed {
+                TempPath::TempDir(tempfile::tempdir()?)
+            } else {
+                TempPath::TempFile(NamedTempFile::new()?)
+            };
+            create_pex(
+                subject,
+                true,
+                preferred_platform,
+                wheels,
+                pex_info,
+                packed,
+                shebang,
+                temp_path.path(),
+                entry_point,
+                sources,
+            )?;
             let (python_args, args) = if pex_info.has_entry_point() {
                 (vec![], extra_args)
             } else {
                 (extra_args, vec![])
             };
-            if packed {
-                let chroot = tempfile::tempdir()?;
-                let path = chroot.path();
-                create_pex(
-                    subject,
-                    true,
-                    preferred_platform,
-                    wheels,
-                    pex_info,
-                    packed,
-                    shebang,
-                    path,
-                    entry_point,
-                    sources,
-                )?;
-                execute_pex(
-                    preferred_python,
-                    search_path,
-                    python_args,
-                    path,
-                    args,
-                    pex_info.configured_cache_root(),
-                )
-            } else {
-                let pex = NamedTempFile::new()?;
-                let path = pex.path();
-                create_pex(
-                    subject,
-                    true,
-                    preferred_platform,
-                    wheels,
-                    pex_info,
-                    packed,
-                    shebang,
-                    path,
-                    entry_point,
-                    sources,
-                )?;
-                execute_pex(
-                    preferred_python,
-                    search_path,
-                    python_args,
-                    path,
-                    args,
-                    pex_info.configured_cache_root(),
-                )
-            }
+            execute_pex(
+                preferred_python,
+                search_path,
+                python_args,
+                temp_path.path(),
+                args,
+                pex_info.configured_cache_root(),
+                logging_guard,
+            )
         }
     }
 }
@@ -3167,6 +3279,7 @@ fn execute_pex(
     pex: &Path,
     args: Vec<String>,
     custom_pex_root: Option<Cow<Path>>,
+    logging_guard: FlushGuard,
 ) -> anyhow::Result<()> {
     let preferred_python = preferred_python.map(|interpreter| interpreter.realpath.as_path());
     if let Some(custom_root) = custom_pex_root.as_deref()
@@ -3192,7 +3305,7 @@ fn execute_pex(
             ])?,
         )]),
         search_path,
-        false,
+        Some(logging_guard),
         false,
         false,
     )?;

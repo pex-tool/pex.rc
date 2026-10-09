@@ -5,12 +5,11 @@
 
 mod profiling;
 
-use std::any::Any;
 use std::str::FromStr;
 use std::{env, io};
 
 use anyhow::anyhow;
-use log::LevelFilter;
+use log::{LevelFilter, warn};
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter as TracingLevelFiler;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -20,9 +19,20 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 const DEFAULT_LEVEL: LevelFilter = LevelFilter::Warn;
 
-#[derive(Default)]
-pub struct FlushGuard {
-    _guards: Vec<Box<dyn Any>>,
+pub(crate) trait Flush {
+    fn flush(&self) -> anyhow::Result<()>;
+}
+
+pub struct FlushGuard(Vec<Box<dyn Flush>>);
+
+impl FlushGuard {
+    pub fn flush(&self) {
+        for guard in &self.0 {
+            if let Err(err) = guard.flush() {
+                warn!("Failed to flush logs: {err}");
+            }
+        }
+    }
 }
 
 pub fn init_default() -> anyhow::Result<FlushGuard> {
@@ -51,9 +61,9 @@ pub fn init(level: Option<LevelFilter>, ansi: Option<bool>) -> anyhow::Result<Fl
             .boxed(),
     );
 
-    let flush_guard = profiling::configure(&mut layers)?;
+    let flush_guards = profiling::configure(&mut layers)?;
     tracing_subscriber::registry().with(layers).init();
-    Ok(flush_guard)
+    Ok(FlushGuard(flush_guards))
 }
 
 fn as_tracing_level_filter(level_filter: LevelFilter) -> TracingLevelFiler {

@@ -1127,6 +1127,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "git"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "url",
+ "which",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1900,9 +1909,9 @@ dependencies = [
 
 [[package]]
 name = "mailparse"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8469955699e572455f8e1a40689e07ab309911d659632f65062598192254c091"
+checksum = "068d4f5d1083883b9e626051dc5bdaa321f5be01093e61ade3ee3ab44dafeadd"
 dependencies = [
  "charset",
  "data-encoding",
@@ -2270,7 +2279,7 @@ dependencies = [
  "indexmap 2.14.2",
  "interpreter",
  "itertools 0.15.0",
- "mailparse 0.17.0",
+ "mailparse 0.18.0",
  "ouroboros",
  "pep440_rs",
  "pep508_rs",
@@ -2302,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.34.1"
+version = "0.35.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2324,6 +2333,7 @@ dependencies = [
  "flate2",
  "form_urlencoded",
  "fs-err",
+ "git",
  "include_dir",
  "indexmap 2.14.2",
  "interpreter",
@@ -4140,7 +4150,7 @@ dependencies = [
  "csv",
  "fs-err",
  "glob",
- "mailparse 0.17.0",
+ "mailparse 0.18.0",
  "ouroboros",
  "pep440_rs",
  "pep508_rs",

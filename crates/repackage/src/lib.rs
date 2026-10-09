@@ -128,6 +128,7 @@ pub fn repackage_wheels(
     }
 }
 
+#[instrument(level = "debug", skip_all, fields(wheel_file = %wheel_file.file_name))]
 fn repackage_zipapp_pex_wheel(
     pex_zip: &Path,
     zip_metadata: Arc<ZipArchiveMetadata>,
@@ -161,6 +162,7 @@ fn repackage_zipapp_pex_wheel(
     }
 }
 
+#[instrument(level = "debug", skip_all, fields(wheel_file = %wheel_file.file_name))]
 fn repackage_directory_pex_wheel(
     pex_dir: &Path,
     wheel_file: &WheelFile,

@@ -15,6 +15,7 @@ use anyhow::bail;
 use cache::{CacheDir, CacheRoot, HashOptions, Key, atomic_dir};
 use interpreter::SearchPath;
 use itertools::Itertools;
+use logging::FlushGuard;
 use pex::{InheritPath, Pex, PexPath, RawPexInfo};
 use python_proxy::ProxySource;
 use regex::bytes::Regex;
@@ -30,7 +31,7 @@ pub fn boot(
     argv: Vec<String>,
     extra_env: Option<impl IntoIterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>>,
     search_path: Option<SearchPath>,
-    init_logging: bool,
+    logging_guard: Option<FlushGuard>,
     init_thread_pool: bool,
     init_cache_root: bool,
 ) -> anyhow::Result<i32> {
@@ -52,11 +53,12 @@ pub fn boot(
         }
     }
 
-    let _flush_handles = if init_logging {
-        Some(logging::init_default()?)
+    let logging_guard = if let Some(logging_guard) = logging_guard {
+        logging_guard
     } else {
-        None
+        logging::init_default()?
     };
+
     let pex = Pex::load(pex)?;
     if init_cache_root && let Some(cache_root) = pex.info.raw().configured_cache_root() {
         cache::set_cache_root(CacheRoot::Dir(cache_root.into_owned()))?;
@@ -85,6 +87,7 @@ pub fn boot(
         command.env("PEXRC_ROOT", temp_dir.path());
         Ok(platform::spawn(&mut command)?)
     } else {
+        logging_guard.flush();
         Ok(platform::exec(&mut command, &[lock])?)
     }
 }
@@ -134,7 +137,7 @@ fn prepare_boot(
 }
 
 pub fn mount(python: &Path, pex: &Path) -> anyhow::Result<PathBuf> {
-    let _flush_handles = logging::init_default()?;
+    let _flush_guard = logging::init_default()?;
     let pex = Pex::load(pex)?;
     if let Some(cache_root) = pex.info.raw().configured_cache_root() {
         cache::set_cache_root(CacheRoot::Dir(cache_root.into_owned()))?;
