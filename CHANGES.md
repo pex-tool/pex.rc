@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.36.0
+
+This release adds support for resolving requirements from the ambient `VIRTUAL_ENV` when using
+`pexrc -X build`.
+
 ## 0.35.0
 
 This release adds support for augmenting PEX-INFO `build_properties` with `--build-properties`,

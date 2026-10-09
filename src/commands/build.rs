@@ -67,7 +67,7 @@ use serde_json::json;
 use sha2::Sha256;
 use target::SimplifiedTarget;
 use tempfile::{NamedTempFile, TempDir};
-use tracing::{debug, debug_span, instrument, warn};
+use tracing::{debug, debug_span, info, instrument, warn};
 use url::Url;
 use venv::install::{populate_whl_zip, write_pex_extra_sys_path_support_files};
 use venv::{
@@ -110,6 +110,25 @@ enum Repository<'a> {
     Wheels(Vec<PathBuf>),
 }
 
+impl<'a> Display for Repository<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Repository::Venvs(venvs) => match venvs.borrow_venvs().as_slice() {
+                [venv] => write!(f, "venv at {}", venv.interpreter.details.prefix.display()),
+                venvs => write!(f, "{count} venvs", count = venvs.len()),
+            },
+            Repository::Wheels(wheels) => {
+                write!(
+                    f,
+                    "{count} local {wheels}",
+                    count = wheels.len(),
+                    wheels = if wheels.len() == 1 { "wheel" } else { "wheels" }
+                )
+            }
+        }
+    }
+}
+
 impl<'a> Repository<'a> {
     fn venvs(venvs: Vec<PathBuf>) -> anyhow::Result<Self> {
         let venvs = venvs
@@ -141,6 +160,14 @@ impl<'a> Repository<'a> {
             }
         }
         Ok(Self::Wheels(wheel_files))
+    }
+
+    fn ambient() -> anyhow::Result<Option<Self>> {
+        Ok(if let Some(virtual_env) = env::var_os("VIRTUAL_ENV") {
+            Some(Self::venvs(vec![PathBuf::from(virtual_env)])?)
+        } else {
+            None
+        })
     }
 }
 
@@ -1287,6 +1314,9 @@ impl Build {
             Some(Repository::venvs(self.venvs)?)
         } else if !self.wheels.is_empty() {
             Some(Repository::wheels(self.wheels)?)
+        } else if let Some(repo) = Repository::ambient()? {
+            info!("Will resolve requirements from the ambient {repo}");
+            Some(repo)
         } else {
             None
         };
@@ -2317,7 +2347,10 @@ fn resolve_wheel_files<'a>(
                 let _preferred_platform = platforms.iter().next();
                 Ok((None, vec![]))
             } else {
-                bail!("Cannot resolve requirements without either `--wheels` or `--venv`.")
+                bail!(
+                    "Cannot resolve requirements without either `--wheels` or `--venv` or an \
+                    activated virtual environment."
+                )
             }
         }
     }
