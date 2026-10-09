@@ -31,20 +31,32 @@ impl GitCmd {
         self
     }
 
-    pub fn execute<D: Display>(mut self, action: impl Fn() -> D) -> anyhow::Result<Vec<u8>> {
-        let result = self
+    pub fn spawn<D: Display>(
+        mut self,
+        action: impl Fn() -> D,
+    ) -> anyhow::Result<impl FnOnce() -> anyhow::Result<Vec<u8>>> {
+        let child = self
             .0
             .spawn()
-            .and_then(|child| child.wait_with_output())
             .map_err(|err| anyhow!("Failed to {action}: {err}", action = action()))?;
-        result.status.exit_ok().map_err(|err| {
-            anyhow!(
-                "Failed to {action}: {err}\nGit stderr:\n{stderr}",
-                stderr = String::from_utf8_lossy(&result.stderr),
-                action = action()
-            )
-        })?;
-        Ok(result.stdout)
+        Ok(move || -> anyhow::Result<Vec<u8>> {
+            let result = child
+                .wait_with_output()
+                .map_err(|err| anyhow!("Failed to {action}: {err}", action = action()))?;
+            result.status.exit_ok().map_err(|err| {
+                anyhow!(
+                    "Failed to {action}: {err}\nGit stderr:\n{stderr}",
+                    stderr = String::from_utf8_lossy(&result.stderr),
+                    action = action()
+                )
+            })?;
+            Ok(result.stdout)
+        })
+    }
+
+    pub fn execute<D: Display>(self, action: impl Fn() -> D) -> anyhow::Result<Vec<u8>> {
+        let wait_for_child = self.spawn(action)?;
+        wait_for_child()
     }
 }
 

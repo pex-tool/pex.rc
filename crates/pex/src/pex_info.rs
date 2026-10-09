@@ -124,7 +124,7 @@ impl FromStr for InterpreterSelectionStrategy {
 pub struct RawPexInfo<'a> {
     #[serde(borrow)]
     pub bind_resource_paths: Option<IndexMap<Cow<'a, str>, Cow<'a, str>>>,
-    pub build_properties: IndexMap<&'a str, Value>,
+    pub build_properties: IndexMap<Cow<'a, str>, Value>,
     #[serde(borrow)]
     pub code_hash: Cow<'a, str>,
     pub deps_are_wheel_files: bool,
@@ -189,7 +189,9 @@ impl<'a> RawPexInfo<'a> {
         self.pex_hash = Cow::Borrowed("");
         // N.B.: If this PEX-INFO is from an injected PEX, the Pex version used to create that PEX
         // should not perturb the hash of the injected PEX since we do not use the Pex runtime code.
-        let pex_version = self.build_properties.insert("pex_version", json!("0.0.0"));
+        let pex_version = self
+            .build_properties
+            .insert(Cow::Borrowed("pex_version"), json!("0.0.0"));
 
         let bytes = serde_json::to_vec(&self)?;
         let mut digest = Sha256::new();
@@ -197,7 +199,8 @@ impl<'a> RawPexInfo<'a> {
 
         self.pex_hash = Cow::Owned(Fingerprint::new(digest).hex_digest());
         if let Some(pex_version) = pex_version {
-            self.build_properties.insert("pex_version", pex_version);
+            self.build_properties
+                .insert(Cow::Borrowed("pex_version"), pex_version);
         } else {
             self.build_properties.shift_remove("pex_version");
         }

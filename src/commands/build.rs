@@ -24,7 +24,7 @@ use enumset::enum_set;
 use fs_err as fs;
 use fs_err::File;
 use git::Git;
-use indexmap::{IndexMap, IndexSet, indexmap};
+use indexmap::{IndexMap, IndexSet};
 use interpreter::{
     Interpreter,
     InterpreterConstraint,
@@ -67,7 +67,7 @@ use serde_json::json;
 use sha2::Sha256;
 use target::SimplifiedTarget;
 use tempfile::{NamedTempFile, TempDir};
-use tracing::{debug_span, instrument, warn};
+use tracing::{debug, debug_span, instrument, warn};
 use url::Url;
 use venv::install::{populate_whl_zip, write_pex_extra_sys_path_support_files};
 use venv::{
@@ -798,6 +798,144 @@ impl Sources {
     }
 }
 
+fn parse_build_properties(value: &str) -> anyhow::Result<IndexMap<String, serde_json::Value>> {
+    let json_file_path = Path::new(value);
+    let json_contents = if json_file_path.is_file() {
+        Cow::Owned(fs::read_to_string(json_file_path).map_err(|err| {
+            anyhow!(
+                "Failed to read build properties from {}: {err}",
+                json_file_path.display()
+            )
+        })?)
+    } else {
+        Cow::Borrowed(value)
+    };
+    serde_json::from_str(&json_contents)
+        .map_err(|err| anyhow!("Failed to parse build properties from {value}: {err}"))
+}
+
+fn parse_build_property(value: &str) -> anyhow::Result<(String, serde_json::Value)> {
+    if let Some((key, value)) = value.split_once('=') {
+        Ok((
+            key.to_string(),
+            serde_json::Value::from_str(value)
+                .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
+        ))
+    } else {
+        bail!(
+            "A build property must be of the form `<key>=<JSON value>`; no `=` key / value \
+            delimiter in: {value}"
+        )
+    }
+}
+
+#[derive(Args, Debug)]
+#[command(next_help_heading = "Build Properties")]
+#[group(skip)]
+struct BuildProperties {
+    /// Use the given JSON for PEX-INFO build_properties.
+    ///
+    /// The JSON value can be an object literal or the path to a file containing a JSON object
+    /// literal.
+    #[arg(long, value_parser = parse_build_properties, verbatim_doc_comment)]
+    build_properties: Option<IndexMap<String, serde_json::Value>>,
+
+    /// Add a build property entry.
+    ///
+    /// Entries are specified in the form `<name>=<value>` and values can either be JSON values or
+    /// strings. For example `--build-property foo=bar` adds the property `"foo": "bar"` to the
+    /// build properties object and `--build-property 'foo=["spam", 42]'` adds the property
+    /// `"foo": ["spam", 42]`.
+    #[arg(long, value_parser = parse_build_property, verbatim_doc_comment)]
+    build_property: Vec<(String, serde_json::Value)>,
+
+    /// Records the current git state in build properties.
+    ///
+    /// The information is stored in a `git_state` object containing entries for the `commit`, the
+    /// commit `description`, the `branch` if on a branch and the `tag` if currently checked out to
+    /// an exact tag.
+    #[arg(long, verbatim_doc_comment)]
+    record_git_state: bool,
+}
+
+impl BuildProperties {
+    #[instrument(level = "debug", skip_all)]
+    fn into_json<'a>(self) -> anyhow::Result<IndexMap<Cow<'a, str>, serde_json::Value>> {
+        let mut build_properties = self
+            .build_properties
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(|(key, value)| (Cow::Owned(key), value))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                IndexMap::with_capacity(
+                    self.build_property.len()
+                        + if self.record_git_state {
+                            Self::GIT_STATE_COMMANDS.len()
+                        } else {
+                            0
+                        },
+                )
+            });
+        build_properties.extend(
+            self.build_property
+                .into_iter()
+                .map(|(key, value)| (Cow::Owned(key), value)),
+        );
+        if self.record_git_state {
+            build_properties.insert(Cow::Borrowed("git_state"), Self::collect_git_state()?);
+        }
+        Ok(build_properties)
+    }
+
+    const GIT_STATE_COMMANDS: [(&str, &[&str], Option<String>); 4] = [
+        (
+            "description",
+            &["describe", "--always", "--dirty", "--long"],
+            None,
+        ),
+        ("commit", &["rev-parse", "HEAD"], None),
+        ("branch", &["branch", "--show-current"], Some(String::new())),
+        ("tag", &["describe", "--exact-match"], Some(String::new())),
+    ];
+
+    #[instrument(level = "debug")]
+    fn collect_git_state() -> anyhow::Result<serde_json::Value> {
+        let git = Git::enclosing().context(
+            "Failed to find a git binary to collect git state for build properties with.",
+        )?;
+        Ok(json!(
+            Self::GIT_STATE_COMMANDS
+                .into_par_iter()
+                .filter_map(|(key, args, default)| {
+                    let span = debug_span!("collect git state", key = %key);
+                    let _span = span.enter();
+                    match git
+                        .command()
+                        .args(args)
+                        .execute(|| format!("collect {key} from git state"))
+                    {
+                        Ok(output) => {
+                            Some((key, String::from_utf8_lossy(&output).trim().to_owned()))
+                        }
+                        Err(err) => {
+                            if let Some(default) = default {
+                                Some((key, default))
+                            } else {
+                                warn!("Failed to gather '{key}' git state for build properties.");
+                                debug!("{err}");
+                                None
+                            }
+                        }
+                    }
+                })
+                .collect::<IndexMap<_, _>>()
+        ))
+    }
+}
+
 fn parse_url(value: &str) -> anyhow::Result<Requirement<Url>> {
     let working_dir = getcwd()?;
     let mut requirement: Requirement<VerbatimUrl> = Requirement::parse(value, working_dir)?;
@@ -992,6 +1130,9 @@ pub struct Build {
     /// control Python warnings.
     #[arg(long, help_heading = "Entry Point", verbatim_doc_comment)]
     inject_python_args: Vec<String>,
+
+    #[command(flatten)]
+    build_properties: BuildProperties,
 
     /// Inherit the contents of `sys.path` (including site-packages, user site-packages and
     /// PYTHONPATH) running the pex.
@@ -1189,11 +1330,19 @@ impl Build {
             .pex_path
             .map(|pex_path| env::split_paths(&pex_path).map(Cow::Owned).collect());
 
+        let mut build_properties = self.build_properties.into_json()?;
+        if let Some(value) = build_properties.insert(
+            Cow::Borrowed("pex_version"),
+            json!(concatcp!("rc ", VERSION)),
+        ) {
+            warn!("Overriding given pex_version {value} with: rc {VERSION}")
+        }
+        if let Some(value) = build_properties.insert(Cow::Borrowed("pexrc_version"), json!(VERSION))
+        {
+            warn!("Overriding given pexrc_version {value} with: {VERSION}")
+        }
         let mut pex_info = RawPexInfo {
-            build_properties: indexmap! {
-                "pex_version" => json!(concatcp!("rc ", VERSION)),
-                "pexrc_version" => json!(VERSION),
-            },
+            build_properties,
             emit_warnings: self.emit_warnings,
             pex_paths,
             requirements: requirements
