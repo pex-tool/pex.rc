@@ -2593,9 +2593,8 @@ impl Hash for FingerprintedWheel {
 type WheelDigestAlgorithm = Sha256;
 static ALGORITHM_NAME: &str = "sha256";
 
+#[instrument(level = "debug", skip_all, fields(wheel = %wheel.display()))]
 fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<FingerprintedWheel> {
-    let time_cache = debug_span!("cache_wheel", wheel=%wheel.display());
-    let _time_cache = time_cache.enter();
     let wheel_file = WheelFile::parse_file_name(
         wheel.file_name().and_then(OsStr::to_str).ok_or_else(|| {
             anyhow!(
@@ -2699,6 +2698,7 @@ fn pack_wheel(
 
 type VenvWheelRepository = (IndexMap<String, InstalledWheel>, VenvRepository);
 
+#[instrument(level = "debug", skip_all, fields(venv = %venv.interpreter.details.prefix.display()))]
 fn inventory_venv<'a>(
     venv: &'a Virtualenv<'a>,
 ) -> anyhow::Result<(&'a Virtualenv<'a>, VenvWheelRepository)> {

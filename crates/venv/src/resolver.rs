@@ -147,6 +147,7 @@ struct DirectUrl<'a> {
 }
 
 impl InstalledWheel {
+    #[instrument(level = "debug", skip_all, fields(dist_info_dir = %dist_info_dir.display()))]
     fn load(dist_info_dir: PathBuf) -> anyhow::Result<Self> {
         let metadata_dirs = MetadataDirs::from_dist_info_dir(&dist_info_dir)?;
 

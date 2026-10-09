@@ -77,7 +77,7 @@ pub struct Virtualenv<'a> {
 }
 
 impl<'a> Virtualenv<'a> {
-    #[instrument(level = "debug", skip_all)]
+    #[instrument(level = "debug", skip_all, fields(prefix = %interpreter.details.prefix.display()))]
     pub fn enclosing(interpreter: Interpreter) -> anyhow::Result<Self> {
         let site_packages_relpath = site_packages_relpath(&interpreter);
         Ok(Self {
@@ -87,7 +87,7 @@ impl<'a> Virtualenv<'a> {
         })
     }
 
-    #[instrument(level = "debug", skip_all)]
+    #[instrument(level = "debug", skip_all, fields(path = %path.display()))]
     pub fn load(path: Cow<'a, Path>, scripts: &mut Scripts) -> anyhow::Result<Self> {
         let pyvenv_cfg = PyVenvCfg::read(path.as_ref())?;
         let identification_script = IdentifyInterpreter::read(scripts)?;

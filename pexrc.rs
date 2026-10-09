@@ -160,11 +160,13 @@ struct Jobs {
 
 impl Jobs {
     fn configure(&self) -> anyhow::Result<()> {
+        let mut thread_pool_builder = rayon::ThreadPoolBuilder::default();
         if let Some(jobs) = self.jobs {
-            rayon::ThreadPoolBuilder::default()
-                .num_threads(jobs)
-                .build_global()?;
+            thread_pool_builder = thread_pool_builder.num_threads(jobs);
         }
+        thread_pool_builder
+            .thread_name(move |id| format!("pexrc rayon[#{id}]"))
+            .build_global()?;
         Ok(())
     }
 }
