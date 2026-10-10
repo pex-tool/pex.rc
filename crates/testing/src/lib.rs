@@ -91,7 +91,13 @@ pub fn python_exe() -> PathBuf {
     );
 
     let output = Command::new("uv")
-        .args(["python", "find", "--managed-python", &python_spec])
+        .args([
+            "python",
+            "find",
+            "--resolve-links",
+            "--managed-python",
+            &python_spec,
+        ])
         .env("UV_PYTHON_INSTALL_DIR", install_dir)
         .stdout(Stdio::piped())
         .spawn()

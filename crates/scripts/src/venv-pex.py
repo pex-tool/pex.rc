@@ -387,7 +387,7 @@ def boot(
                     os.environ["PEX_INTERPRETER_HISTORY"] = pex_interpreter_history
                 if pex_interpreter_history_file:
                     os.environ["PEX_INTERPRETER_HISTORY_FILE"] = pex_interpreter_history_file
-                cmdline.append(os.path.join(os.path.dirname(__file__), "pex-repl"))
+                cmdline.append(os.path.join(venv_dir, "pex-repl"))
             elif not inspect:
                 # We're not interactive; so find the installed (unzipped) PEX entry point.
                 cmdline.append(__file__)
