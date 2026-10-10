@@ -15,7 +15,8 @@ use indexmap::IndexMap;
 use pep440_rs::{Version, VersionSpecifier, VersionSpecifiers};
 use pep508_rs::{ExtraName, MarkerTree, PackageName, Requirement, VersionOrUrl};
 use python_platform::PythonPlatform;
-use tracing::instrument;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use tracing::{debug_span, instrument};
 use url::Url;
 use wheel::{MetadataDirs, MetadataReader, Tag, WheelDir, WheelFile, WheelMetadata};
 
@@ -388,27 +389,44 @@ pub fn resolve_wheels<'a>(
         .collect())
 }
 
+#[instrument(level = "debug", skip_all, fields(wheel_count = ranked_wheel_files.len()))]
 fn read_wheel_metadata<'a>(
     python_version: &Version,
     ranked_wheel_files: Vec<RankedWheelFile<'a>>,
-    metadata_reader: &mut impl MetadataReader,
+    metadata_reader: &impl MetadataReader,
 ) -> anyhow::Result<Vec<RankedWheel<'a>>> {
-    let mut ranked_wheels = Vec::with_capacity(ranked_wheel_files.len());
-    for ranked_wheel_file in ranked_wheel_files {
-        let metadata_dirs = metadata_reader.locate_dirs(&ranked_wheel_file.wheel_file)?;
-        let metadata =
-            WheelMetadata::parse(ranked_wheel_file.wheel_file, metadata_dirs, metadata_reader)?;
-        if let Some(requires_python) = &metadata.requires_python
-            && !requires_python.contains(python_version)
-        {
-            continue;
-        }
-        ranked_wheels.push(RankedWheel {
-            metadata,
-            rank: ranked_wheel_file.rank,
-        });
-    }
-    Ok(ranked_wheels)
+    ranked_wheel_files
+        .into_par_iter()
+        .filter_map(|ranked_wheel_file| {
+            let span = debug_span!(
+                "parse whl metadata",
+                wheel = ranked_wheel_file.wheel_file.file_name
+            );
+            let _span = span.enter();
+            match metadata_reader.locate_dirs(&ranked_wheel_file.wheel_file) {
+                Ok(metadata_dirs) => match WheelMetadata::parse(
+                    ranked_wheel_file.wheel_file,
+                    metadata_dirs,
+                    metadata_reader,
+                ) {
+                    Ok(metadata) => {
+                        if let Some(requires_python) = &metadata.requires_python
+                            && !requires_python.contains(python_version)
+                        {
+                            None
+                        } else {
+                            Some(Ok(RankedWheel {
+                                metadata,
+                                rank: ranked_wheel_file.rank,
+                            }))
+                        }
+                    }
+                    Err(err) => Some(Err(err)),
+                },
+                Err(err) => Some(Err(err)),
+            }
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
 }
 
 struct RankedWheelFile<'a> {

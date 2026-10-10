@@ -2867,6 +2867,7 @@ dependencies = [
  "pep440_rs",
  "pep508_rs",
  "python-platform",
+ "rayon",
  "regex",
  "tracing",
  "url",

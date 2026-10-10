@@ -25,10 +25,10 @@ pub struct WheelMetadata<'a> {
     pub metadata_dirs: MetadataDirs,
 }
 
-pub trait MetadataReader {
-    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs>;
+pub trait MetadataReader: Send + Sync {
+    fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs>;
     fn read(
-        &mut self,
+        &self,
         metadata_dirs: &MetadataDirs,
         wheel_file: &WheelFile,
         file_name: &str,
@@ -81,7 +81,7 @@ impl<'a> WheelMetadata<'a> {
     pub fn parse(
         wheel_file: WheelFile<'a>,
         metadata_dirs: MetadataDirs,
-        metadata_reader: &mut impl MetadataReader,
+        metadata_reader: &impl MetadataReader,
     ) -> anyhow::Result<Self> {
         let metadata = Metadata::parse(
             metadata_reader
@@ -124,7 +124,6 @@ impl<'a> WheelMetadata<'a> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
-    use std::fmt::Display;
     use std::io;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -179,27 +178,26 @@ mod tests {
         assert_eq!("requests", wheel_file.raw_project_name);
         assert_eq!("2.32.5", wheel_file.raw_version);
 
-        struct RequestsMetadataReader<D: Display>(ZipArchive<File>, D);
-        impl<D: Display> MetadataReader for RequestsMetadataReader<D> {
-            fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
-                wheel_file.metadata_dirs_from_zip(&self.0, &self.1, None)
+        struct RequestsMetadataReader<'a>(&'a Path);
+        impl<'a> MetadataReader for RequestsMetadataReader<'a> {
+            fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+                let zip = ZipArchive::new(File::open(self.0)?)?;
+                wheel_file.metadata_dirs_from_zip(&zip, &self.0.display(), None)
             }
             fn read(
-                &mut self,
+                &self,
                 metadata_dirs: &MetadataDirs,
                 _wheel_file: &WheelFile,
                 file_name: &str,
             ) -> anyhow::Result<String> {
+                let mut zip = ZipArchive::new(File::open(self.0)?)?;
                 let dist_info_dir = metadata_dirs.dist_info_dir();
                 Ok(io::read_to_string(
-                    self.0.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
+                    zip.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
                 )?)
             }
         }
-        let mut metadata_reader = RequestsMetadataReader(
-            ZipArchive::new(File::open(requests_2_32_5_whl).unwrap()).unwrap(),
-            requests_2_32_5_whl.display(),
-        );
+        let mut metadata_reader = RequestsMetadataReader(requests_2_32_5_whl);
         let metadata_dirs = metadata_reader.locate_dirs(&wheel_file).unwrap();
         let wheel = WheelMetadata::parse(wheel_file, metadata_dirs, &mut metadata_reader).unwrap();
         assert_eq!(

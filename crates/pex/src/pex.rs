@@ -29,6 +29,7 @@ use url::Url;
 use walkdir::WalkDir;
 use wheel::{MetadataDirs, MetadataReader, WheelFile};
 use zip::ZipArchive;
+use zip::read::ZipArchiveMetadata;
 use zip_ext::ZipArchiveExt;
 
 use crate::{InterpreterSelectionStrategy, PexInfo};
@@ -485,25 +486,36 @@ impl<'a> Pex<'a> {
 }
 
 struct ZipAppPexMetadataReader<'a> {
-    pex_zip: ZipArchive<File>,
+    zip_metadata: Arc<ZipArchiveMetadata>,
     zip_path: &'a Path,
     deps_are_wheel_files: bool,
 }
 
 impl<'a> ZipAppPexMetadataReader<'a> {
     fn new(zip_path: &'a Path, deps_are_wheel_files: bool) -> anyhow::Result<Self> {
+        let zip = ZipArchive::new(File::open(zip_path)?)?;
         Ok(Self {
-            pex_zip: ZipArchive::new(File::open(zip_path)?)?,
+            zip_metadata: zip.metadata(),
             zip_path,
             deps_are_wheel_files,
+        })
+    }
+
+    fn pex_zip(&self) -> anyhow::Result<ZipArchive<impl Read + Seek>> {
+        Ok(unsafe {
+            ZipArchive::unsafe_new_with_metadata(
+                File::open(self.zip_path)?,
+                self.zip_metadata.clone(),
+            )
         })
     }
 }
 
 impl<'a> MetadataReader for ZipAppPexMetadataReader<'a> {
-    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+    fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+        let mut pex_zip = self.pex_zip()?;
         if self.deps_are_wheel_files {
-            let whl = self.pex_zip.by_name_seek(&format!(
+            let whl = pex_zip.by_name_seek(&format!(
                 ".deps/{wheel_file_name}",
                 wheel_file_name = wheel_file.file_name
             ))?;
@@ -514,20 +526,19 @@ impl<'a> MetadataReader for ZipAppPexMetadataReader<'a> {
                 ".deps/{wheel_file_name}/",
                 wheel_file_name = wheel_file.file_name
             );
-            wheel_file.metadata_dirs_from_zip(&self.pex_zip, self.zip_path.display(), Some(&prefix))
+            wheel_file.metadata_dirs_from_zip(&pex_zip, self.zip_path.display(), Some(&prefix))
         }
     }
 
     fn read(
-        &mut self,
+        &self,
         metadata_dirs: &MetadataDirs,
         wheel_file: &WheelFile,
         file_name: &str,
     ) -> anyhow::Result<String> {
+        let mut pex_zip = self.pex_zip()?;
         if self.deps_are_wheel_files {
-            let whl = self
-                .pex_zip
-                .by_name_seek(&[DEPS_DIR, wheel_file.file_name].join("/"))?;
+            let whl = pex_zip.by_name_seek(&[DEPS_DIR, wheel_file.file_name].join("/"))?;
             let mut whl_zip = ZipArchive::new(whl)?;
             let dist_info_dir = metadata_dirs.dist_info_dir();
             Ok(io::read_to_string(
@@ -539,7 +550,7 @@ impl<'a> MetadataReader for ZipAppPexMetadataReader<'a> {
                 wheel_file_name = wheel_file.file_name
             );
             let dist_info_dir = metadata_dirs.dist_info_dir();
-            Ok(io::read_to_string(self.pex_zip.by_name_ex(&format!(
+            Ok(io::read_to_string(pex_zip.by_name_ex(&format!(
                 "{prefix}{dist_info_dir}/{file_name}"
             ))?)?)
         }
@@ -549,12 +560,12 @@ impl<'a> MetadataReader for ZipAppPexMetadataReader<'a> {
 struct LoosePexMetadataReader<'a>(&'a Path);
 
 impl<'a> MetadataReader for LoosePexMetadataReader<'a> {
-    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+    fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
         wheel_file.metadata_dirs(&self.0.join(DEPS_DIR).join(wheel_file.file_name))
     }
 
     fn read(
-        &mut self,
+        &self,
         metadata_dirs: &MetadataDirs,
         wheel_file: &WheelFile,
         file_name: &str,
@@ -569,14 +580,14 @@ impl<'a> MetadataReader for LoosePexMetadataReader<'a> {
 struct PackedPexMetadataReader<'a>(&'a Path);
 
 impl<'a> MetadataReader for PackedPexMetadataReader<'a> {
-    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+    fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
         let wheel_file_path = self.0.join(DEPS_DIR).join(wheel_file.file_name);
         let zip = ZipArchive::new(File::open(&wheel_file_path)?)?;
         wheel_file.metadata_dirs_from_zip(&zip, wheel_file_path.display(), None)
     }
 
     fn read(
-        &mut self,
+        &self,
         metadata_dirs: &MetadataDirs,
         wheel_file: &WheelFile,
         file_name: &str,
