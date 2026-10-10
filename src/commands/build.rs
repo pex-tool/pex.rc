@@ -3330,13 +3330,17 @@ fn execute_pex(
         python_args,
         pex,
         args,
-        Some([(
-            "__PEX_EPHEMERAL__",
-            env::join_paths([
-                pex.as_os_str(),
-                &env::args_os().next().expect("There is always an argv0"),
-            ])?,
-        )]),
+        Some([
+            ("PEX", pex.as_os_str()),
+            (
+                "__PEX_EPHEMERAL__",
+                env::join_paths([
+                    pex.as_os_str(),
+                    &env::args_os().next().expect("There is always an argv0"),
+                ])?
+                .as_os_str(),
+            ),
+        ]),
         search_path,
         Some(logging_guard),
         false,
