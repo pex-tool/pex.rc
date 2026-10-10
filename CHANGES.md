@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.37.0
+
+This release speeds up `pexrc -X build` by removing a RECORD parsing bottleneck and parallelizing
+the remaining wheel metadata collection needed to perform a resolve. This nets a ~5x speedup in
+resolves.
+
+This release also fixes `pexrc -X build` ephemeral PEX execution to populate the PEX env var like
+the normal boot process does.
+
 ## 0.36.0
 
 This release adds support for resolving requirements from the ambient `VIRTUAL_ENV` when using

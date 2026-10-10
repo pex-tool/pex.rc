@@ -2311,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "pexrc"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -2867,6 +2867,7 @@ dependencies = [
  "pep440_rs",
  "pep508_rs",
  "python-platform",
+ "rayon",
  "regex",
  "tracing",
  "url",

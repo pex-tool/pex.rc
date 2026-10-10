@@ -79,6 +79,7 @@ use venv::{
     collect_installed_wheels,
 };
 use wheel::{EntryPoints, MetadataDirs, MetadataReader, WheelFile, WheelMetadata};
+use zip::read::ZipArchiveMetadata;
 use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -1896,25 +1897,43 @@ impl<'a> VenvBuilder for BuildSystemVenvBuilder<'a> {
     }
 }
 
-struct Whl<D: Display, R: Read + Seek> {
-    zip: ZipArchive<R>,
-    zip_source: D,
+struct Whl<'a> {
+    zip_metadata: Arc<ZipArchiveMetadata>,
+    zip_path: &'a Path,
 }
 
-impl<D: Display, R: Read + Seek> MetadataReader for Whl<D, R> {
-    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
-        wheel_file.metadata_dirs_from_zip(&self.zip, &self.zip_source, None)
+impl<'a> Whl<'a> {
+    fn new(zip_path: &'a Path) -> anyhow::Result<Self> {
+        let zip = ZipArchive::new(File::open(zip_path)?.into_file())?;
+        Ok(Self {
+            zip_metadata: zip.metadata(),
+            zip_path,
+        })
+    }
+    fn zip(&self) -> anyhow::Result<ZipArchive<impl Read + Seek>> {
+        Ok(unsafe {
+            ZipArchive::unsafe_new_with_metadata(
+                File::open(self.zip_path)?,
+                self.zip_metadata.clone(),
+            )
+        })
+    }
+}
+
+impl<'a> MetadataReader for Whl<'a> {
+    fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+        wheel_file.metadata_dirs_from_zip(&self.zip()?, self.zip_path.display(), None)
     }
 
     fn read(
-        &mut self,
+        &self,
         metadata_dirs: &MetadataDirs,
         _wheel_file: &WheelFile,
         file_name: &str,
     ) -> anyhow::Result<String> {
         let dist_info_dir = metadata_dirs.dist_info_dir();
         Ok(io::read_to_string(
-            self.zip
+            self.zip()?
                 .by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
         )?)
     }
@@ -2194,11 +2213,9 @@ fn resolve_project(
 
     let wheel = cache_wheel(&wheel_path, wheel_options)?;
     let wheel_file = WheelFile::parse_file_name(&wheel.file_name)?;
-    let zip = ZipArchive::new(File::open(&wheel.path)?.into_file())?;
-    let zip_source = wheel_path.display();
-    let metadata_dirs = wheel_file.metadata_dirs_from_zip(&zip, &zip_source, None)?;
-    let mut whl = Whl { zip, zip_source };
-    let whl_metadata = WheelMetadata::parse(wheel_file, metadata_dirs, &mut whl)?;
+    let whl = Whl::new(&wheel.path)?;
+    let metadata_dirs = whl.locate_dirs(&wheel_file)?;
+    let whl_metadata = WheelMetadata::parse(wheel_file, metadata_dirs, &whl)?;
     let dependencies = {
         let mut requirements = Vec::with_capacity(whl_metadata.requires_dists.len());
         let extras = if let Some(project_req) = project_req {
@@ -2405,12 +2422,12 @@ impl<'a> TryFrom<PythonPlatform> for Platform<'a> {
 struct VenvRepository(PathBuf);
 
 impl MetadataReader for VenvRepository {
-    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+    fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
         MetadataDirs::locate_in_dir(&self.0, &wheel_file.project_name, &wheel_file.version)
     }
 
     fn read(
-        &mut self,
+        &self,
         metadata_dirs: &MetadataDirs,
         _wheel_file: &WheelFile,
         file_name: &str,
@@ -2792,7 +2809,7 @@ fn resolve_wheels_from_files<'a>(
     for (file_name, path) in file_names.iter().zip(wheel_files) {
         wheel_paths_by_file_name.insert(file_name, path.as_ref());
     }
-    let mut wheel_repository = Wheels::new(wheel_paths_by_file_name);
+    let mut wheel_repository = Wheels::new(wheel_paths_by_file_name)?;
     let mut resolved_file_names: IndexSet<&str> = IndexSet::with_capacity(file_names.len());
     for platform in platforms {
         let resolved_wheels = match platform {
@@ -2935,16 +2952,25 @@ fn file_names<'a>(paths: impl ExactSizeIterator<Item = &'a Path>) -> anyhow::Res
 
 struct Wheels<'a> {
     wheel_files: IndexMap<&'a str, &'a Path>,
-    wheel_zips: IndexMap<String, ZipArchive<File>>,
+    wheel_zips: IndexMap<&'a Path, Arc<ZipArchiveMetadata>>,
 }
 
 impl<'a> Wheels<'a> {
-    fn new(wheel_files: IndexMap<&'a str, &'a Path>) -> Self {
-        let wheel_zips = IndexMap::with_capacity(wheel_files.len());
-        Self {
+    fn new(wheel_files: IndexMap<&'a str, &'a Path>) -> anyhow::Result<Self> {
+        let wheel_zips = wheel_files
+            .values()
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .copied()
+            .map(|path| {
+                let zip = ZipArchive::new(File::open(path)?)?;
+                Ok((path, zip.metadata()))
+            })
+            .collect::<anyhow::Result<IndexMap<_, _>>>()?;
+        Ok(Self {
             wheel_files,
             wheel_zips,
-        }
+        })
     }
 
     fn select(
@@ -2961,45 +2987,46 @@ impl<'a> Wheels<'a> {
         }
         Ok(paths)
     }
-}
 
-impl<'a> MetadataReader for Wheels<'a> {
-    fn locate_dirs(&mut self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
-        if let Some(path) = self.wheel_files.get(wheel_file.file_name) {
-            let wheel_zip = ZipArchive::new(File::open(path)?)?;
-            let metadata_dirs = MetadataDirs::locate_in_zip(
-                &wheel_zip,
-                path.display(),
-                None,
-                &wheel_file.project_name,
-                &wheel_file.version,
-            )?;
-            self.wheel_zips
-                .insert(wheel_file.file_name.to_string(), wheel_zip);
-            Ok(metadata_dirs)
-        } else {
-            bail!(
+    fn wheel_zip(
+        &self,
+        wheel_file: &WheelFile,
+    ) -> anyhow::Result<(&Path, ZipArchive<impl Read + Seek>)> {
+        let path = self.wheel_files.get(wheel_file.file_name).ok_or_else(|| {
+            anyhow!(
                 "The collected wheels do not include {file_name}.",
                 file_name = wheel_file.file_name
             )
-        }
+        })?;
+        let zip_metadata = self
+            .wheel_zips
+            .get(path)
+            .expect("We mapped all wheel paths to zip metadata in our constructor.");
+        Ok((path, unsafe {
+            ZipArchive::unsafe_new_with_metadata(File::open(path)?, zip_metadata.clone())
+        }))
+    }
+}
+
+impl<'a> MetadataReader for Wheels<'a> {
+    fn locate_dirs(&self, wheel_file: &WheelFile) -> anyhow::Result<MetadataDirs> {
+        let (path, wheel_zip) = self.wheel_zip(wheel_file)?;
+        MetadataDirs::locate_in_zip(
+            &wheel_zip,
+            path.display(),
+            None,
+            &wheel_file.project_name,
+            &wheel_file.version,
+        )
     }
 
     fn read(
-        &mut self,
+        &self,
         metadata_dirs: &MetadataDirs,
         wheel_file: &WheelFile,
         file_name: &str,
     ) -> anyhow::Result<String> {
-        let zip = self
-            .wheel_zips
-            .get_mut(wheel_file.file_name)
-            .ok_or_else(|| {
-                anyhow!(
-                    "The collected wheels do not include {file_name}.",
-                    file_name = wheel_file.file_name
-                )
-            })?;
+        let (_, mut zip) = self.wheel_zip(wheel_file)?;
         let dist_info_dir = metadata_dirs.dist_info_dir();
         Ok(io::read_to_string(
             zip.by_name_ex(&format!("{dist_info_dir}/{file_name}"))?,
@@ -3330,13 +3357,17 @@ fn execute_pex(
         python_args,
         pex,
         args,
-        Some([(
-            "__PEX_EPHEMERAL__",
-            env::join_paths([
-                pex.as_os_str(),
-                &env::args_os().next().expect("There is always an argv0"),
-            ])?,
-        )]),
+        Some([
+            ("PEX", pex.as_os_str()),
+            (
+                "__PEX_EPHEMERAL__",
+                env::join_paths([
+                    pex.as_os_str(),
+                    &env::args_os().next().expect("There is always an argv0"),
+                ])?
+                .as_os_str(),
+            ),
+        ]),
         search_path,
         Some(logging_guard),
         false,

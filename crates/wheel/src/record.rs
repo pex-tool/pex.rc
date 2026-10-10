@@ -57,32 +57,32 @@ fn parse_entry_record<'a>(
             if record.is_empty() {
                 return None;
             }
-            let fields = record.into_iter().collect::<Vec<_>>();
-            match fields.as_slice() {
-                &[raw_path, hash, size] => {
-                    // N.B.: The spec here is very poor:
-                    // https://packaging.python.org/specifications/recording-installed-packages/#the-record-file
-                    // There is no such thing as "on Windows" since a non-platform-specific wheel
-                    // could be created on Windows or Unix and uploaded to a registry. That said,
-                    // the occurrence of a dir name like bin/suffix\\ on Windows or vice versa seems
-                    // unlikely due to all the problems it would cause the wheel author when people
-                    // went to use it.
-                    #[cfg(unix)]
-                    let path = Cow::Borrowed(Path::new(raw_path));
-                    #[cfg(windows)]
-                    let path = Cow::Owned(raw_path.split("/").collect());
+            if let (Some(raw_path), Some(hash), Some(size)) =
+                (record.get(0), record.get(1), record.get(2))
+            {
+                // N.B.: The spec here is very poor:
+                // https://packaging.python.org/specifications/recording-installed-packages/#the-record-file
+                // There is no such thing as "on Windows" since a non-platform-specific wheel
+                // could be created on Windows or Unix and uploaded to a registry. That said,
+                // the occurrence of a dir name like bin/suffix\\ on Windows or vice versa seems
+                // unlikely due to all the problems it would cause the wheel author when people
+                // went to use it.
+                #[cfg(unix)]
+                let path = Cow::Borrowed(Path::new(raw_path));
+                #[cfg(windows)]
+                let path = Cow::Owned(raw_path.split("/").collect());
 
-                    Some(Ok(Entry {
-                        path,
-                        raw_path,
-                        hash,
-                        size,
-                    }))
-                }
-                _ => Some(Err(anyhow!(
+                Some(Ok(Entry {
+                    path,
+                    raw_path,
+                    hash,
+                    size,
+                }))
+            } else {
+                Some(Err(anyhow!(
                     "Each row should have path,hash,size: row {row} is missing fields: {record}",
                     record = record.as_slice()
-                ))),
+                )))
             }
         }
         Err(err) => Some(Err(anyhow!("{err}"))),

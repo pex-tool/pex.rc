@@ -106,7 +106,7 @@ pub struct InstalledWheel {
     version: String,
     tags: Vec<String>,
     build: Option<String>,
-    record: Record,
+    dist_info_dir: PathBuf,
     metadata_dirs: MetadataDirs,
     root_is_purelib: bool,
     entry_points: EntryPoints,
@@ -151,14 +151,6 @@ impl InstalledWheel {
     fn load(dist_info_dir: PathBuf) -> anyhow::Result<Self> {
         let metadata_dirs = MetadataDirs::from_dist_info_dir(&dist_info_dir)?;
 
-        let installed_wheel_dir = dist_info_dir.parent().ok_or_else(|| {
-            anyhow!(
-                "Invalid *.dist-info/ dir; expected a parent directory: {path}",
-                path = dist_info_dir.display()
-            )
-        })?;
-        let (record, _) = Record::parse(installed_wheel_dir, &metadata_dirs)?;
-
         let wheel = WHEEL::parse(fs::read(dist_info_dir.join("WHEEL"))?.as_slice())?;
 
         let entry_points = {
@@ -193,7 +185,7 @@ impl InstalledWheel {
             version: metadata_dirs.borrow_version().to_string(),
             tags: wheel.tags,
             build: wheel.build,
-            record,
+            dist_info_dir,
             metadata_dirs,
             root_is_purelib: wheel.root_is_purelib,
             entry_points,
@@ -324,7 +316,7 @@ impl InstalledWheel {
                 }
             }
         } else {
-            for entry in self.record.entries() {
+            for entry in self.record()?.entries() {
                 if self.skip(&entry.path) {
                     continue;
                 }
@@ -476,6 +468,17 @@ impl InstalledWheel {
             zip_path: zip_path.to_string(),
             script: needs_script_rewrite,
         }))
+    }
+
+    fn record(&self) -> anyhow::Result<Record> {
+        let installed_wheel_dir = self.dist_info_dir.parent().ok_or_else(|| {
+            anyhow!(
+                "Invalid *.dist-info/ dir; expected a parent directory: {path}",
+                path = self.dist_info_dir.display()
+            )
+        })?;
+        let (record, _) = Record::parse(installed_wheel_dir, &self.metadata_dirs)?;
+        Ok(record)
     }
 }
 
