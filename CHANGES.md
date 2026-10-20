@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.37.1
+
+This release fixes the `pexrc -X build` venv repository resolver to skip collection of `uv`-specific
+`uv_build.json` and `uv_cache.json` `.dist-info` metadata files. This ensures wheels resolved from
+`uv` venvs are stable.
+
 ## 0.37.0
 
 This release speeds up `pexrc -X build` by removing a RECORD parsing bottleneck and parallelizing

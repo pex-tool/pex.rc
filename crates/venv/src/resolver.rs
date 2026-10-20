@@ -277,8 +277,17 @@ impl InstalledWheel {
     // + https://discuss.python.org/t/clarification-on-a-wheels-header-data/9305
     // + https://discuss.python.org/t/deprecating-the-headers-wheel-data-key/23712
 
-    const COMPILED_PYTHON_EXTENSIONS: &[&str] = &["pyc", "pyo", "pyd"];
-    const IGNORED_METADATA_FILES: &[&str] = &["RECORD", "INSTALLER", "REQUESTED"];
+    const COMPILED_PYTHON_EXTENSIONS: &[&str] = &["pyc", "pyd", "pyo"];
+    const IGNORED_METADATA_FILES: &[&str] = &[
+        "INSTALLER",
+        "RECORD",
+        "REQUESTED",
+        // These are undocumented files used by uv to track wheels linked out of its cache. We
+        // ignore them since they can contain variable metadata that is private to uv and otherwise
+        // un-needed and can lead to unstable wheel contents.
+        "uv_build.json",
+        "uv_cache.json",
+    ];
 
     pub fn pack(
         &self,
