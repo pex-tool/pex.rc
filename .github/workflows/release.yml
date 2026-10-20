@@ -32,11 +32,11 @@ jobs:
       targets: ${{ steps.determine-targets.outputs.targets }}
     steps:
       - name: Checkout Pexrc
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
       - name: Build Package Tool
         run: cargo --color always build --release -p package
       - name: Upload package binary
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: package
           path: |
@@ -57,9 +57,9 @@ jobs:
         target: ${{ fromJSON(needs.setup-cross-build.outputs.targets) }}
     steps:
       - name: Checkout Pexrc
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
       - name: Download package binary
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v7.0.0
         with:
           name: package
       - name: Build pexrc binary.
@@ -69,7 +69,7 @@ jobs:
           target/release/package \
             --color always --profile release --tools -o dist --target ${{ matrix.target }}
       - name: Upload pexrc artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ matrix.target }}
           path: |
@@ -115,16 +115,16 @@ jobs:
       discussions: write
     steps:
       - name: Checkout Pexrc
-        uses: actions/checkout@v6
-      - uses: actions/download-artifact@v7
+        uses: actions/checkout@v6.1.0
+      - uses: actions/download-artifact@v7.0.0
         with:
           merge-multiple: true
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v7.6.0
       - name: Generate Release Hashes Manifest.
         run: uv run dev-cmd --color always generate-release-hashes -- -i dist -o dist/hashes.md
       - name: Generate pexrc ${{ needs.determine-tag.outputs.release-tag }} artifact attestations
-        uses: actions/attest@v4
+        uses: actions/attest@v4.2.2
         with:
           subject-path: dist/pexrc*
       - name: Prepare Changelog
@@ -140,7 +140,7 @@ jobs:
             > "${changelog_tmp}"
           mv "${changelog_tmp}" "${{ steps.prepare-changelog.outputs.changelog-file }}"
       - name: Create ${{ needs.determine-tag.outputs.release-tag }} Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v3.0.3
         with:
           tag_name: ${{ needs.determine-tag.outputs.release-tag }}
           name: pexrc ${{ needs.determine-tag.outputs.release-version }}
