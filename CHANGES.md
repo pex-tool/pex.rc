@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.37.1
+
+This release fixes the `pexrc -X build` venv repository resolver to skip collection of `uv`-specific
+`uv_build.json` and `uv_cache.json` `.dist-info` metadata files. This ensures wheels resolved from
+`uv` venvs are stable.
+
+This release also updates `webpki-root-certs` from 1.0.9 to 1.0.10 in response to:
+  https://rustsec.org/advisories/RUSTSEC-2026-0383.html
+
 ## 0.37.0
 
 This release speeds up `pexrc -X build` by removing a RECORD parsing bottleneck and parallelizing
