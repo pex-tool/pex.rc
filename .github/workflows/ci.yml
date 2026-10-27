@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Pexrc
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@v7.0.1
       - name: Check Formatting and Lints
         run: |
           cargo --color always fmt --check --all
@@ -41,7 +41,7 @@ jobs:
       matrix: ${{ steps.create-matrix.outputs.matrix }}
     steps:
       - name: Checkout Pexrc
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@v7.0.1
       - name: Build Package Tool
         run: cargo --color always build --release -p package
       - name: Upload package binary
@@ -84,7 +84,7 @@ jobs:
         include: ${{ fromJSON(needs.setup-cross-build.outputs.matrix) }}
     steps:
       - name: Checkout Pexrc
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@v7.0.1
       - name: Download package binary
         uses: actions/download-artifact@v7.0.0
         with:
@@ -119,7 +119,7 @@ jobs:
             os: windows-2022
     steps:
       - name: Checkout Pexrc
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@v7.0.1
       - name: Configure Windows pytest short tmp dir path
         if: matrix.os == 'windows-2022' || matrix.os == 'windows-11-arm'
         run: |

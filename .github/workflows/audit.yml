@@ -1,0 +1,16 @@
+name: Cargo Audit
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch: null
+jobs:
+  audit:
+    if: github.repository_owner == 'pex-tool'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7.0.1
+      - name: Cargo audit (for security vulnerabilities)
+        run: |
+          cargo install --locked cargo-audit
+          cargo audit
