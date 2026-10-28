@@ -227,12 +227,7 @@ impl FileOptions {
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let entry_type = if platform::is_executable(path)? {
-            EntryType::Executable
-        } else {
-            EntryType::File
-        };
-        Ok(Self::from_entry_type(entry_type))
+        Ok(Self::new(platform::is_executable(path)?))
     }
 
     pub fn from_entry(entry: &ZipFile<impl Read>) -> Self {
@@ -245,10 +240,6 @@ impl FileOptions {
         } else {
             EntryType::File
         };
-        Self::from_entry_type(entry_type)
-    }
-
-    fn from_entry_type(entry_type: EntryType) -> Self {
         Self(EntryOptions {
             path_options: PathOptions::DEFAULT,
             entry_type,
