@@ -17,7 +17,7 @@ from testing.zipfile import inventory_zip_modes
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     # Ruff doesn't understand Python 2 and thus the type comment usages.
-    from typing import Any, Dict  # noqa: F401
+    from typing import Any, Dict, List  # noqa: F401
 
 
 @pytest.fixture
@@ -98,6 +98,35 @@ def tests_py_exe(tmpdir):
     return fp.name
 
 
+@pytest.fixture
+def build_args(
+    pexrc_root,  # type: str
+    marker_dir,  # type: str
+    project_dir,  # type: str
+    tests_py_exe,  # type: str
+):
+    # type: (...) -> List[str]
+    return [
+        "--runtime-pex-root",
+        pexrc_root,
+        "-D",
+        marker_dir,
+        "-D",
+        project_dir,
+        "--bind-resource-path",
+        "RUNFILES_DIR=.rules_py_marker_file/..",
+        "--inject-env",
+        (
+            "PEX_EXTRA_SYS_PATH="
+            "{{pex.env.RUNFILES_DIR}}{sep}_main{pathsep}{{pex.env.RUNFILES_DIR}}"
+            "{sep}"
+            "_main{sep}src".format(sep=os.sep, pathsep=os.pathsep)
+        ),
+        "--exe",
+        tests_py_exe,
+    ]
+
+
 def assert_pex_output(pex):
     # type: (str) -> None
 
@@ -111,9 +140,7 @@ def assert_pex_output(pex):
 def test_build(
     tmpdir,  # type: Any
     pexrc_root,  # type: str
-    marker_dir,  # type: str
-    project_dir,  # type: str
-    tests_py_exe,  # type: str
+    build_args,  # type: List[str]
 ):
     # type: (...) -> None
 
@@ -122,32 +149,7 @@ def test_build(
 
     pex = os.path.join(str(tmpdir), "pex")
     subprocess.check_call(
-        args=[
-            pexrc(),
-            "-X",
-            "build",
-            "--runtime-pex-root",
-            pexrc_root,
-            "-D",
-            marker_dir,
-            "-D",
-            project_dir,
-            "--bind-resource-path",
-            "RUNFILES_DIR=.rules_py_marker_file/..",
-            "--inject-env",
-            (
-                "PEX_EXTRA_SYS_PATH="
-                "{{pex.env.RUNFILES_DIR}}/_main{pathsep}{{pex.env.RUNFILES_DIR}}/_main/src".format(
-                    pathsep=os.pathsep
-                )
-            ),
-            "--modes",
-            "755",
-            "--exe",
-            tests_py_exe,
-            "-o",
-            pex,
-        ],
+        args=[pexrc(), "-X", "build", "-o", pex, "--modes", "755", *build_args],
         env=env,
     )
     assert {"dir": {stat.S_IFDIR | 0o755}, "file": {stat.S_IFREG | 0o755}} == inventory_zip_modes(
@@ -158,38 +160,12 @@ def test_build(
 
 def test_inject(
     tmpdir,  # type: Any
-    pexrc_root,  # type: str
-    marker_dir,  # type: str
-    project_dir,  # type: str
-    tests_py_exe,  # type: str
+    build_args,  # type: List[str]
 ):
     # type: (...) -> None
 
     pex = os.path.join(str(tmpdir), "pex")
-    subprocess.check_call(
-        args=[
-            "pex",
-            "--runtime-pex-root",
-            pexrc_root,
-            "-D",
-            marker_dir,
-            "-D",
-            project_dir,
-            "--bind-resource-path",
-            "RUNFILES_DIR=.rules_py_marker_file/..",
-            "--inject-env",
-            (
-                "PEX_EXTRA_SYS_PATH="
-                "{{pex.env.RUNFILES_DIR}}/_main{pathsep}{{pex.env.RUNFILES_DIR}}/_main/src".format(
-                    pathsep=os.pathsep
-                )
-            ),
-            "--exe",
-            tests_py_exe,
-            "-o",
-            pex,
-        ]
-    )
+    subprocess.check_call(args=["pex", "-o", pex, *build_args])
 
     injected_pex = pexrc_inject(pex, "--modes", "755")
     assert {"dir": {stat.S_IFDIR | 0o755}, "file": {stat.S_IFREG | 0o755}} == inventory_zip_modes(
