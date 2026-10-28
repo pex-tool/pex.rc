@@ -619,8 +619,7 @@ mod tests {
     use url::Url;
     use version_ranges::Ranges;
     use wheel::WheelFile;
-    use zip::write::SimpleFileOptions;
-    use zip::{CompressionMethod, ZipWriter};
+    use zip_ext::{ZipOptions, ZipWriterExt};
 
     use crate::{Pex, PexPath};
 
@@ -677,12 +676,12 @@ mod tests {
                 .success()
         );
 
-        let mut zip =
-            ZipWriter::new_append(File::options().read(true).write(true).open(&pex).unwrap())
-                .unwrap();
-        let file_options =
-            SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Deflated);
-        embedded_scripts.inject(&mut zip, file_options).unwrap();
+        let mut zip = ZipWriterExt::new_append(
+            File::options().read(true).write(true).open(&pex).unwrap(),
+            ZipOptions::default(),
+        )
+        .unwrap();
+        embedded_scripts.inject(&mut zip).unwrap();
         zip.finish().unwrap();
 
         pex

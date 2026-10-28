@@ -43,4 +43,5 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 venv = { path = "../venv" }
 zip = { workspace = true }
+zip-ext = { path = "../zip-ext" }
 url = { workspace = true }

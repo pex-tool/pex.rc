@@ -8,7 +8,6 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
-chrono = { workspace = true }
 fs-err = { workspace = true }
 ouroboros = { workspace = true }
 pex = { path = "../pex" }

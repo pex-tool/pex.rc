@@ -16,9 +16,8 @@ use fs_err as fs;
 use fs_err::File;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-use zip::write::{FileOptionExtension, FileOptions, SimpleFileOptions};
-use zip::{ZipArchive, ZipWriter};
-use zip_ext::ZipArchiveExt;
+use zip::{CompressionMethod, ZipArchive};
+use zip_ext::{DirectoryOptions, FileOptions, ZipArchiveExt, ZipWriterExt};
 
 #[derive(Copy, Clone, EnumIter)]
 pub enum Script {
@@ -42,6 +41,10 @@ impl Script {
             Script::VenvPexExtraSysPathStart => "PEX_EXTRA_SYS_PATH.start",
             Script::VenvPexRepl => "venv-pex-repl.py",
         }
+    }
+
+    fn is_executable(&self) -> bool {
+        matches!(self, Script::VenvPex)
     }
 }
 
@@ -156,29 +159,27 @@ impl Scripts {
         }
     }
 
-    pub fn inject<'a, T: FileOptionExtension + Copy>(
-        &mut self,
-        zip: &'a mut ZipWriter<impl Write + Seek>,
-        file_options: FileOptions<'a, T>,
-    ) -> anyhow::Result<()> {
-        let directory_options = SimpleFileOptions::DEFAULT;
-        zip.add_directory(ZIP_REL_PATH, directory_options)?;
-        for resource_path in Script::iter() {
-            let text = self.read(resource_path)?;
-            let script_path = format!(
-                "{ZIP_REL_PATH}/{script}",
-                script = resource_path.file_name()
-            );
-            zip.start_file(script_path, file_options)?;
+    pub fn inject(&mut self, zip: &mut ZipWriterExt<impl Write + Seek>) -> anyhow::Result<()> {
+        let directory_options = DirectoryOptions::DEFAULT;
+        zip.add_directory(ZIP_REL_PATH, &directory_options)?;
+        for script in Script::iter() {
+            let text = self.read(script)?;
+            let script_path = format!("{ZIP_REL_PATH}/{script}", script = script.file_name());
+            let file_options = FileOptions::new(script.is_executable())
+                .compression_method(CompressionMethod::Deflated);
+            zip.start_file(script_path, &file_options)?;
             zip.write_all(text.as_bytes())?;
         }
-        zip.add_directory(ZIP_ACTIVATION_SCRIPTS_REL_PATH, directory_options)?;
+        zip.add_directory(ZIP_ACTIVATION_SCRIPTS_REL_PATH, &directory_options)?;
+        // N.B.: The only activation scripts intended to be executed are the .ps1 scripts and,
+        // even on Linux, pwsh does not need the executable bit set for this.
+        let file_options = FileOptions::new(false).compression_method(CompressionMethod::Deflated);
         for activation_script in self.activation_scripts()? {
             let activation_script_path = format!(
                 "{ZIP_ACTIVATION_SCRIPTS_REL_PATH}/{script}",
                 script = activation_script.file_name.display()
             );
-            zip.start_file(activation_script_path, file_options)?;
+            zip.start_file(activation_script_path, &file_options)?;
             zip.write_all(activation_script.contents.as_ref().as_bytes())?;
         }
         Ok(())

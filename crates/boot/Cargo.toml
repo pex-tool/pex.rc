@@ -19,3 +19,4 @@ pexrs = { path = "../pexrs" }
 platform = { path = "../platform" }
 shlex = { workspace = true }
 zip = { workspace = true }
+zip-ext = { path = "../zip-ext" }

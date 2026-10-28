@@ -14,7 +14,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::bail;
-use chrono::{DateTime, Utc};
 use fs_err as fs;
 use fs_err::File;
 use pex::{DEPS_DIR, Layout, Pex};
@@ -23,11 +22,10 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::instrument;
 use walkdir::WalkDir;
 use wheel::{Record, WheelFile, WheelLayout};
+use zip::ZipArchive;
 use zip::read::ZipArchiveMetadata;
 use zip::result::ZipError;
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
-use zip_ext::ZipArchiveExt;
+use zip_ext::{DirectoryOptions, EntryType, FileOptions, ZipArchiveExt, ZipOptions, ZipWriterExt};
 
 use crate::original_wheel_info::{OriginalWheelInfo, ZipFileName};
 
@@ -40,46 +38,10 @@ enum DirPexDepType {
     ZippedChroot,
 }
 
-pub struct WheelOptions {
-    pub compression_method: CompressionMethod,
-    pub compression_level: Option<i64>,
-    pub timestamp: Option<DateTime<Utc>>,
-}
-
-impl WheelOptions {
-    pub fn new(
-        compression_method: CompressionMethod,
-        compression_level: Option<i64>,
-        timestamp: Option<DateTime<Utc>>,
-    ) -> Self {
-        Self {
-            compression_method,
-            compression_level,
-            timestamp,
-        }
-    }
-
-    pub fn file_options(&self) -> anyhow::Result<SimpleFileOptions> {
-        self.add_timestamp(
-            SimpleFileOptions::DEFAULT
-                .compression_method(self.compression_method)
-                .compression_level(self.compression_level),
-        )
-    }
-
-    fn add_timestamp(&self, options: SimpleFileOptions) -> anyhow::Result<SimpleFileOptions> {
-        Ok(if let Some(timestamp) = self.timestamp {
-            options.last_modified_time(zip::DateTime::try_from(timestamp.naive_utc())?)
-        } else {
-            options
-        })
-    }
-}
-
 #[instrument(level = "debug", skip_all)]
 pub fn repackage_wheels(
     pex: &Pex,
-    options: &WheelOptions,
+    options: &ZipOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<Vec<File>> {
     let wheel_files = pex
@@ -134,7 +96,7 @@ fn repackage_zipapp_pex_wheel(
     zip_metadata: Arc<ZipArchiveMetadata>,
     wheel_file: &WheelFile,
     is_whl_zip: bool,
-    options: &WheelOptions,
+    options: &ZipOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<File> {
     let mut pex_zip_fp =
@@ -167,7 +129,7 @@ fn repackage_directory_pex_wheel(
     pex_dir: &Path,
     wheel_file: &WheelFile,
     dep_type: DirPexDepType,
-    options: &WheelOptions,
+    options: &ZipOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<File> {
     let wheel_path = pex_dir.join(DEPS_DIR).join(wheel_file.file_name);
@@ -193,7 +155,7 @@ fn repackage_directory_pex_wheel(
 pub fn recompress_zipped_whl(
     wheel: ZipArchive<impl Read + Seek>,
     wheel_file: &WheelFile,
-    options: &WheelOptions,
+    options: &ZipOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<File> {
     fs::create_dir_all(dest_dir)?;
@@ -206,18 +168,18 @@ pub fn recompress_zipped_whl(
 pub fn recompress_zipped_whl_to_file(
     mut wheel: ZipArchive<impl Read + Seek>,
     dest: &mut impl Write,
-    options: &WheelOptions,
+    options: &ZipOptions,
 ) -> anyhow::Result<()> {
-    let mut compressed_whl = ZipWriter::new_stream(dest);
+    let mut compressed_whl = ZipWriterExt::new_stream(dest, *options);
     for index in 0..wheel.len() {
         let entry = wheel.by_index_raw(index)?;
         if entry.name().ends_with(".pyc") {
             continue;
         }
-        if entry.compression() == options.compression_method && options.timestamp.is_none() {
+        if entry.compression() == options.compression_method {
             compressed_whl.raw_copy_file(entry)?;
         } else if entry.is_dir() {
-            compressed_whl.add_directory(entry.name(), options.add_timestamp(entry.options())?)?;
+            compressed_whl.add_directory(entry.name(), &DirectoryOptions::DEFAULT)?;
         } else {
             drop(entry);
             let mut entry = wheel.by_index(index)?;
@@ -227,15 +189,7 @@ pub fn recompress_zipped_whl_to_file(
             // though that `raw_copy_file` (used above when no transcoding is needed) _does_
             // preserve these bits.
             // See: https://github.com/zip-rs/zip2/issues/433
-            compressed_whl.start_file(
-                entry.name(),
-                options.add_timestamp(
-                    entry
-                        .options()
-                        .compression_method(options.compression_method)
-                        .compression_level(options.compression_level),
-                )?,
-            )?;
+            compressed_whl.start_file(entry.name(), &FileOptions::from_entry(&entry))?;
 
             io::copy(&mut entry, &mut compressed_whl)?;
         }
@@ -248,12 +202,12 @@ fn recompress_zipped_whl_chroot(
     mut zipped_wheel_chroot: ZipArchive<impl Read + Seek>,
     zip_source: impl Display,
     wheel_file: &WheelFile,
-    options: &WheelOptions,
+    zip_options: &ZipOptions,
     dest_dir: &Path,
     prefixed: bool,
 ) -> anyhow::Result<File> {
     fs::create_dir_all(dest_dir)?;
-    let file_options = options.file_options()?;
+
     let wheel_prefix = if prefixed {
         Some(format!(
             ".deps/{wheel_file_name}/",
@@ -329,10 +283,8 @@ fn recompress_zipped_whl_chroot(
     };
     let (dest_wheel, compressed_whl) = if let Some(wheel_info) = wheel_info {
         let dest_wheel = dest_dir.join(wheel_info.filename());
-        let mut compressed_whl = ZipWriter::new(File::create(&dest_wheel)?);
-        for (zip_file_name, options) in
-            wheel_info.iter_file_options(file_options, options.timestamp)?
-        {
+        let mut compressed_whl = ZipWriterExt::new(File::create(&dest_wheel)?, *zip_options);
+        for (zip_file_name, path_options) in wheel_info.iter_path_options()? {
             if zip_file_name.ends_with(".pyc") {
                 continue;
             }
@@ -374,7 +326,8 @@ fn recompress_zipped_whl_chroot(
                 Err(_) if zip_file_name.ends_with("/") => {
                     // N.B.: Pex can omit original directory entries when those directories are
                     // empty.
-                    compressed_whl.add_directory(zip_file_name.to_string(), options)?;
+                    compressed_whl
+                        .add_directory(zip_file_name.to_string(), &path_options.into())?;
                     continue;
                 }
                 Err(err) => bail!(
@@ -383,9 +336,12 @@ fn recompress_zipped_whl_chroot(
                 ),
             };
             if src.is_dir() {
-                compressed_whl.add_directory(zip_file_name.to_string(), options)?;
+                compressed_whl.add_directory(zip_file_name.to_string(), &path_options.into())?;
             } else {
-                compressed_whl.start_file(zip_file_name, options)?;
+                compressed_whl.start_file(
+                    zip_file_name,
+                    &FileOptions::from_path_options(path_options, EntryType::is_executable(&src)),
+                )?;
                 if src.name() == record_name {
                     compressed_whl.write_all(
                         record
@@ -408,7 +364,7 @@ fn recompress_zipped_whl_chroot(
         (dest_wheel, compressed_whl)
     } else {
         let dest_wheel = dest_dir.join(wheel_file.file_name);
-        let mut compressed_whl = ZipWriter::new(File::create(&dest_wheel)?);
+        let mut compressed_whl = ZipWriterExt::new(File::create(&dest_wheel)?, *zip_options);
         for entry in record.entries() {
             let dst_rel_path = entry.path.as_ref();
             let name = 'result: {
@@ -448,7 +404,7 @@ fn recompress_zipped_whl_chroot(
                 )
             };
             let mut src = zip_finder.by_name_ex(&name)?;
-            compressed_whl.start_file_from_path(dst_rel_path, file_options)?;
+            compressed_whl.start_file_from_path(dst_rel_path, &FileOptions::from_entry(&src))?;
             io::copy(&mut src, &mut compressed_whl)?;
         }
         (dest_wheel, compressed_whl)
@@ -461,11 +417,10 @@ fn recompress_zipped_whl_chroot(
 fn compress_whl_chroot(
     wheel_dir: &Path,
     wheel_file: &WheelFile,
-    options: &WheelOptions,
+    zip_options: &ZipOptions,
     dest_dir: &Path,
 ) -> anyhow::Result<File> {
     fs::create_dir_all(dest_dir)?;
-    let file_options = options.file_options()?;
 
     let metadata_dirs = wheel_file.metadata_dirs(wheel_dir)?;
     let (record, record_rel_path) = Record::parse(wheel_dir, &metadata_dirs)?;
@@ -490,10 +445,8 @@ fn compress_whl_chroot(
         OriginalWheelInfo::load_from_dir(pex_info_dir)?
     {
         let dest_wheel = dest_dir.join(wheel_info.filename());
-        let mut compressed_whl = ZipWriter::new(File::create(&dest_wheel)?);
-        for (zip_file_name, options) in
-            wheel_info.iter_file_options(file_options, options.timestamp)?
-        {
+        let mut compressed_whl = ZipWriterExt::new(File::create(&dest_wheel)?, *zip_options);
+        for (zip_file_name, path_options) in wheel_info.iter_path_options()? {
             if zip_file_name.ends_with(".pyc") {
                 continue;
             }
@@ -520,9 +473,10 @@ fn compress_whl_chroot(
                 }
             }
             if src.is_dir() {
-                compressed_whl.add_directory_from_path(dst_rel_path, options)?;
+                compressed_whl.add_directory_from_path(dst_rel_path, &path_options.into())?;
             } else {
-                compressed_whl.start_file_from_path(dst_rel_path, options)?;
+                compressed_whl
+                    .start_file_from_path(dst_rel_path, &FileOptions::from_path(&src)?)?;
                 if dst_rel_path == record_rel_path {
                     compressed_whl.write_all(
                         record
@@ -548,7 +502,7 @@ fn compress_whl_chroot(
         (dest_wheel, compressed_whl)
     } else {
         let dest_wheel = dest_dir.join(wheel_file.file_name);
-        let mut compressed_whl = ZipWriter::new(File::create(&dest_wheel)?);
+        let mut compressed_whl = ZipWriterExt::new(File::create(&dest_wheel)?, *zip_options);
         for entry in record.entries() {
             let dst_rel_path = entry.path.as_ref();
             let mut src = wheel_dir.join(dst_rel_path);
@@ -571,7 +525,7 @@ fn compress_whl_chroot(
                     src = bin_dir.join(rel_path)
                 }
             }
-            compressed_whl.start_file_from_path(dst_rel_path, file_options)?;
+            compressed_whl.start_file_from_path(dst_rel_path, &FileOptions::from_path(&src)?)?;
             io::copy(&mut File::open(src)?, &mut compressed_whl)?;
         }
         (dest_wheel, compressed_whl)

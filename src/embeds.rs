@@ -13,14 +13,15 @@ use fs_err::File;
 use include_dir::{Dir, include_dir};
 use indexmap::IndexMap;
 use target::SimplifiedTarget;
-use zip::ZipWriter;
-use zip::write::SimpleFileOptions;
+use zip::CompressionMethod;
+use zip_ext::{FileOptions, ZipWriterExt};
 
 #[derive(Eq, PartialEq, Hash)]
 pub struct Binary<'a> {
     pub target: SimplifiedTarget,
     pub path: &'a Path,
     pub contents: &'a [u8],
+    pub executable: bool,
 }
 
 impl<'a> Binary<'a> {
@@ -37,9 +38,8 @@ impl<'a> Binary<'a> {
 
     pub fn embed_in_zip(
         &self,
-        dst_zip: &mut ZipWriter<impl Write + Seek>,
+        dst_zip: &mut ZipWriterExt<impl Write + Seek>,
         dst_dir: &str,
-        file_options: SimpleFileOptions,
     ) -> anyhow::Result<()> {
         let dst_path = format!(
             "{dst_dir}/{embed}",
@@ -50,7 +50,10 @@ impl<'a> Binary<'a> {
                 .to_str()
                 .expect("Embed file names are utf-8 strings.")
         );
-        dst_zip.start_file(dst_path, file_options)?;
+        dst_zip.start_file(
+            dst_path,
+            &FileOptions::new(self.executable).compression_method(CompressionMethod::Deflated),
+        )?;
         let mut embed_reader = zstd::Decoder::new(self.contents)?;
         io::copy(&mut embed_reader, dst_zip)?;
         Ok(())
@@ -81,6 +84,7 @@ pub static CLIB_BY_TARGET: LazyLock<IndexMap<SimplifiedTarget, Binary<'static>>>
                         target,
                         path,
                         contents: file.contents(),
+                        executable: false,
                     },
                 )
             })
@@ -125,6 +129,7 @@ fn identify_proxy_files(name: &str) -> IndexMap<SimplifiedTarget, Binary<'static
                     target,
                     path,
                     contents: file.contents(),
+                    executable: true,
                 },
             ))
         })
