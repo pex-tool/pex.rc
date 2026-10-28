@@ -58,7 +58,7 @@ use python_platform::{
 use python_proxy::ProxySource;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use regex::Regex;
-use repackage::{WheelOptions, recompress_zipped_whl_to_file};
+use repackage::recompress_zipped_whl_to_file;
 use resolver::dependency_configuration::DependencyConfiguration;
 use resolver::resolve_wheels;
 use scripts::{IdentifyInterpreter, Scripts};
@@ -81,12 +81,10 @@ use venv::{
 use wheel::{EntryPoints, MetadataDirs, MetadataReader, WheelFile, WheelMetadata};
 use zip::read::ZipArchiveMetadata;
 use zip::result::ZipError;
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
-use zip_ext::ZipArchiveExt;
+use zip::{CompressionMethod, ZipArchive};
+use zip_ext::{DirectoryOptions, FileOptions, Modes, ZipArchiveExt, ZipOptions, ZipWriterExt};
 
 use crate::VERSION;
-use crate::compression_method::CompressionArgs;
 use crate::embeds::{
     AVAILABLE_TARGETS,
     Binary,
@@ -97,6 +95,7 @@ use crate::embeds::{
 };
 use crate::interpreter_selection::{InterpreterSelection, InterpreterSelectionArgs};
 use crate::target::{PythonPlatform, RequiredTargets};
+use crate::zip_settings::ZipArgs;
 
 #[self_referencing]
 struct Virtualenvs<'a> {
@@ -436,12 +435,18 @@ impl PythonScript {
 
     fn inject(
         self,
-        zip: &mut ZipWriter<impl Write + Seek>,
-        file_options: SimpleFileOptions,
+        zip: &mut ZipWriterExt<impl Write + Seek>,
         code_hash: &mut Key,
     ) -> anyhow::Result<()> {
         code_hash.file_contents(Self::EXE_PY, self.0.as_bytes())?;
-        zip.start_file(Self::EXE_PY, file_options)?;
+
+        // N.B.: Even though --exe is named "exe", the file is executed as a module by Python and
+        // so it needs no executable bit.
+        zip.start_file(
+            Self::EXE_PY,
+            &FileOptions::new(false).compression_method(CompressionMethod::Deflated),
+        )?;
+
         zip.write_all(self.0.as_bytes())?;
         Ok(())
     }
@@ -756,21 +761,23 @@ impl Sources {
     #[instrument(level = "debug", skip_all)]
     fn inject(
         self,
-        zip: &mut ZipWriter<impl Write + Seek>,
-        file_options: SimpleFileOptions,
+        zip: &mut ZipWriterExt<impl Write + Seek>,
         code_hash: &mut Key,
     ) -> anyhow::Result<()> {
         let sources = self.sources()?;
         if sources.is_empty() {
             return Ok(());
         }
-        zip.add_directory(SRCS_ZIP_DIR, SimpleFileOptions::DEFAULT)?;
+        zip.add_directory(SRCS_ZIP_DIR, &DirectoryOptions::DEFAULT)?;
         for (src, prefix) in sources {
             let dst = Path::new(SRCS_DIR).join(src.strip_prefix(prefix)?);
             if src.is_dir() {
-                zip.add_directory_from_path(dst, SimpleFileOptions::DEFAULT)?;
+                zip.add_directory_from_path(dst, &DirectoryOptions::DEFAULT)?;
             } else {
-                zip.start_file_from_path(&dst, file_options)?;
+                zip.start_file_from_path(
+                    &dst,
+                    &FileOptions::from_path(&src)?.compression_method(CompressionMethod::Deflated),
+                )?;
                 code_hash.file_stream(dst, &mut File::open(src)?, zip)?;
             }
         }
@@ -797,7 +804,7 @@ impl Sources {
             } else {
                 Cow::Borrowed(prefix)
             };
-            for entry in walkdir::WalkDir::new(src_dir.as_ref()) {
+            for entry in walkdir::WalkDir::new(src_dir.as_ref()).min_depth(1) {
                 let entry = entry?;
                 if let Some(file_name) = entry.file_name().to_str() {
                     if file_name == "__pycache__" {
@@ -1122,7 +1129,7 @@ pub struct Build {
     )]
     exe: Option<PathBuf>,
 
-    /// Specifies an environment variable to bind the path of a resource in the PEX.
+    /// Specifies an environment variable to bind the path of a resource in the PEX to.
     ///
     /// The binding is specified in the form `<env var name>=<resource rel path>`. For example
     /// `WINDOWS_X64_CONSOLE_TRAMPOLINE=pex/windows/stubs/uv-trampoline-x86_64-console.exe` would
@@ -1130,6 +1137,13 @@ pub struct Build {
     /// `sys.path` and bind its absolute path to the `WINDOWS_X64_CONSOLE_TRAMPOLINE` environment
     /// variable. N.B.: resource paths must use the Unix path separator of `/`. These will be
     /// converted to the runtime host path separator as needed.
+    ///
+    /// Although the resource must be a file, the binding can be to any of its parent directories
+    /// that are nested within the `sys.path` entry the resource is found in. For example, using
+    /// the example above, `WINDOWS_STUBS_DIR=pex/windows/stubs/uv-trampoline-x86_64-console.exe/..`
+    /// would look for the `pex/windows/stubs/uv-trampoline-x86_64-console.exe` resource as before,
+    /// but bind the absolute path of the parent `pex/windows/stubs` directory to the
+    /// `WINDOWS_STUBS_DIR` environment variable.
     #[arg(
         long = "bind-resource-path",
         help_heading = "Entry Point",
@@ -1216,7 +1230,7 @@ pub struct Build {
     targets: Vec<PythonPlatform>,
 
     #[command(flatten)]
-    compression_args: CompressionArgs,
+    zip_args: ZipArgs,
 
     /// Instead of building a zipapp PEX, build a packed PEX.
     ///
@@ -1411,7 +1425,7 @@ impl Build {
             venv_system_site_packages: self.venv_system_site_packages,
             ..Default::default()
         };
-        let wheel_options = self.compression_args.into_wheel_options(None);
+        let zip_options = self.zip_args.into_zip_options();
 
         let dependency_configuration = DependencyConfiguration::parse(
             pex_info.excluded.as_slice(),
@@ -1452,7 +1466,7 @@ impl Build {
                     &platforms,
                     interpreter_selection.search_path.as_ref(),
                     repository,
-                    &wheel_options,
+                    &zip_options,
                     &dependency_configuration,
                     dest_dir.path(),
                 )?;
@@ -1472,7 +1486,7 @@ impl Build {
                     repository.as_ref(),
                     &platforms,
                     &requirements,
-                    &wheel_options,
+                    &zip_options,
                     &dependency_configuration,
                     pex_info.ignore_errors,
                 )?
@@ -1485,6 +1499,7 @@ impl Build {
         let preferred_platform = platforms.first();
 
         build_pex(
+            &zip_options,
             preferred_python,
             interpreter_selection.search_path,
             preferred_platform,
@@ -1660,7 +1675,7 @@ fn resolve_url_requirements(
     platforms: &[Platform],
     search_path: Option<&SearchPath>,
     repository: &Repository,
-    wheel_options: &WheelOptions,
+    zip_options: &ZipOptions,
     dependency_configuration: &DependencyConfiguration,
     dest_dir: &Path,
 ) -> anyhow::Result<ResolvedProjects> {
@@ -1813,7 +1828,7 @@ fn resolve_url_requirements(
                     url_requirement,
                     interpreter.as_ref(),
                     repository,
-                    wheel_options,
+                    zip_options,
                     dependency_configuration,
                     dest_dir,
                 )
@@ -1829,7 +1844,7 @@ fn resolve_url_requirements(
 struct BuildSystemVenvBuilder<'a> {
     interpreter: &'a Interpreter,
     repository: &'a Repository<'a>,
-    wheel_options: &'a WheelOptions,
+    zip_options: &'a ZipOptions,
     dependency_configuration: &'a DependencyConfiguration,
     include_system_site_packages: bool,
 }
@@ -1845,7 +1860,7 @@ impl<'a> VenvBuilder for BuildSystemVenvBuilder<'a> {
             Some(self.repository),
             &[Platform::Interpreter(Cow::Borrowed(self.interpreter))],
             requirements,
-            self.wheel_options,
+            self.zip_options,
             self.dependency_configuration,
             false,
         )?;
@@ -2079,7 +2094,7 @@ fn resolve_project(
     project: UrlRequirement,
     interpreter: &Interpreter,
     repository: &Repository,
-    wheel_options: &WheelOptions,
+    zip_options: &ZipOptions,
     dependency_configuration: &DependencyConfiguration,
     dest_dir: &Path,
 ) -> anyhow::Result<ResolvedProject> {
@@ -2148,7 +2163,7 @@ fn resolve_project(
     let venv_builder = BuildSystemVenvBuilder {
         interpreter,
         repository,
-        wheel_options,
+        zip_options,
         dependency_configuration,
         include_system_site_packages,
     };
@@ -2211,7 +2226,7 @@ fn resolve_project(
         }
     };
 
-    let wheel = cache_wheel(&wheel_path, wheel_options)?;
+    let wheel = cache_wheel(&wheel_path, zip_options)?;
     let wheel_file = WheelFile::parse_file_name(&wheel.file_name)?;
     let whl = Whl::new(&wheel.path)?;
     let metadata_dirs = whl.locate_dirs(&wheel_file)?;
@@ -2327,7 +2342,7 @@ fn resolve_wheel_files<'a>(
     repository: Option<&'a Repository<'a>>,
     platforms: &'a [Platform<'a>],
     requirements: &[Requirement<Url>],
-    wheel_options: &WheelOptions,
+    zip_options: &ZipOptions,
     dependency_configuration: &DependencyConfiguration,
     ignore_errors: bool,
 ) -> anyhow::Result<(Option<&'a Interpreter>, Vec<FingerprintedWheel>)> {
@@ -2337,7 +2352,7 @@ fn resolve_wheel_files<'a>(
                 repository,
                 venvs,
                 platforms,
-                wheel_options,
+                zip_options,
                 requirements,
                 dependency_configuration,
                 ignore_errors,
@@ -2354,7 +2369,7 @@ fn resolve_wheel_files<'a>(
             )?;
             let fingerprinted_wheels = wheels
                 .into_par_iter()
-                .map(|wheel| cache_wheel(wheel, wheel_options))
+                .map(|wheel| cache_wheel(wheel, zip_options))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let _preferred_platform = platforms.iter().next();
             Ok((None, fingerprinted_wheels))
@@ -2442,7 +2457,7 @@ fn resolve_wheels_from_venvs<'a>(
     repository: &Repository,
     virtualenvs: &'a Virtualenvs<'a>,
     platforms: &'a [Platform<'a>],
-    wheel_options: &WheelOptions,
+    zip_options: &ZipOptions,
     requirements: &[Requirement<Url>],
     dependency_configuration: &DependencyConfiguration,
     ignore_errors: bool,
@@ -2578,7 +2593,7 @@ fn resolve_wheels_from_venvs<'a>(
         let venv_builder = BuildSystemVenvBuilder {
             interpreter: &venv.interpreter,
             repository,
-            wheel_options,
+            zip_options,
             dependency_configuration,
             include_system_site_packages,
         };
@@ -2586,12 +2601,7 @@ fn resolve_wheels_from_venvs<'a>(
             &mut installed_wheels
                 .into_par_iter()
                 .map(|installed_wheel| {
-                    pack_wheel(
-                        installed_wheel,
-                        &install_paths,
-                        wheel_options,
-                        &venv_builder,
-                    )
+                    pack_wheel(installed_wheel, &install_paths, zip_options, &venv_builder)
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?,
         );
@@ -2599,23 +2609,40 @@ fn resolve_wheels_from_venvs<'a>(
     Ok((preferred_python, wheel_paths))
 }
 
-fn wheel_path(file_name: &str, wheel_options: &WheelOptions) -> anyhow::Result<PathBuf> {
+struct ModesKey(Option<Modes>);
+
+impl Display for ModesKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(modes) = self.0 {
+            write!(
+                f,
+                "d{:o}-e{:o}-f{:o}",
+                modes.directory, modes.executable, modes.file
+            )
+        } else {
+            f.write_str("original")
+        }
+    }
+}
+
+fn wheel_path(file_name: &str, zip_options: &ZipOptions) -> anyhow::Result<PathBuf> {
+    let modes = ModesKey(zip_options.modes);
     let options_dir_name = match (
-        wheel_options.compression_method,
-        wheel_options.compression_level,
+        zip_options.compression_method,
+        zip_options.compression_level,
     ) {
-        (CompressionMethod::Stored, None) => Cow::Borrowed("stored-default"),
-        (CompressionMethod::Deflated, None) => Cow::Borrowed("deflated-default"),
-        (CompressionMethod::Zstd, None) => Cow::Borrowed("zstd-default"),
-        (CompressionMethod::Stored, Some(level)) => Cow::Owned(format!("stored-{level}")),
-        (CompressionMethod::Deflated, Some(level)) => Cow::Owned(format!("deflated-{level}")),
-        (CompressionMethod::Zstd, Some(level)) => Cow::Owned(format!("zstd-{level}")),
+        (CompressionMethod::Stored, None) => format!("stored-default-{modes}"),
+        (CompressionMethod::Deflated, None) => format!("deflated-default-{modes}"),
+        (CompressionMethod::Zstd, None) => format!("zstd-default-{modes}"),
+        (CompressionMethod::Stored, Some(level)) => format!("stored-{level}-{modes}"),
+        (CompressionMethod::Deflated, Some(level)) => format!("deflated-{level}-{modes}"),
+        (CompressionMethod::Zstd, Some(level)) => format!("zstd-{level}-{modes}"),
         _ => bail!(
             "Unsupported compression method {method:?}",
-            method = wheel_options.compression_method
+            method = zip_options.compression_method
         ),
     };
-    let mut whl_path = CacheDir::Wheels.path()?.join(options_dir_name.as_ref());
+    let mut whl_path = CacheDir::Wheels.path()?.join(options_dir_name);
     whl_path.push(file_name);
     Ok(whl_path)
 }
@@ -2644,7 +2671,7 @@ type WheelDigestAlgorithm = Sha256;
 static ALGORITHM_NAME: &str = "sha256";
 
 #[instrument(level = "debug", skip_all, fields(wheel = %wheel.display()))]
-fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<FingerprintedWheel> {
+fn cache_wheel(wheel: &Path, zip_options: &ZipOptions) -> anyhow::Result<FingerprintedWheel> {
     let wheel_file = WheelFile::parse_file_name(
         wheel.file_name().and_then(OsStr::to_str).ok_or_else(|| {
             anyhow!(
@@ -2653,12 +2680,12 @@ fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<Fin
             )
         })?,
     )?;
-    let wheel_path = wheel_path(wheel_file.file_name, wheel_options)?;
+    let wheel_path = wheel_path(wheel_file.file_name, zip_options)?;
     let fingerprint_path = wheel_path.with_added_extension(ALGORITHM_NAME);
     if let Some(fingerprint) = atomic_file(&wheel_path, |whl_file| {
         let whl_zip = ZipArchive::new(File::open(wheel)?)?;
         let mut dest = DigestingWriter::new(WheelDigestAlgorithm::new(), whl_file);
-        recompress_zipped_whl_to_file(whl_zip, &mut dest, wheel_options)?;
+        recompress_zipped_whl_to_file(whl_zip, &mut dest, zip_options)?;
         let (mut whl_file, fingerprint, _) = dest.into_parts();
         whl_file.rewind()?;
         let mut fingerprint_file = tempfile::Builder::new()
@@ -2693,7 +2720,7 @@ fn cache_wheel(wheel: &Path, wheel_options: &WheelOptions) -> anyhow::Result<Fin
 fn pack_wheel(
     wheel: &InstalledWheel,
     install_paths: &InstallPaths,
-    wheel_options: &WheelOptions,
+    zip_options: &ZipOptions,
     venv_builder: &impl VenvBuilder,
 ) -> anyhow::Result<FingerprintedWheel> {
     let wheel_file = wheel.file_name()?;
@@ -2708,14 +2735,14 @@ fn pack_wheel(
             venv_builder,
             &mut Scripts::Embedded,
         )?;
-        return cache_wheel(&built_editable, wheel_options);
+        return cache_wheel(&built_editable, zip_options);
     }
 
-    let wheel_path = wheel_path(&wheel_file, wheel_options)?;
+    let wheel_path = wheel_path(&wheel_file, zip_options)?;
     let fingerprint_path = wheel_path.with_added_extension(ALGORITHM_NAME);
     if let Some(fingerprint) = atomic_file(&wheel_path, |whl_file| {
         let mut digester = DigestingWriter::new(WheelDigestAlgorithm::new(), whl_file);
-        wheel.pack(install_paths, wheel_options, &mut digester)?;
+        wheel.pack(install_paths, zip_options, &mut digester)?;
         let fingerprint = digester.into_fingerprint();
         let mut fingerprint_file = tempfile::Builder::new()
             .prefix(&wheel_file)
@@ -2855,6 +2882,7 @@ fn resolve_wheels_from_files<'a>(
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "debug", skip_all)]
 fn build_pex(
+    zip_options: &ZipOptions,
     preferred_python: Option<&Interpreter>,
     search_path: Option<SearchPath>,
     preferred_platform: Option<&Platform>,
@@ -2873,6 +2901,7 @@ fn build_pex(
             let subject = Cow::Owned(format!("PEX at {path}", path = path.display()));
             create_pex(
                 subject,
+                zip_options,
                 false,
                 preferred_platform,
                 wheels,
@@ -2905,6 +2934,7 @@ fn build_pex(
             };
             create_pex(
                 subject,
+                zip_options,
                 true,
                 preferred_platform,
                 wheels,
@@ -3037,6 +3067,7 @@ impl<'a> MetadataReader for Wheels<'a> {
 #[allow(clippy::too_many_arguments)]
 fn create_pex(
     subject: Cow<'_, str>,
+    zip_options: &ZipOptions,
     ephemeral: bool,
     preferred_python: Option<&Platform>,
     wheels: Vec<FingerprintedWheel>,
@@ -3116,6 +3147,7 @@ fn create_pex(
         )
     } else {
         create_zipapp(
+            zip_options,
             preferred_python,
             wheels,
             pex_info,
@@ -3203,6 +3235,7 @@ fn create_packed_pex(
 
 #[allow(clippy::too_many_arguments)]
 fn create_zipapp(
+    zip_options: &ZipOptions,
     preferred_python: Option<&Platform>,
     wheels: Vec<FingerprintedWheel>,
     pex_info: &mut RawPexInfo,
@@ -3220,30 +3253,27 @@ fn create_zipapp(
     };
     write_shebang(preferred_python, pex_info, shebang, &mut dst_zip_fp)?;
 
-    let mut dst_zip = ZipWriter::new(&dst_zip_fp);
-
-    let directory_options = SimpleFileOptions::DEFAULT;
-    let deflated_file_options =
-        SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Deflated);
-    let stored_file_options =
-        SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Stored);
+    let mut dst_zip = ZipWriterExt::new(&dst_zip_fp, *zip_options);
+    let directory_options = DirectoryOptions::DEFAULT;
 
     adjust_requirements(pex_info, &wheels)?;
     let mut code_hash = Key::new();
-    sources.inject(&mut dst_zip, deflated_file_options, &mut code_hash)?;
+    sources.inject(&mut dst_zip, &mut code_hash)?;
     if let Some(entry_point) = entry_point
         && let Some(exe) = entry_point.resolve(pex_info, &wheels)?
     {
-        exe.inject(&mut dst_zip, deflated_file_options, &mut code_hash)?;
+        exe.inject(&mut dst_zip, &mut code_hash)?;
     }
     pex_info.code_hash = Cow::Owned(code_hash.fingerprint().hex_digest());
 
     if !wheels.is_empty() {
-        dst_zip.add_directory(DEPS_ZIP_DIR, directory_options)?;
+        dst_zip.add_directory(DEPS_ZIP_DIR, &directory_options)?;
+        let wheel_file_options =
+            FileOptions::new(false).compression_method(CompressionMethod::Stored);
         for wheel in wheels {
             dst_zip.start_file(
                 format!("{DEPS_DIR}/{}", wheel.file_name),
-                stored_file_options,
+                &wheel_file_options,
             )?;
             let mut src = File::open(wheel.path)?;
             io::copy(&mut src, &mut dst_zip)?;
@@ -3255,23 +3285,26 @@ fn create_zipapp(
     }
     pex_info.deps_are_wheel_files = true;
 
-    dst_zip.add_directory("__pex__", directory_options)?;
-    Scripts::Embedded.inject(&mut dst_zip, deflated_file_options)?;
+    dst_zip.add_directory("__pex__", &directory_options)?;
+    Scripts::Embedded.inject(&mut dst_zip)?;
 
-    dst_zip.add_directory("__pex__/.proxies", directory_options)?;
+    dst_zip.add_directory("__pex__/.proxies", &directory_options)?;
     for proxy in proxies {
-        proxy.embed_in_zip(&mut dst_zip, "__pex__/.proxies", deflated_file_options)?;
+        proxy.embed_in_zip(&mut dst_zip, "__pex__/.proxies")?;
     }
 
-    dst_zip.add_directory("__pex__/.clibs", directory_options)?;
+    dst_zip.add_directory("__pex__/.clibs", &directory_options)?;
     for clib in clibs {
-        clib.embed_in_zip(&mut dst_zip, "__pex__/.clibs", deflated_file_options)?;
+        clib.embed_in_zip(&mut dst_zip, "__pex__/.clibs")?;
     }
 
-    inject_boot(pex_info, &mut dst_zip, deflated_file_options)?;
+    inject_boot(pex_info, &mut dst_zip)?;
 
     pex_info.finalize_pex_hash()?;
-    dst_zip.start_file("PEX-INFO", deflated_file_options)?;
+    dst_zip.start_file(
+        "PEX-INFO",
+        &FileOptions::new(false).compression_method(CompressionMethod::Deflated),
+    )?;
     pex_info.write(&mut dst_zip)?;
 
     dst_zip.finish()?;

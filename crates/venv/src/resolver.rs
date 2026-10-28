@@ -17,14 +17,12 @@ use fs_err::File;
 use platform::PosixPath;
 use python_platform::PythonVersion;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use repackage::WheelOptions;
 use repackage::original_wheel_info::{OriginalWheelInfo, ZipFileName};
 use serde::Deserialize;
 use tracing::instrument;
 use url::Url;
 use wheel::{EntryPoints, MetadataDirs, Record, Tag, WHEEL, WheelDir, record};
-use zip::ZipWriter;
-use zip::write::SimpleFileOptions;
+use zip_ext::{FileOptions, PathOptions, ZipOptions, ZipWriterExt};
 
 use crate::Virtualenv;
 use crate::script::PythonScript;
@@ -79,12 +77,17 @@ struct WheelEntry<'a> {
 impl<'a> WheelEntry<'a> {
     fn pack(
         &mut self,
-        whl_zip: &mut ZipWriter<impl Write + Seek>,
-        file_options: SimpleFileOptions,
+        whl_zip: &mut ZipWriterExt<impl Write + Seek>,
+        path_options: Option<PathOptions>,
         record_writer: &mut record::Writer<impl Write>,
     ) -> anyhow::Result<()> {
         let zip_path = self.zip_path.to_string();
-        whl_zip.start_file(&zip_path, file_options)?;
+        let file_options = if let Some(path_options) = path_options {
+            FileOptions::from_path_options(path_options, self.script.is_some())
+        } else {
+            FileOptions::new(self.script.is_some())
+        };
+        whl_zip.start_file(&zip_path, &file_options)?;
         let (fingerprint, size) = if let Some((file, python_script)) = self.script.as_mut() {
             let mut contents = Vec::with_capacity(usize::try_from(file.metadata()?.len())?);
             python_script.re_write(file, &mut contents)?;
@@ -292,11 +295,10 @@ impl InstalledWheel {
     pub fn pack(
         &self,
         install_paths: &InstallPaths,
-        wheel_options: &WheelOptions,
+        zip_options: &ZipOptions,
         dest: impl Write,
     ) -> anyhow::Result<()> {
-        let mut whl_zip = ZipWriter::new_stream(dest);
-        let file_options = wheel_options.file_options()?;
+        let mut whl_zip = ZipWriterExt::new_stream(dest, *zip_options);
         let site_packages_dir = if self.root_is_purelib {
             &install_paths.purelib
         } else {
@@ -308,11 +310,9 @@ impl InstalledWheel {
             site_packages_dir.join(self.metadata_dirs.pex_info_dir().as_path()),
         )? {
             let data_dir = self.metadata_dirs.data_dir();
-            for (zip_file_name, file_options) in
-                wheel_info.iter_file_options(file_options, wheel_options.timestamp)?
-            {
+            for (zip_file_name, path_options) in wheel_info.iter_path_options()? {
                 if zip_file_name.is_dir() {
-                    whl_zip.add_directory(zip_file_name.to_string(), file_options)?;
+                    whl_zip.add_directory(zip_file_name.to_string(), &path_options.into())?;
                 } else if !self.skip(zip_file_name.as_path())
                     && let Some(mut wheel_entry) = self.zip_file_name_to_wheel_entry(
                         install_paths,
@@ -321,7 +321,7 @@ impl InstalledWheel {
                         zip_file_name,
                     )?
                 {
-                    wheel_entry.pack(&mut whl_zip, file_options, &mut record_writer)?;
+                    wheel_entry.pack(&mut whl_zip, Some(path_options), &mut record_writer)?;
                 }
             }
         } else {
@@ -334,7 +334,7 @@ impl InstalledWheel {
                     site_packages_dir.as_ref(),
                     entry,
                 )? {
-                    wheel_entry.pack(&mut whl_zip, file_options, &mut record_writer)?;
+                    wheel_entry.pack(&mut whl_zip, None, &mut record_writer)?;
                 }
             }
         }
@@ -345,7 +345,7 @@ impl InstalledWheel {
         );
         record_writer.write_entry(&record_path, None)?;
         let record = record_writer.into_inner()?;
-        whl_zip.start_file(record_path, file_options)?;
+        whl_zip.start_file(record_path, &FileOptions::new(false))?;
         io::copy(&mut record.as_slice(), &mut whl_zip)?;
 
         whl_zip.finish()?;

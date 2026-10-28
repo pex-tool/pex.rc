@@ -18,14 +18,14 @@ use repackage::repackage_wheels;
 use scripts::Scripts;
 use venv::{InstallPaths, Virtualenv, collect_installed_wheels};
 
-use crate::compression_method::CompressionArgs;
 use crate::source;
+use crate::zip_settings::ZipArgs;
 
 #[derive(Args)]
 #[group(skip)]
 pub struct Extract {
     #[command(flatten)]
-    compression_args: CompressionArgs,
+    zip_args: ZipArgs,
 
     #[command(flatten)]
     output: Output,
@@ -45,7 +45,7 @@ impl Extract {
     pub fn execute(self) -> anyhow::Result<()> {
         self.output.configure()?;
 
-        let options = self.compression_args.into_wheel_options(None);
+        let options = self.zip_args.into_zip_options();
         let path = source::to_path(self.source, Some(&self.dest_dir))?;
         let wheels =
             if let Ok(venv) = Virtualenv::load(Cow::Borrowed(&path), &mut Scripts::Embedded) {

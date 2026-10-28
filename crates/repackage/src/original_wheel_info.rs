@@ -8,11 +8,10 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
-use chrono::Utc;
 use fs_err::File;
 use ouroboros::self_referencing;
 use serde::Deserialize;
-use zip::write::{FileOptions, SimpleFileOptions};
+use zip_ext::PathOptions;
 
 #[derive(Copy, Clone, Debug, Deserialize)]
 struct DateTime(u16, u8, u8, u8, u8, u8);
@@ -108,24 +107,15 @@ impl OriginalWheelInfo {
         self.borrow_info().filename
     }
 
-    pub fn iter_file_options(
-        &self,
-        base_options: SimpleFileOptions,
-        timestamp: Option<chrono::DateTime<Utc>>,
-    ) -> anyhow::Result<Vec<(&ZipFileName<'_>, FileOptions<'static, ()>)>> {
+    pub fn iter_path_options(&self) -> anyhow::Result<Vec<(&ZipFileName<'_>, PathOptions)>> {
         self.borrow_info()
             .entries
             .iter()
             .map(|(name, last_modified, external_attr)| {
-                let mtime = if let Some(timestamp) = timestamp {
-                    zip::DateTime::try_from(timestamp.naive_utc())?
-                } else {
-                    last_modified.as_zip_date_time()?
-                };
                 Ok((
                     name,
-                    base_options
-                        .last_modified_time(mtime)
+                    PathOptions::DEFAULT
+                        .last_modified_time(last_modified.as_zip_date_time()?)
                         .unix_permissions(external_attr >> 16),
                 ))
             })

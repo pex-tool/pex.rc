@@ -13,9 +13,8 @@ use std::{env, io};
 use anyhow::anyhow;
 use pex::{Layout, Pex};
 use target::Target;
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
-use zip_ext::ZipArchiveExt;
+use zip::{CompressionMethod, ZipArchive};
+use zip_ext::{FileOptions, ZipArchiveExt, ZipOptions, ZipWriterExt};
 
 pub const SHEBANG_PREFIX: &str = "\n#!";
 const SHEBANG_SUFFIX: &str = "\n";
@@ -161,10 +160,10 @@ fn create_proxy(
     }
     let shebang_python = interpreter.as_os_str();
     if let Some(script) = script {
-        let mut script_zip = ZipWriter::new(&target_python);
+        let mut script_zip = ZipWriterExt::new(&target_python, ZipOptions::default());
         script_zip.start_file(
             "__main__.py",
-            SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Deflated),
+            &FileOptions::new(false).compression_method(CompressionMethod::Deflated),
         )?;
         script_zip.write_all(script.as_ref())?;
         script_zip.set_comment(format!(

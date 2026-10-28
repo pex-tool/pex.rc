@@ -24,8 +24,8 @@ use pex::{Pex, PexPath, RawPexInfo};
 use pexrs::venv_dir;
 use platform::PosixPath;
 use python_platform::PythonImplementation;
-use zip::ZipWriter;
-use zip::write::{FileOptionExtension, FileOptions};
+use zip::CompressionMethod;
+use zip_ext::{FileOptions, ZipWriterExt};
 
 const SH_BOOT_SHEBANG: &[u8] = b"#!/bin/sh\n";
 const SH_BOOT_PARTS: [&str; 4] = str_split!(include_str!("boot.sh"), "# --- split --- #\n");
@@ -133,15 +133,15 @@ pub fn write_sh_boot_shebang(
 
 const PY_BOOT: [&str; 3] = str_split!(include_str!("boot.py"), "    # --- split --- #\n");
 
-pub fn inject_boot<T: FileOptionExtension + Copy>(
+pub fn inject_boot(
     pex_info: &RawPexInfo,
-    zip: &mut ZipWriter<impl Write + Seek>,
-    file_options: FileOptions<T>,
+    zip: &mut ZipWriterExt<impl Write + Seek>,
 ) -> anyhow::Result<()> {
-    zip.start_file("__pex__/__init__.py", file_options)?;
+    let file_options = FileOptions::new(false).compression_method(CompressionMethod::Deflated);
+    zip.start_file("__pex__/__init__.py", &file_options)?;
     write_boot_contents(pex_info, zip)?;
 
-    zip.start_file("__main__.py", file_options)?;
+    zip.start_file("__main__.py", &file_options)?;
     write_boot_contents(pex_info, zip)?;
     Ok(())
 }

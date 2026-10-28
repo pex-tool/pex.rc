@@ -20,7 +20,7 @@ reqwest = {
     # We only really need:
     # 1. blocking
     # 2. rustls-no-provider instead of rustls (this drops aws-lc-sys which does not cross-compile
-    # on macos currently)
+    # on macOS currently)
     features = ["blocking", "charset", "http2", "rustls-no-provider", "system-proxy"]
 }
 rustls = {

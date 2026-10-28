@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.38.0
+
+This release adds support for parent directory bindings to `pexrc -X build --bind-resource-path`
+(via trailing `..` path segments) as well as adding support for controlling zip entry file modes via
+`pexrc -X build --modes` and interpolating `{pex.env.*}` for `--inject-env` values.
+
 ## 0.37.1
 
 This release fixes the `pexrc -X build` venv repository resolver to skip collection of `uv`-specific

@@ -24,10 +24,13 @@ def pexrc():
     return os.environ["_PEXRC_TEST_PEXRC_BINARY"]
 
 
-def pexrc_inject(pex):
-    # type: (str) -> str
+def pexrc_inject(
+    pex,  # type: str
+    *extra_args,  # type: str
+):
+    # type: (...) -> str
 
-    subprocess.check_call(args=[pexrc(), "inject", pex])
+    subprocess.check_call(args=[pexrc(), "inject", pex, *extra_args])
     injected_pex = pex + "rc" if pex.endswith(".pex") else pex + ".pexrc"
     assert (os.path.isfile(pex) and os.path.isfile(injected_pex)) or (
         os.path.isdir(pex) and os.path.isdir(injected_pex)

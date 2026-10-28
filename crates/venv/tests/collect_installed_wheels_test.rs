@@ -4,13 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use interpreter::Interpreter;
-use repackage::WheelOptions;
 use rstest::rstest;
 use scripts::{IdentifyInterpreter, Scripts};
 use testing::{embedded_scripts, interpreter_identification_script, python_exe, tmp_dir};
 use venv::virtualenv::FileSystemLinker;
 use venv::{InstallPaths, Virtualenv, collect_installed_wheels};
-use zip::CompressionMethod;
+use zip_ext::ZipOptions;
 
 #[rstest]
 fn test_collect_installed_wheels_empty(
@@ -60,10 +59,10 @@ fn test_collect_installed_wheels_uv(tmp_dir: PathBuf, mut embedded_scripts: Scri
     let venv = Virtualenv::load(Cow::Owned(tmp_dir), &mut embedded_scripts).unwrap();
     let installed_wheels = collect_installed_wheels(&venv).unwrap();
     let install_paths = InstallPaths::for_venv(&venv).unwrap();
-    let wheel_options = WheelOptions::new(CompressionMethod::Zstd, None, None);
+    let zip_options = ZipOptions::default();
     for installed_wheel in &installed_wheels {
         installed_wheel
-            .pack(&install_paths, &wheel_options, Cursor::new(vec![]))
+            .pack(&install_paths, &zip_options, Cursor::new(vec![]))
             .unwrap();
     }
 }
@@ -85,10 +84,10 @@ fn test_collect_installed_wheels_pex(tmp_dir: PathBuf, mut embedded_scripts: Scr
     let venv = Virtualenv::load(Cow::Owned(tmp_dir), &mut embedded_scripts).unwrap();
     let installed_wheels = collect_installed_wheels(&venv).unwrap();
     let install_paths = InstallPaths::for_venv(&venv).unwrap();
-    let wheel_options = WheelOptions::new(CompressionMethod::Zstd, None, None);
+    let zip_options = ZipOptions::default();
     for installed_wheel in &installed_wheels {
         installed_wheel
-            .pack(&install_paths, &wheel_options, Cursor::new(vec![]))
+            .pack(&install_paths, &zip_options, Cursor::new(vec![]))
             .unwrap();
     }
 }

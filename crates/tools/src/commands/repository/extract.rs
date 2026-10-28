@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::Args;
 use cli::Output;
 use flate2::Compression;
@@ -31,10 +31,11 @@ use pex::{
     collect_zipped_user_source_indexes,
 };
 use platform::path_for_terminal_output;
-use repackage::{WheelOptions, repackage_wheels};
+use repackage::repackage_wheels;
 use scripts::IdentifyInterpreter;
 use tracing::warn;
 use zip::{CompressionMethod, ZipArchive};
+use zip_ext::{Modes, ZipOptions};
 
 #[derive(Args)]
 #[group(skip)]
@@ -82,16 +83,20 @@ pub(crate) struct ExtractArgs {
 pub(crate) fn extract(python: Option<&Path>, pex: Pex, args: ExtractArgs) -> anyhow::Result<()> {
     args.output.configure()?;
 
-    let timestamp = if args.use_system_time {
-        None
-    } else {
-        Some(
-            Utc.with_ymd_and_hms(1980, 1, 1, 0, 0, 0)
-                .single()
-                .expect("This is an unambiguous date."),
-        )
+    let options = {
+        let (modes, reproducible_timestamp) = if args.use_system_time {
+            (None, false)
+        } else {
+            (Some(Modes::default()), true)
+        };
+        ZipOptions {
+            compression_method: CompressionMethod::Deflated,
+            compression_level: None,
+            modes,
+            reproducible_timestamp,
+        }
     };
-    let options = WheelOptions::new(CompressionMethod::Deflated, None, timestamp);
+
     repackage_wheels(&pex, &options, &args.dest_dir)?;
     let pex_info = pex.info.raw();
     let pex_path = PexPath::from_pex_info(pex_info, true);
@@ -123,7 +128,13 @@ pub(crate) fn extract(python: Option<&Path>, pex: Pex, args: ExtractArgs) -> any
         };
         let pex_path = pex.path;
         if args.sources {
-            extract_sdist(pex_path, pex.layout, pex_info, &args.dest_dir, timestamp)?;
+            extract_sdist(
+                pex_path,
+                pex.layout,
+                pex_info,
+                &args.dest_dir,
+                options.chrono_timestamp(),
+            )?;
         }
         if args.serve {
             serve(
