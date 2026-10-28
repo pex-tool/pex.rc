@@ -167,8 +167,8 @@ def test_inject(
     pex = os.path.join(str(tmpdir), "pex")
     subprocess.check_call(args=["pex", "-o", pex, *build_args])
 
-    injected_pex = pexrc_inject(pex, "--modes", "755")
-    assert {"dir": {stat.S_IFDIR | 0o755}, "file": {stat.S_IFREG | 0o755}} == inventory_zip_modes(
+    injected_pex = pexrc_inject(pex, "--modes", "750")
+    assert {"dir": {stat.S_IFDIR | 0o750}, "file": {stat.S_IFREG | 0o750}} == inventory_zip_modes(
         injected_pex
     )
     assert_pex_output(injected_pex)
