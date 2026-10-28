@@ -118,9 +118,9 @@ def build_args(
         "--inject-env",
         (
             "PEX_EXTRA_SYS_PATH="
-            "{{pex.env.RUNFILES_DIR}}{sep}_main{pathsep}{{pex.env.RUNFILES_DIR}}"
-            "{sep}"
-            "_main{sep}src".format(sep=os.sep, pathsep=os.pathsep)
+            "{{pex.env.RUNFILES_DIR}}{sep}_main"
+            "{pathsep}"
+            "{{pex.env.RUNFILES_DIR}}{sep}_main{sep}src".format(sep=os.sep, pathsep=os.pathsep)
         ),
         "--exe",
         tests_py_exe,
