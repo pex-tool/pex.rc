@@ -193,7 +193,7 @@ pep440_rs = "0.7"
 pep508_rs = {  version = "0.9", features = ["non-pep508-extensions"] }
 plist = "1.9"
 pretty_assertions = "1.4"
-python-pkginfo = "0.6"
+python-pkginfo = "0.7"
 rayon = "1.12"
 reflink-copy = "0.1"
 regex = "1.12"
@@ -228,7 +228,7 @@ windows-registry = "0.100"
 windows-version = "0.100"
 which = "8.0"
 xz2 = "0.1"
-zip = { version = "8.6", default-features = false, features = ["chrono", "deflate", "zstd"] }
+zip = { version = "9.1", default-features = false, features = ["chrono", "deflate", "zstd"] }
 zstd = "0.14"
 
 [build-dependencies]

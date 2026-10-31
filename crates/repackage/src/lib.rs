@@ -25,7 +25,15 @@ use wheel::{Record, WheelFile, WheelLayout};
 use zip::ZipArchive;
 use zip::read::ZipArchiveMetadata;
 use zip::result::ZipError;
-use zip_ext::{DirectoryOptions, EntryType, FileOptions, ZipArchiveExt, ZipOptions, ZipWriterExt};
+use zip_ext::{
+    DirectoryOptions,
+    EntryType,
+    FileOptions,
+    ZipArchiveExt,
+    ZipFileExt,
+    ZipOptions,
+    ZipWriterExt,
+};
 
 use crate::original_wheel_info::{OriginalWheelInfo, ZipFileName};
 
@@ -173,13 +181,15 @@ pub fn recompress_zipped_whl_to_file(
     let mut compressed_whl = ZipWriterExt::new_stream(dest, *options);
     for index in 0..wheel.len() {
         let entry = wheel.by_index_raw(index)?;
-        if entry.name().ends_with(".pyc") {
+        if let Some(name) = entry.name().ok()
+            && name.ends_with(".pyc")
+        {
             continue;
         }
         if entry.compression() == options.compression_method {
             compressed_whl.raw_copy_file(entry)?;
         } else if entry.is_dir() {
-            compressed_whl.add_directory(entry.name(), &DirectoryOptions::DEFAULT)?;
+            compressed_whl.add_directory_from_path(entry.path()?, &DirectoryOptions::DEFAULT)?;
         } else {
             drop(entry);
             let mut entry = wheel.by_index(index)?;
@@ -189,7 +199,7 @@ pub fn recompress_zipped_whl_to_file(
             // though that `raw_copy_file` (used above when no transcoding is needed) _does_
             // preserve these bits.
             // See: https://github.com/zip-rs/zip2/issues/433
-            compressed_whl.start_file(entry.name(), &FileOptions::from_entry(&entry))?;
+            compressed_whl.start_file_from_path(entry.path()?, &FileOptions::from_entry(&entry))?;
 
             io::copy(&mut entry, &mut compressed_whl)?;
         }
@@ -342,7 +352,9 @@ fn recompress_zipped_whl_chroot(
                     zip_file_name,
                     &FileOptions::from_path_options(path_options, EntryType::is_executable(&src)),
                 )?;
-                if src.name() == record_name {
+                if let Some(name) = src.name().ok()
+                    && name == record_name
+                {
                     compressed_whl.write_all(
                         record
                             .filtered(
@@ -628,7 +640,7 @@ impl<'a, R: Read + Seek> ProjectPathFinder<'a> for ZipPathFinder<'a, R> {
             )
         };
         let suffix = ZipFileName::from(suffix)?;
-        for file_name in self.zip.file_names() {
+        for file_name in self.zip.file_names().flatten() {
             if let Some(rel_path) = file_name.strip_prefix(prefix.as_str())
                 && let Some(rel_path) = rel_path.strip_suffix(suffix.as_str())
             {
@@ -636,8 +648,10 @@ impl<'a, R: Read + Seek> ProjectPathFinder<'a> for ZipPathFinder<'a, R> {
                     if component == project.raw_project_name
                         || component == project.project_name.as_ref()
                     {
-                        return Ok(Cow::Borrowed(
-                            Path::new(file_name).strip_prefix(strip_prefix)?,
+                        return Ok(Cow::Owned(
+                            Path::new(file_name.as_ref())
+                                .strip_prefix(strip_prefix)?
+                                .to_path_buf(),
                         ));
                     }
                 }

@@ -134,6 +134,7 @@ impl Scripts {
                 // we compensate below.
                 let activation_script_file_names = zip
                     .file_names()
+                    .flatten()
                     .filter(|file_name| file_name.starts_with(ZIP_ACTIVATION_SCRIPTS_REL_PATH))
                     .map(String::from)
                     .collect::<Vec<_>>();

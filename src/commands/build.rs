@@ -82,7 +82,15 @@ use wheel::{EntryPoints, MetadataDirs, MetadataReader, WheelFile, WheelMetadata}
 use zip::read::ZipArchiveMetadata;
 use zip::result::ZipError;
 use zip::{CompressionMethod, ZipArchive};
-use zip_ext::{DirectoryOptions, FileOptions, Modes, ZipArchiveExt, ZipOptions, ZipWriterExt};
+use zip_ext::{
+    DirectoryOptions,
+    FileOptions,
+    Modes,
+    ZipArchiveExt,
+    ZipFileExt,
+    ZipOptions,
+    ZipWriterExt,
+};
 
 use crate::VERSION;
 use crate::embeds::{
@@ -2069,7 +2077,7 @@ fn unpack_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::Result<ProjectDir> {
                 ZipArchive::unsafe_new_with_metadata(File::open(zip_path)?, metadata.clone())
             };
             let mut zip_file = zip.by_index(index)?;
-            let dst = temp_dir.path().join(zip_file.name());
+            let dst = temp_dir.path().join(zip_file.path()?);
             if zip_file.is_dir() {
                 fs::create_dir_all(dst)?;
             } else {

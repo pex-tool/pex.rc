@@ -42,9 +42,14 @@ pub(crate) fn list(pex: Pex, args: PlatformsArgs) -> anyhow::Result<()> {
             let zip = ZipArchive::new(File::open(pex.path)?)?;
             calculate_supported_platforms(
                 zip.file_names()
-                    .filter_map(|file_name| file_name.strip_prefix("__pex__/.clibs/"))
+                    .flatten()
+                    .filter_map(|file_name| {
+                        file_name
+                            .strip_prefix("__pex__/.clibs/")
+                            .map(ToOwned::to_owned)
+                    })
                     .filter(|file_name| !file_name.is_empty())
-                    .map(Cow::Borrowed),
+                    .map(Cow::Owned),
             )
         }
     }?;

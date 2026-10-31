@@ -224,15 +224,19 @@ impl MetadataDirs {
         project_name: &PackageName,
         version: &Version,
     ) -> anyhow::Result<Self> {
-        let listing = zip.file_names().filter_map(|name| {
+        let listing = zip.file_names().flatten().filter_map(|name| {
             let path_name = if let Some(prefix) = prefix
                 && let Some(suffix) = name.strip_prefix(prefix)
             {
-                suffix
+                Cow::Borrowed(suffix)
             } else {
-                name
+                name.clone()
             };
-            path_name.split("/").next().map(Cow::Borrowed)
+            path_name
+                .split("/")
+                .next()
+                .map(ToOwned::to_owned)
+                .map(Cow::Owned)
         });
         Self::locate(project_name, version, listing, zip_source)
     }

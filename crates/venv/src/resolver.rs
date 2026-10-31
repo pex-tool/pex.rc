@@ -81,7 +81,7 @@ impl<'a> WheelEntry<'a> {
         path_options: Option<PathOptions>,
         record_writer: &mut record::Writer<impl Write>,
     ) -> anyhow::Result<()> {
-        let zip_path = self.zip_path.to_string();
+        let zip_path = self.zip_path.clone();
         let file_options = if let Some(path_options) = path_options {
             FileOptions::from_path_options(path_options, self.script.is_some())
         } else {
