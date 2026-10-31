@@ -19,7 +19,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::instrument;
 use wheel::{EntryPoint, EntryPoints, MetadataDirs, Record, WheelDir, WheelLayout};
 use zip::ZipArchive;
-use zip_ext::ZipArchiveExt;
+use zip_ext::{ZipArchiveExt, ZipFileExt};
 
 use crate::script::PythonScript;
 use crate::{Provenance, Virtualenv};
@@ -394,9 +394,10 @@ pub fn populate_whl_zip(
         let zip_fp = File::open(wheel)?;
         let mut zip = unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
         let file_name = zip
-            .name_for_index(index)
-            .expect("Each wheel entry has a name");
-        let spread_dest = calculate_spread(venv, &wheel_details, Path::new(file_name))?;
+            .by_index(index)
+            .expect("This is a valid wheel entry index")
+            .path()?;
+        let spread_dest = calculate_spread(venv, &wheel_details, &file_name)?;
         extract_idx(
             venv,
             shebang_interpreter,
@@ -425,9 +426,12 @@ where
     R: Read + Seek,
 {
     let mut zip_file = zip.by_index(index)?;
-    let spread_dst = spread_dst.unwrap_or_else(|| {
-        Spread::Move(venv.site_packages_path(zip_file.name().split("/").collect::<PathBuf>()))
-    });
+    let spread_dst = if let Some(spread_dst) = spread_dst {
+        spread_dst
+    } else {
+        let path = zip_file.path()?;
+        Spread::Move(venv.site_packages_path(&path))
+    };
     if zip_file.is_dir() {
         fs::create_dir_all(spread_dst)?;
     } else {
@@ -436,7 +440,7 @@ where
         }
         match File::create_new(spread_dst.as_ref()) {
             Ok(mut dst_file) => {
-                let source = format!("{source}/{name}", name = zip_file.name());
+                let source = format!("{source}/{name}", name = zip_file.name()?);
                 let perms = zip_file.unix_mode().map(Perms::Mode);
                 match spread_dst {
                     Spread::Move(dst) => {
@@ -467,7 +471,7 @@ where
             }
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                 let size = usize::try_from(zip_file.size())?;
-                let name = zip_file.name().to_string();
+                let name = zip_file.name()?.to_string();
                 let fingerprint = Fingerprint::try_from(BufReader::new(zip_file))?;
                 provenance.record_collision(
                     format!("{source}/{name}"),

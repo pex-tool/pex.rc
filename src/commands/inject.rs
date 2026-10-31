@@ -25,7 +25,7 @@ use tempfile::NamedTempFile;
 use tracing::info;
 use wheel::WheelFile;
 use zip::{CompressionMethod, ZipArchive};
-use zip_ext::{DirectoryOptions, FileOptions, ZipOptions, ZipWriterExt};
+use zip_ext::{DirectoryOptions, FileOptions, ZipFileExt, ZipOptions, ZipWriterExt};
 
 use crate::embeds::{Binary, CLIB_BY_TARGET, PROXY_BY_TARGET, PROXYW_BY_TARGET};
 use crate::source;
@@ -299,19 +299,19 @@ fn inject_pex_zip(
     let directory_options = DirectoryOptions::DEFAULT;
     for index in 0..src_zip.len() {
         let mut src_file = src_zip.by_index(index)?;
-        let entry_name = src_file.name();
-        if [".bootstrap/", DEPS_ZIP_DIR, PEX_INFO_FILE, "__pex__/"]
+        let entry_path = src_file.path()?;
+        if [".bootstrap", DEPS_ZIP_DIR, PEX_INFO_FILE, "__pex__"]
             .into_iter()
-            .any(|prefix| entry_name.starts_with(prefix))
-            || entry_name == "__main__.py"
+            .any(|prefix| entry_path.starts_with(prefix))
+            || entry_path == Path::new("__main__.py")
         {
             continue;
         }
         if src_file.is_dir() {
-            dst_zip.add_directory(entry_name, &directory_options)?
+            dst_zip.add_directory_from_path(entry_path, &directory_options)?
         } else {
-            dst_zip.start_file(
-                entry_name,
+            dst_zip.start_file_from_path(
+                entry_path,
                 &FileOptions::from_entry(&src_file).compression_method(CompressionMethod::Deflated),
             )?;
             io::copy(&mut src_file, &mut dst_zip)?;

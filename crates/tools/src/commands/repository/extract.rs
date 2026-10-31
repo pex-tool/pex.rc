@@ -399,11 +399,11 @@ fn add_zipped_source(
     let mut sources = Sources::new();
     for index in collect_zipped_user_source_indexes(&pex) {
         let entry = pex.by_index(index)?;
+        let entry_name = entry.name()?;
         if entry.is_file() {
-            if !entry.name().contains("/") && entry.name().ends_with(".py") {
+            if !entry_name.contains("/") && entry_name.ends_with(".py") {
                 sources.modules.insert(
-                    entry
-                        .name()
+                    entry_name
                         .strip_suffix(".py")
                         .expect("We confirmed the file name ended with .py above")
                         .trim_prefix(SRCS_ZIP_DIR)
@@ -412,7 +412,7 @@ fn add_zipped_source(
             } else {
                 let mut package = String::new();
                 let mut last_component_len = 0;
-                for component in entry.name().trim_prefix(SRCS_ZIP_DIR).split("/") {
+                for component in entry_name.trim_prefix(SRCS_ZIP_DIR).split("/") {
                     last_component_len = component.len();
                     if !package.is_empty() {
                         last_component_len += 1;
@@ -423,11 +423,11 @@ fn add_zipped_source(
                 package.truncate(package.len() - last_component_len);
                 sources.packages.insert(package);
             }
-        } else if entry.is_dir() && entry.name() == SRCS_ZIP_DIR {
+        } else if entry.is_dir() && entry_name == SRCS_ZIP_DIR {
             continue;
         }
         let mut header = tar::Header::new_ustar();
-        header.set_path(src_dir.join(entry.name().trim_prefix(SRCS_ZIP_DIR)))?;
+        header.set_path(src_dir.join(entry_name.trim_prefix(SRCS_ZIP_DIR)))?;
         header.set_size(entry.size());
         if let Some(unix_mode) = entry.unix_mode() {
             header.set_mode(unix_mode)

@@ -137,9 +137,10 @@ pub fn collect_zipped_user_source_indexes(pex: &ZipArchive<impl Read + Seek>) ->
         filter_zipped_user_source
     };
     pex.file_names()
+        .flatten()
         .enumerate()
         .filter_map(|(idx, name)| {
-            if is_user_source(name) {
+            if is_user_source(name.as_ref()) {
                 Some(idx)
             } else {
                 None

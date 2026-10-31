@@ -4,9 +4,9 @@
 #![deny(clippy::all)]
 
 use std::io::{Read, Seek, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use chrono::{TimeZone, Utc};
 use zip::read::ZipFile;
 use zip::write::{SimpleFileOptions, StreamWriter};
@@ -20,6 +20,21 @@ impl<R: Read + Seek> ZipArchiveExt<R> for ZipArchive<R> {
     fn by_name_ex(&mut self, name: &str) -> anyhow::Result<ZipFile<'_, R>> {
         self.by_name(name)
             .with_context(|| format!("Failed to find zip entry {name}."))
+    }
+}
+
+pub trait ZipFileExt<R: Read + ?Sized> {
+    fn path(&self) -> anyhow::Result<PathBuf>;
+}
+
+impl<'a, R: Read + ?Sized> ZipFileExt<R> for ZipFile<'a, R> {
+    fn path(&self) -> anyhow::Result<PathBuf> {
+        self.enclosed_name().ok_or_else(|| {
+            anyhow!(
+                "Zip entry has invalid path: {raw_name:?}",
+                raw_name = String::from_utf8_lossy(self.name_raw())
+            )
+        })
     }
 }
 

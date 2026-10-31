@@ -313,7 +313,7 @@ fn populate_user_sources_from_zip(
         .try_for_each(|index| -> anyhow::Result<()> {
             let zip_fp = File::open(zip_app_pex.path)?;
             let mut zip = unsafe { ZipArchive::unsafe_new_with_metadata(zip_fp, metadata.clone()) };
-            let spread = if let Some(name) = zip.name_for_index(index)
+            let spread = if let Some(name) = zip.name_for_index(index).and_then(Result::ok)
                 && name.starts_with(SRCS_ZIP_DIR)
             {
                 if name == SRCS_ZIP_DIR {
@@ -406,9 +406,10 @@ fn populate_from_zip_app<'a>(
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
         let extract_indexes = pex_zip
             .file_names()
+            .flatten()
             .enumerate()
             .filter_map(|(idx, name)| {
-                dep_filter.filter_deps(name).map(|file_name| {
+                dep_filter.filter_deps(name.as_ref()).map(|file_name| {
                     let wheel_details = data_dirs
                         .get(file_name)
                         .expect("We mapped a wheel details for each wheel file name.");
@@ -605,16 +606,16 @@ where
 {
     let dst_path = {
         let zip_file = zip.by_index(index)?;
-        let dst_rel_path =
-            if zip_file.name().starts_with(".deps/") {
-                zip_file.name().splitn(3, "/").nth(2).ok_or_else(|| {
-                    anyhow!("Invalid PEX .deps/ entry {name}", name = zip_file.name())
-                })?
-            } else {
-                zip_file.name()
-            }
-            .split("/")
-            .collect::<PathBuf>();
+        let name = zip_file.name()?;
+        let dst_rel_path = if name.starts_with(".deps/") {
+            name.splitn(3, "/")
+                .nth(2)
+                .ok_or_else(|| anyhow!("Invalid PEX .deps/ entry {name}", name = name))?
+        } else {
+            name.as_ref()
+        }
+        .split("/")
+        .collect::<PathBuf>();
         calculate_spread(venv, wheel_details, &dst_rel_path)?
     };
     if dst_path.is_some() {
