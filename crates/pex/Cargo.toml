@@ -9,7 +9,6 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 cache = { path = "../cache" }
-chrono = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
 dashmap = { workspace = true }
@@ -17,6 +16,7 @@ fs-err = { workspace = true }
 indexmap = { workspace = true }
 interpreter = { path = "../interpreter" }
 itertools = { workspace = true }
+jiff = { workspace = true }
 mailparse = { workspace = true }
 ouroboros = { workspace = true }
 pep440_rs = { workspace = true }

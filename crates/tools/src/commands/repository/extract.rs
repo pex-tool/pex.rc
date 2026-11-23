@@ -12,7 +12,6 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::Args;
 use cli::Output;
 use flate2::Compression;
@@ -20,6 +19,8 @@ use flate2::write::GzEncoder;
 use fs_err as fs;
 use indexmap::IndexSet;
 use interpreter::{Interpreter, InterpreterConstraints, SearchPath, SelectionStrategy};
+use jiff::ZonedDateTime;
+use jiff::tz::TimeZone;
 use pex::{
     Layout,
     Pex,
@@ -133,7 +134,7 @@ pub(crate) fn extract(python: Option<&Path>, pex: Pex, args: ExtractArgs) -> any
                 pex.layout,
                 pex_info,
                 &args.dest_dir,
-                options.chrono_timestamp(),
+                options.jiff_timestamp(),
             )?;
         }
         if args.serve {
@@ -155,7 +156,7 @@ fn extract_sdist(
     layout: Layout,
     pex_info: &RawPexInfo,
     dest_dir: &Path,
-    timestamp: Option<DateTime<Utc>>,
+    timestamp: Option<ZonedDateTime>,
 ) -> anyhow::Result<()> {
     let project_name = pex_path.file_stem().expect("A PEX always has a file name");
     let version = format!("0.0.0+{code_hash}", code_hash = pex_info.code_hash);
@@ -171,13 +172,13 @@ fn extract_sdist(
     let src_dir = top_dir.join("src");
     let sources = match layout {
         Layout::Packed | Layout::Loose => {
-            add_loose_source(&mut tar, &src_dir, pex_path, timestamp)?
+            add_loose_source(&mut tar, &src_dir, pex_path, timestamp.as_ref())?
         }
         Layout::ZipApp => add_zipped_source(
             &mut tar,
             &src_dir,
             ZipArchive::new(File::open(pex_path)?)?,
-            timestamp,
+            timestamp.as_ref(),
         )?,
     };
     add_sdist_files(
@@ -188,7 +189,7 @@ fn extract_sdist(
         pex_path,
         pex_info,
         sources,
-        timestamp,
+        timestamp.as_ref(),
     )?;
     tar.finish()?;
 
@@ -205,7 +206,7 @@ fn add_sdist_files(
     pex_path: &Path,
     pex_info: &RawPexInfo,
     sources: Sources,
-    timestamp: Option<DateTime<Utc>>,
+    timestamp: Option<&ZonedDateTime>,
 ) -> anyhow::Result<()> {
     add_file(
         tar,
@@ -350,7 +351,7 @@ fn add_file(
     tar: &mut tar::Builder<GzEncoder<File>>,
     top_dir: &Path,
     path: impl AsRef<Path>,
-    timestamp: Option<DateTime<Utc>>,
+    timestamp: Option<&ZonedDateTime>,
     content: Cow<'_, str>,
 ) -> anyhow::Result<()> {
     let size = u64::try_from(content.as_ref().len())?;
@@ -363,14 +364,14 @@ fn create_header(
     path: impl AsRef<Path>,
     size: u64,
     is_executable: bool,
-    timestamp: Option<DateTime<Utc>>,
+    timestamp: Option<&ZonedDateTime>,
 ) -> anyhow::Result<tar::Header> {
     let mut header = tar::Header::new_ustar();
     header.set_path(path.as_ref())?;
     header.set_size(size);
     header.set_mode(if is_executable { 0o755 } else { 0o644 });
     if let Some(timestamp) = timestamp {
-        header.set_mtime(u64::try_from(timestamp.timestamp())?)
+        header.set_mtime(u64::try_from(timestamp.timestamp().as_second())?)
     }
     header.set_cksum();
     Ok(header)
@@ -394,7 +395,7 @@ fn add_zipped_source(
     tar: &mut tar::Builder<impl Write>,
     src_dir: &Path,
     mut pex: ZipArchive<File>,
-    timestamp: Option<DateTime<Utc>>,
+    timestamp: Option<&ZonedDateTime>,
 ) -> anyhow::Result<Sources> {
     let mut sources = Sources::new();
     for index in collect_zipped_user_source_indexes(&pex) {
@@ -433,10 +434,11 @@ fn add_zipped_source(
             header.set_mode(unix_mode)
         }
         if let Some(timestamp) = timestamp {
-            header.set_mtime(u64::try_from(timestamp.timestamp())?);
+            header.set_mtime(u64::try_from(timestamp.timestamp().as_second())?);
         } else if let Some(last_modified) = entry.last_modified()
-            && let Ok(last_modified) = NaiveDateTime::try_from(last_modified)
-            && let Ok(mtime) = u64::try_from(last_modified.and_utc().timestamp())
+            && let Ok(last_modified) = jiff::civil::DateTime::try_from(last_modified)
+            && let Ok(last_modified) = last_modified.to_zoned_datetime(TimeZone::UTC)
+            && let Ok(mtime) = u64::try_from(last_modified.timestamp().as_second())
         {
             header.set_mtime(mtime);
         }
@@ -450,7 +452,7 @@ fn add_loose_source(
     tar: &mut tar::Builder<impl Write>,
     src_dir: &Path,
     pex: &Path,
-    timestamp: Option<DateTime<Utc>>,
+    timestamp: Option<&ZonedDateTime>,
 ) -> anyhow::Result<Sources> {
     let mut sources = Sources::new();
     for path in collect_loose_user_source(pex)? {
