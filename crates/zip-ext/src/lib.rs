@@ -7,7 +7,7 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
-use chrono::{TimeZone, Utc};
+use jiff::ZonedDateTime;
 use zip::read::ZipFile;
 use zip::write::{SimpleFileOptions, StreamWriter};
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
@@ -184,14 +184,12 @@ impl ZipOptions {
         }
     }
 
-    pub fn chrono_timestamp(&self) -> Option<chrono::DateTime<Utc>> {
+    pub fn jiff_timestamp(&self) -> Option<ZonedDateTime> {
         if self.reproducible_timestamp {
             Some(
-                Utc.from_utc_datetime(
-                    &DateTime::DEFAULT
-                        .try_into()
-                        .expect("The default zip DateTime is a valid Chrono UTC DateTime."),
-                ),
+                jiff::civil::DateTime::try_from(DateTime::DEFAULT)
+                    .and_then(|date_time| date_time.to_zoned_datetime(jiff::tz::TimeZone::UTC))
+                    .expect("The default zip DateTime is a valid jiff UTC DateTime."),
             )
         } else {
             None

@@ -9,7 +9,6 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 cache = { path = "../cache" }
-chrono = { workspace = true }
 clap = { workspace = true }
 clap-verbosity-flag = { workspace = true }
 cli = { path = "../cli" }
@@ -21,6 +20,7 @@ fs-err = { workspace = true }
 graphviz-rust = { workspace = true }
 indexmap = { workspace = true }
 interpreter = { path = "../interpreter" }
+jiff = { workspace = true }
 logging = { path = "../logging" }
 oneshot = { workspace = true }
 open = { workspace = true }

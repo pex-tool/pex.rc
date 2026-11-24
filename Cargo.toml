@@ -152,7 +152,6 @@ anstream = "1.0"
 anyhow = "1.0"
 base64 = "0.23"
 bstr = "1.12"
-chrono = "0.4"
 clap = {  version = "4.6", features = ["color", "derive", "string"] }
 clap-verbosity-flag = "3.0"
 colorchoice-clap = "1.0"
@@ -180,6 +179,7 @@ include_dir = "0.7"
 indexmap = {  version = "2.14", features = ["rayon", "serde"] }
 is_executable = "1.0"
 itertools = "0.15"
+jiff = "1.0"
 log = "0.4"
 mailparse = "0.18"
 oneshot = {  version = "0.2", features = ["std"] }
@@ -228,7 +228,11 @@ windows-registry = "0.100"
 windows-version = "0.100"
 which = "8.0"
 xz2 = "0.1"
-zip = { version = "9.1", default-features = false, features = ["chrono", "deflate", "zstd"] }
+zip = {
+    git = "https://github.com/zip-rs/zip2", rev = "2cc72cb8ab54adf59f752ce390d9e4bd5bc330c4",
+    default-features = false,
+    features = ["jiff-1", "deflate", "zstd"]
+}
 zstd = "0.14"
 
 [build-dependencies]
